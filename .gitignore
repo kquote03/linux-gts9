@@ -1,0 +1,29 @@
+# Reference/input material — each is its own git repo or a raw firmware dump,
+# not part of this project's history.
+/android_kernel_samsung_gts9/
+/ubuntu-galaxy-tab-s9ultra/
+/2026-09-04--*/
+
+# Build scratch and output
+/work/
+/out/
+
+# Fetched mainline kernel source (pinned via scripts/fetch-mainline.sh, not vendored —
+# too large to commit; docs/hardware-facts.md records the exact pinned commit instead)
+/kernel/linux/
+
+# Large binary artifacts — never commit these, they're build output
+*.img
+*.win
+*.win.md5
+*.dtb
+*.dtbo
+Image.gz*
+*.ko
+*.tar
+*.tar.gz
+*.tar.xz
+
+# Editor/OS cruft
+.DS_Store
+*.swp
