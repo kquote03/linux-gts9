@@ -159,6 +159,58 @@ booted. **measured**. This is the MVP rootfs target (Phase 4).
   tool in `shell.nix` was verified to actually run inside the shell, not just
   that the derivation evaluates.
 
+## Mainline reference: an existing Samsung SM8550 board already exists upstream
+
+Discovered while starting Phase 1 (checking kernel tag `v7.2` for SM8550 DT
+support): `arch/arm64/boot/dts/qcom/sm8550-samsung-q5q.dts` in mainline Linux
+is a **real, accepted, working devicetree for the Samsung Galaxy Z Fold5**
+(`compatible = "samsung,q5q", "qcom,sm8550"`) — a second real-world Samsung
+SM8550 device, independent of the X910 Ultra reference, and unlike it this
+one is genuinely upstream (`BSD-3-Clause`, Linaro + community authors). Used
+alongside the X716 downstream tree and the X910 reference as a third
+cross-check. Notable, directly load-bearing findings:
+
+- **Console UART confirmed, not just inherited.** `sm8550.dtsi` defines
+  `uart7: serial@a9c000` — the exact same MMIO address as X716 downstream's
+  `qup_hsuart@a9c000` (`hsuart5` alias). The Z Fold5 also uses `serial0 =
+  &uart7` as its console. This resolves what was previously an "assumed"
+  console-node identification to **measured/cross-confirmed** — `&uart7` is
+  the console node for `kernel/dts/sm8550-samsung-x716b.dts`.
+- **UFS regulators confirmed via a second independent device.** The Z Fold5
+  uses `vcc-supply = <&vreg_l17b_2p5>; vccq-supply = <&vreg_l1g_1p2>;` on
+  `&ufs_mem_hc` — the **same rail index numbers** (l17, l1) as X716
+  downstream's `pm_humu_l17`/`pm_v6g_l1` and the X910 Ultra reference's
+  identical `vreg_l17b_2p5`/`vreg_l1g_1p2`. Three independent Samsung SM8550
+  devices agree on l17/l1 for UFS vcc/vccq — high confidence this is the
+  Qualcomm reference-design assignment that Samsung boards inherit, not
+  something to re-derive. X716's downstream label prefixes (`pm_humu_`,
+  `pm_v6g_`) are almost certainly just Samsung's internal PMIC-die codenames
+  for the same physical rails mainline calls `l17b`/`l1g` — use the mainline
+  names (`vreg_l17b_2p5`, `vreg_l1g_1p2`) directly.
+- **`sm8550.dtsi` already ships a full, correct `reserved-memory` tree** for
+  the standard Qualcomm kalama reference design (hyp, xbl, aop, smem, adsp,
+  mpss/modem, spss, camera, video, cdsp — all in the sub-4GB range, e.g.
+  `mpss_mem` at `0x8a800000`). This is presumably the same physical layout
+  Samsung's downstream tree builds on top of. **Board DTS work does not need
+  to hand-copy this whole tree from the X716 downstream source** — only add
+  Samsung-specific extras on top. The `sec_log_buf_region@880200000` carveout
+  (address `0x8_80200000`, i.e. high 32 bits = `0x8`) sits far outside every
+  address `sm8550.dtsi` reserves (all under `0x1_00000000`) — no conflict, in
+  a distinct high-memory DRAM region.
+- The Z Fold5 DTS `/delete-node/`s `&adspslpi_mem`, `&cdsp_mem`,
+  `&mpss_dsm_mem`, `&mpss_mem`, `&rmtfs_mem` — i.e. its mainline port doesn't
+  support cellular or ADSP/CDSP remoteproc firmware loading either, matching
+  this project's own non-goals. Following the same deletion pattern for
+  `kernel/dts/sm8550-samsung-x716b.dts` avoids declaring remoteproc nodes
+  that would otherwise attempt to probe/load firmware we don't have and
+  potentially hang — a concrete, precedented way to reduce Phase 2/3 risk.
+- The Z Fold5 DTS wires a `simple-framebuffer` node continuing from an
+  address ABL's own splash screen already set up (`chosen/framebuffer@...`,
+  format `a8r8g8b8`) — a way to get *some* display output without a real
+  mainline panel driver. Not pursued for the X716 MVP (display is explicitly
+  deferred), but worth revisiting in future work given no mainline
+  `AMSA10FA01` panel driver exists.
+
 ## Pinned upstream sources
 
 - **uniLoader**: `https://github.com/ivoszbg/uniLoader`, pinned commit
@@ -173,8 +225,16 @@ booted. **measured**. This is the MVP rootfs target (Phase 4).
 - **avb**: `https://android.googlesource.com/platform/external/avb`, pinned
   commit `c5066a96caa7bf4150c0a8cc8cc14ab81733fdc7` (2026-08-19), vendored
   into `third_party/android-tools/avb/` — see that directory's `PROVENANCE.md`.
-- Mainline Linux kernel: **not yet pinned** — Phase 1 step 1
-  (`scripts/fetch-mainline.sh`) has not run yet.
+- **Mainline Linux kernel**: `https://github.com/torvalds/linux.git`, pinned
+  tag `v7.2` (full stable release, newer than the X910 reference's
+  `v7.2-rc3` pin), commit `8d3ae59288f1e7d58d76558a6ee96d533bc5019f`, fetched
+  via `scripts/fetch-mainline.sh` into `kernel/linux/` (gitignored).
+  **measured** — confirmed `sm8550.dtsi`/`pm8550.dtsi`/`pm8550vs.dtsi`/
+  `pmk8550.dtsi` all present at this tag before pinning, and
+  `kernel/dts/sm8550-samsung-x716b.dts` compiles cleanly against it
+  (`cpp`+`dtc`, zero errors, produces a 115,635-byte DTB with `uart7`/UFS
+  host/UFS PHY all resolving to `status = "okay"` with regulator phandles
+  correctly resolved).
 
 ## Open risks / unverified assumptions (carried into later phases)
 
