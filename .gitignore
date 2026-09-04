@@ -27,3 +27,6 @@ Image.gz*
 # Editor/OS cruft
 .DS_Store
 *.swp
+
+# Claude Code session state
+/.claude/
