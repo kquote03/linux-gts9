@@ -27,6 +27,8 @@ Image.gz*
 # Editor/OS cruft
 .DS_Store
 *.swp
+__pycache__/
+*.pyc
 
 # Claude Code session state
 /.claude/
