@@ -12,6 +12,11 @@
 # too large to commit; docs/hardware-facts.md records the exact pinned commit instead)
 /kernel/linux/
 
+# Fetched uniLoader source (pinned via scripts/fetch-uniloader.sh, not vendored —
+# active upstream project; our own board/SoC additions live in uniloader-overlay/
+# instead, which IS committed)
+/uniloader/upstream/
+
 # Large binary artifacts — never commit these, they're build output
 *.img
 *.win

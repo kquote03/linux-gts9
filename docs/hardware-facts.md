@@ -147,6 +147,34 @@ booted. **measured**. This is the MVP rootfs target (Phase 4).
   **measured** (read directly from `android_kernel_samsung_gts9/shell.nix`).
   Confirms a modern-enough Clang (≥17, needed for the mainline kernel target)
   is readily available via nix on this dev machine.
+- This project's `shell.nix` (repo root) uses `llvmPackages_19` (Clang 19.1.7,
+  confirmed available in the local nixpkgs snapshot `26.05pre-git`) plus an
+  `aarch64-unknown-linux-gnu` GNU cross toolchain (GCC 15.2.0, via
+  `pkgsCross.aarch64-multiplatform.stdenv.cc`) for uniLoader's
+  `CROSS_COMPILE=` build path. `mmdebstrap` is **not packaged** in this
+  nixpkgs snapshot (confirmed via `nix eval nixpkgs#mmdebstrap` — no such
+  attribute); `debootstrap` is used instead. `kpartx` is provided by the
+  `multipath-tools` package (confirmed: builds, `bin/kpartx` present), not a
+  standalone `kpartx` attribute (also confirmed absent). **measured** — every
+  tool in `shell.nix` was verified to actually run inside the shell, not just
+  that the derivation evaluates.
+
+## Pinned upstream sources
+
+- **uniLoader**: `https://github.com/ivoszbg/uniLoader`, pinned commit
+  `2418e06635e931e31c74833b8809415fa9695b79` (2026-08-24, "board: Add support
+  for HTC Desire 628 Dual (v36bml_dugl)"), fetched via
+  `scripts/fetch-uniloader.sh` into `uniloader/upstream/` (gitignored).
+  **measured** (`git ls-remote` + `git rev-parse HEAD` after fetch).
+- **mkbootimg**: `https://android.googlesource.com/platform/system/tools/mkbootimg`,
+  pinned commit `d2bb0af5ba6d3198a3e99529c97eda1be0b5a093` (2025-03-02),
+  vendored (not fetched at build time) into `third_party/android-tools/mkbootimg/`
+  — see that directory's `PROVENANCE.md`.
+- **avb**: `https://android.googlesource.com/platform/external/avb`, pinned
+  commit `c5066a96caa7bf4150c0a8cc8cc14ab81733fdc7` (2026-08-19), vendored
+  into `third_party/android-tools/avb/` — see that directory's `PROVENANCE.md`.
+- Mainline Linux kernel: **not yet pinned** — Phase 1 step 1
+  (`scripts/fetch-mainline.sh`) has not run yet.
 
 ## Open risks / unverified assumptions (carried into later phases)
 
