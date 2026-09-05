@@ -279,3 +279,17 @@ Device is currently sitting in TWRP, untouched otherwise.
 
 **Next: the actual first flash attempt**, checking in for explicit
 per-partition confirmation before running `scripts/flash-boot-set.sh`.
+
+**Continued same session, with explicit go-ahead**: ran the first flash.
+`scripts/flash-boot-set.sh` wrote `boot` (uniLoader, uncompressed variant),
+`init_boot` (bring-up ramdisk), `vendor_boot` (board DTB + debug cmdline +
+same ramdisk), and `dtbo` (inert no-op table) — all four confirmed via the
+script's own push→dd→readback→sha256 verification, no mismatches. Device
+is sitting in TWRP with the custom boot chain flashed, not yet rebooted
+into it.
+
+**Next: the actual first boot attempt** — checking in before triggering
+the reboot, since this is genuinely the first time this exact combination
+gets to run on real hardware and the outcome (does ABL even accept it, do
+we get any sec-log signal) is unknown. Rollback point is
+`backups/2026-09-05/` if it doesn't come back.
