@@ -455,6 +455,43 @@ capture saved at `work/bringup-2026-09-05/last_kmsg-attempt1.txt`.
   it executed, caught and fixed before flashing) at `_reloc_entry`'s start
   and right before the final jump to `_start`. See `docs/porting-log.md`
   for the attempt-4 plan.
+- **Attempt 4 result: still zero checkpoint signal**, even from raw
+  assembly at the very first instruction of `_reloc_entry`. Verified via
+  `objdump` that the compiled/linked instructions exactly match intent (no
+  encoding bug) — the address computation and `str` instructions are
+  correct. Also noticed something new: **every single attempt's ABL log
+  shows `LinuxLoaderEntry Address` = `Load Address + 0xB3C`, exactly,
+  regardless of the (varying) load address** — a suspiciously constant
+  offset. Two hypotheses tested and both refuted:
+  - Guessed it might reflect a gzip-wrapper convention (Samsung's ABL
+    expecting `Image.gz` rather than a raw binary, matching uniLoader's
+    own `CONFIG_COMPRESS_GZIP=y` default producing `uniLoader.gz` as an
+    alternative artifact). **Tested attempt 5 with `uniLoader.gz` instead
+    of the plain binary — the `+0xB3C` offset was identical, and the
+    result was identical (Download Mode).** Rules this out.
+  - Confirmed `text_offset` is `0` in both source
+    (`linux-kernel-image-header.h`) and the linked binary's disassembly —
+    a compliant bootloader jumping to `Load + text_offset` should land at
+    `_head` (offset 0) exactly, not offset `0xB3C`. Since `0xB3C` is
+    constant regardless of file content (plain vs. gzip, different
+    addresses), it's most likely a fixed value ABL's own logging computes
+    for display purposes, not necessarily reflecting the true jump target.
+  - Separately confirmed (a genuine positive result): `AUTHENTICATE fail
+    but allow` now confirmed logged for **all four** custom partitions
+    (`boot`/`dtbo`/`vendor_boot`/`init_boot`), not just `vbmeta`/`recovery`
+    — the AVB bypass is fully validated across the whole boot chain.
+- **Open methodological concern, not yet resolved**: every failed attempt
+  has been diagnosed via a TWRP → [crash] → Download Mode → [user exits] →
+  TWRP round trip. `/proc/iomem` shows the sec_log region is tagged
+  `System RAM`, which `STRICT_DEVMEM` policy (near-universal on production
+  kernels) blocks from direct `/dev/mem` access even as root — confirmed
+  by creating `/dev/mem` and trying `devmem`, which failed with "No such
+  device or address" (the standard `devmem_is_allowed()` rejection for
+  RAM-typed regions). **This means there is currently no way to directly
+  verify whether entering/exiting Download Mode preserves or clears this
+  DRAM region** — if it clears it, every "zero signal" conclusion above
+  could be an artifact of the diagnostic path itself, not proof that our
+  code never ran. No smoking-gun evidence either way yet.
 - Also confirmed independently from this same log: the vbmeta
   flags=2/AVB-verification-disabled bypass works exactly as expected
   (`AUTHENTICATE fail but allow ... binary: vbmeta` /

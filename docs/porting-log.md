@@ -396,3 +396,41 @@ shows up, the copy (or same-address shortcut) completed and the jump to
 `_start` was attempted. If neither shows up again, the problem is even
 earlier than this file — possibly the ARM64 Image header itself being
 rejected by ABL, or the initial branch to `_head` failing outright.
+
+**Continued same session** (user gave a standing go-ahead to stop asking
+before each flash/reboot from here on — still needs the user's eyes on
+the physical screen for Download Mode, which isn't adb-visible). Fourth
+attempt: still zero checkpoint signal, even from the raw-assembly
+checkpoint at `_reloc_entry`'s literal first instruction. Verified via
+`objdump` that the compiled/linked code exactly matches intent — no
+encoding bug.
+
+Noticed something new while investigating: every attempt's ABL log shows
+`LinuxLoaderEntry Address` = `Load Address + 0xB3C`, exactly, every time,
+regardless of the (varying) load address. Tested whether this reflects a
+gzip-wrapper expectation (uniLoader's own default also builds a
+`uniLoader.gz` — a previously-flagged open question) by flashing that
+variant instead as a fifth attempt: **identical `+0xB3C` offset, identical
+Download Mode result.** Ruled out. Confirmed `text_offset=0` in both
+source and the linked binary's disassembly, so a compliant bootloader
+should jump to offset 0 (`_head`) — the constant `0xB3C` regardless of
+file content most likely reflects a fixed value in ABL's own debug
+logging, not necessarily the real jump target.
+
+Also got a genuine positive confirmation while checking this: all four
+custom partitions (`boot`/`dtbo`/`vendor_boot`/`init_boot`) show
+`AUTHENTICATE fail but allow` in every capture — the AVB bypass is fully
+validated across the whole chain, not just `vbmeta`/`recovery`.
+
+**Flagged an open methodological concern rather than continuing to guess
+blindly**: every diagnosis so far has gone through a TWRP → crash →
+Download Mode → user exits → TWRP round trip. Tried to test directly
+whether Download Mode preserves the sec-log DRAM region (created
+`/dev/mem`, tried `devmem` reads/writes) — blocked by `STRICT_DEVMEM`
+policy, since `/proc/iomem` tags the region `System RAM` (rejected even as
+root). **No way currently to confirm or rule out that Download Mode
+clears this memory before we read it back** — if it does, every "zero
+signal" conclusion so far could be an artifact of the diagnostic path,
+not proof our code never executed. Reported this honestly to the user
+rather than continuing to add more checkpoints on an unverified
+assumption.
