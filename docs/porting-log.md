@@ -200,3 +200,39 @@ needs a decision on plain vs. `.gz` uniLoader artifact), `scripts/
 flash-boot-set.sh`, validating the sec-log readback path with the *stock*
 kernel first, and then — with explicit per-step confirmation — the first
 actual flash attempt.
+
+**Continued same session**: wrote and tested both remaining scripts.
+
+`scripts/build-android-v4-bundle.sh` packages uniLoader as `boot.img`'s
+kernel (no ramdisk — GKI-style split), the bring-up ramdisk into
+`init_boot.img`, the board DTB + vendor cmdline + the same ramdisk into
+`vendor_boot.img` (base/offsets matching the stock header), and a
+hand-built inert single-entry DTBO table into `dtbo.img` (`mkdtboimg.py`
+wasn't vendored, so the well-documented header format is built directly in
+Python). All four get an unsigned, structural-only avbtool footer
+(`--algorithm NONE` — appropriate since vbmeta verification is already
+disabled). Verified thoroughly before trusting it: all four images came out
+to exactly the confirmed stock partition sizes, and `avbtool info_image` /
+`unpack_bootimg.py` both confirm the internal structure (load addresses,
+DTB, cmdline, ramdisk size) matches what was specified, and the hand-built
+DTBO header parses correctly against the documented format.
+
+`scripts/flash-boot-set.sh` — the only device-write script in this repo.
+Refuses to run without an explicit acknowledgement flag, checks the device
+is actually in TWRP, verifies image sizes before writing, and reads back +
+sha256-verifies after every write. Tested only the safety guard and
+argument handling (no device attached to this check) — **not run against
+the physical tablet**.
+
+**Result**: Phase 2's off-device prep work is now complete —
+`docs/boot-strategy.md`, the sec-log driver, the boot-image packaging
+script, and the flashing script all exist and are individually verified as
+far as possible without touching the device. What's left all requires
+actual device interaction: validating the sec-log readback path with the
+*stock* kernel first (a reboot into TWRP + a read, not a flash, but still
+device interaction beyond what this session did unprompted), then — with
+fresh backups and explicit per-step confirmation — the first real flash
+attempt with the custom boot chain.
+
+**Next session should check in before any further device interaction**,
+starting with the stock-kernel sec-log validation step.
