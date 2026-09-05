@@ -1,0 +1,21 @@
+# Generic (not board-specific) quality-of-life additions on top of
+# `make ARCH=arm64 defconfig`, applied via scripts/kconfig/merge_config.sh.
+#
+# defconfig at the pinned v7.2 tag already provides a fairly complete
+# distro-capable aarch64 base (DEVTMPFS+MOUNT, EXT4_FS, BLK_DEV_INITRD,
+# etc. all =y -- verified by reading arch/arm64/configs/defconfig directly,
+# not assumed) -- this fragment only adds what bring-up debugging needs on
+# top of that.
+
+# Needed for the dyndbg="file drivers/base/dd.c +p" style cmdline debug
+# flags planned for Phase 2/3 probe-hang bisection.
+CONFIG_DYNAMIC_DEBUG=y
+
+# Kernel log timestamps -- needed to correlate hang timing against sec-log
+# capture readback, since there's no live console to watch in real time.
+CONFIG_PRINTK_TIME=y
+
+# Lets a later session verify exactly which config actually built a given
+# kernel via /proc/config.gz, without needing this repo's build artifacts.
+CONFIG_IKCONFIG=y
+CONFIG_IKCONFIG_PROC=y

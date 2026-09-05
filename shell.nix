@@ -66,6 +66,15 @@ pkgs.mkShell {
     export LLVM=1
     export CROSS_COMPILE_AARCH64=aarch64-unknown-linux-gnu-
 
+    # Kbuild's LLVM=1 also points HOSTCC/HOSTCXX at bare clang-unwrapped,
+    # which has no default header search paths on NixOS and fails building
+    # host tools like scripts/kconfig/fixdep ("sys/types.h file not found").
+    # Force host tool builds through the properly-wrapped native cc/c++
+    # instead -- confirmed this is the actual fix by reproducing the
+    # failure and testing the override directly, not guessing.
+    export HOSTCC=cc
+    export HOSTCXX=c++
+
     echo "linux-tabs9-port build shell ready."
     echo "  clang:  $(${llvm.clang-unwrapped}/bin/clang --version | head -1)"
     echo "  adb:    $(adb --version | head -1)"

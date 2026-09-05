@@ -1,0 +1,43 @@
+# Board-specific config for the Samsung Galaxy Tab S9 5G (SM-X716B).
+# Applied on top of `make ARCH=arm64 defconfig` + config-mainline.aarch64
+# via scripts/kconfig/merge_config.sh.
+#
+# Everything hardware-critical for this bring-up MVP is forced built-in
+# (=y, not =m) -- there's no shell to modprobe from until the rootfs
+# itself is reachable, and Phase 2/3 debugging has to work with whatever
+# the kernel does on its own before any userspace runs at all.
+#
+# Confirmed by reading arch/arm64/configs/defconfig and the relevant
+# Kconfig/Makefile files directly at the pinned v7.2 tag -- not guessed:
+
+# TLMM pin controller for this SoC (drivers/pinctrl/qcom/pinctrl-sm8550.c,
+# matched via "qcom,sm8550-tlmm" in sm8550.dtsi). NOT present at all in
+# defconfig (off by default) -- this is the single most important addition
+# in this fragment. Without it, essentially nothing that depends on pin
+# muxing works, likely including the uart7 console pins this board's DTS
+# enables.
+CONFIG_PINCTRL_SM8550=y
+
+# UFS transport for this SoC (drivers/ufs/host/ufs-qcom.c). defconfig sets
+# this =m; forced =y here since it's this board's only rootfs storage path
+# and there's no way to modprobe it before a rootfs is reachable.
+CONFIG_SCSI_UFS_QCOM=y
+
+# TrustZone/SCM calls -- selected transitively by several drivers this
+# board needs (regulators, UFS reset, etc.) but has no direct defconfig
+# entry (it's a bare `tristate` with no prompt, pulled in via `select`).
+# Setting it explicitly here is a safety net to force the built-in form
+# rather than leaving it to whatever the first selecting driver's own
+# module/built-in choice happens to be.
+CONFIG_QCOM_SCM=y
+
+# Already =y in defconfig at the pinned tag -- listed here as documentation
+# of what this board relies on from the generic base, not because the
+# fragment needs to re-set them: CONFIG_ARCH_QCOM, CONFIG_SERIAL_QCOM_GENI,
+# CONFIG_SERIAL_QCOM_GENI_CONSOLE, CONFIG_QCOM_GENI_SE, CONFIG_QCOM_RPMH,
+# CONFIG_QCOM_SMEM, CONFIG_REGULATOR_QCOM_RPMH, CONFIG_SCSI_UFSHCD,
+# CONFIG_SCSI_UFSHCD_PLATFORM, CONFIG_PHY_SAMSUNG_UFS, CONFIG_EXT4_FS.
+
+# Explicitly NOT enabled here (deferred, see docs/hardware-facts.md
+# non-goals): DRM/panel, touchscreen, WCN7850 wifi/bt, camera, audio
+# DSP/APR, sensors, cellular modem remoteproc.
