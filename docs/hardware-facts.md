@@ -236,6 +236,76 @@ cross-check. Notable, directly load-bearing findings:
   host/UFS PHY all resolving to `status = "okay"` with regulator phandles
   correctly resolved).
 
+## Phase 1 build artifacts (all builds succeeded; nothing flashed yet)
+
+- Kernel `Image` (uncompressed, 42,002,944 B), sha256
+  `df61df1ce94a52040e5a0a95720d69b2ef78c06a23bf37d789077511cd951739`,
+  release string `7.2.0-dirty` (the `-dirty` suffix is expected — our board
+  DTS + Makefile line are installed into the working tree, not committed to
+  `kernel/linux/`, which is gitignored).
+- Board DTB (`sm8550-samsung-x716b.dtb`, 115,635 B), sha256
+  `23dbee663af124862b8e7da4ce2e56b2355b0221fd717de600a90470212425e3` —
+  identical output whether built standalone via `cpp`+`dtc` or via the full
+  kernel build, a useful cross-check that the build integration didn't
+  silently change anything.
+- uniLoader binary (43,536,384 B — kernel Image + DTB + bring-up ramdisk +
+  uniLoader's own code, all embedded in one flat file), sha256
+  `4397750d9b733be4a56709eb83fe14e9f3b30b849188f1d1d90a2345d2a26ca6`. A
+  gzip-compressed variant (`uniLoader.gz`, 16,333,329 B, sha256
+  `c972bfa98ee3bab3fe0e39b6caad4359ba732e3e36c21e5ef60777b1bef8de47`) is
+  also produced by uniLoader's own default `CONFIG_COMPRESS_GZIP=y` —
+  **which of the two to package as the `boot` partition's kernel slot in
+  Phase 2 is an open question** (mainline `Image.gz` is a common
+  ABL-compatible convention, which favors the compressed variant, but this
+  needs to be decided/tested in Phase 2, not assumed here).
+- Bring-up ramdisk (`bringup-ramdisk.cpio.gz`, 851,804 B), sha256
+  `053a971233cbc0824700a5b479ada5c1c92d5b92ed432c14f5a0a49d5b3397f5` — static
+  aarch64 busybox + an `/init` that prints a proof-of-life line then loops
+  forever.
+
+## Toolchain gotchas found while getting Phase 1 to actually build
+
+All confirmed by reproducing the failure in isolation and testing the fix
+directly, not guessed. Baked into `shell.nix`/the build scripts; recorded
+here so a future session doesn't have to rediscover them:
+
+1. Kbuild's `LLVM=1` (and uniLoader's own copy of the same kbuild-derived
+   host-tool machinery) points `HOSTCC`/`HOSTCXX` at bare
+   `clang-unwrapped`, which has no default header search paths on NixOS
+   ("`sys/types.h` file not found" building `scripts/basic/fixdep`). Only a
+   **command-line-supplied** `HOSTCC=cc HOSTCXX=c++` fixes it —
+   environment-exported values alone are not honored, for both the kernel
+   build and uniLoader's build.
+2. Bare `clang-unwrapped` also doesn't auto-find its own resource-dir
+   (builtin headers like `arm_neon.h`) on NixOS — nixpkgs splits it into a
+   separate `.lib` output. Needs `-resource-dir=<path>` **and** an explicit
+   `-isystem <path>/include` (the kernel's `-nostdinc` flag drops
+   resource-dir from the search path entirely, not just normal system
+   dirs) via `KCFLAGS`, again only effective when passed on the `make`
+   command line, not merely exported.
+3. `qemu_full` in nixpkgs pulls in a large unrelated dependency tree
+   (ceph/arrow/glusterfs/azure-sdk); `qemu-user` is the correct, much
+   leaner package for binfmt-based cross-arch emulation.
+4. `mmdebstrap` and standalone `kpartx` are absent from this nixpkgs
+   snapshot; `debootstrap` and `multipath-tools` (which provides `kpartx`)
+   are the respective substitutes.
+5. The default dynamically-linked `busybox` package references a Nix store
+   path as its ELF interpreter and won't run standalone on-device; use
+   `pkgsCross.aarch64-multiplatform.pkgsStatic.busybox` instead.
+6. defconfig's default `CONFIG_DEBUG_INFO=y` (DWARF, "reduced") makes the
+   kernel's single, unparallelizable final `LD vmlinux.o` link step memory
+   hungry enough to get OOM-killed on this shared 14 GB dev machine,
+   independent of `-j` parallelism (compiles succeeded cleanly at `-j4`;
+   only the serial link step failed, twice, before this was found).
+   `CONFIG_DEBUG_INFO_NONE=y` fixes it.
+7. Shell-exported build variables meant for one project's build (`ARCH`,
+   `LLVM` in `shell.nix`, set for the Linux kernel) leak into other
+   projects sharing the same shell (uniLoader) that use conflicting
+   conventions for the same variable names (`ARCH=arm64` vs uniLoader's own
+   `ARCH=aarch64`) — each build script must pass its own required values
+   explicitly on the `make` command line rather than relying on the shared
+   shell environment.
+
 ## Open risks / unverified assumptions (carried into later phases)
 
 1. Whether X716's ABL has the same DTB-append-to-kernel /
