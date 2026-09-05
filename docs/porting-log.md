@@ -293,3 +293,38 @@ the reboot, since this is genuinely the first time this exact combination
 gets to run on real hardware and the outcome (does ABL even accept it, do
 we get any sec-log signal) is unknown. Rollback point is
 `backups/2026-09-05/` if it doesn't come back.
+
+**Continued same session, with explicit go-ahead**: triggered the reboot.
+ABL fell back to Download Mode almost immediately — not a brick, a
+recoverable Samsung safety fallback. User manually exited Download Mode
+(button combo) back to TWRP. Pulled the full sec-log capture
+(`work/bringup-2026-09-05/last_kmsg-attempt1.txt`, 2,097,136 bytes) for
+diagnosis.
+
+**Root-caused it from the log, not guessed**: ABL's own log line
+`LinuxLoader Load Address to debug ABL: 0xC44C9000` shows it dynamically
+loaded uniLoader at `0xC44C9000` — completely unrelated to the
+vendor_boot header's legacy `kernel_addr` field we'd set (`0x80008000`),
+confirming ABL ignores that field on this device. uniLoader's own
+"position independent" mode (`arch/aarch64/reloc.S`) turned out to not be
+true PIC: it self-copies its entire ~43 MiB from wherever it's actually
+running to the Kconfig-compiled `TEXT_BASE`, forward-only, not
+overlap-safe. Our guessed `TEXT_BASE=0xa8000000` (borrowed from an
+unrelated device, Nothing Phone 2) forced that copy to run for no reason,
+and the log's last line before the crash is ABL's own "Exit Boot
+Services" — consistent with a crash during or right after that copy.
+Also separately confirmed from the same log: the vbmeta
+flags=2/verification-disabled bypass works exactly as intended
+(`AUTHENTICATE fail but allow ... binary: vbmeta`, `verifystatus(2)`).
+
+**Fix**: set `TEXT_BASE=0xC44C9000` in `gts9-5g_defconfig` — the exact
+measured address — so the relocation comparison succeeds and the risky
+self-copy never happens. Verified directly: `readelf -h uniLoader.o` now
+shows `Entry point address: 0xC44C9000`, matching exactly. Checked
+`PAYLOAD_ENTRY`/`RAMDISK_ENTRY` (unchanged) against this new address and
+against ABL's own logged available-memory regions — no overlap either
+direction. Rebuilt uniLoader and the full boot-image bundle with the fix.
+Full detail in `docs/hardware-facts.md`.
+
+**Next: second flash attempt** with the corrected `TEXT_BASE` — checking
+in before flashing/rebooting again.

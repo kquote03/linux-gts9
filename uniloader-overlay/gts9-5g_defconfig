@@ -7,28 +7,37 @@ CONFIG_SAMSUNG_GTS9_5G=y
 
 # TEXT_BASE/PAYLOAD_ENTRY/RAMDISK_ENTRY are set directly here rather than
 # via board/Kconfig `default ... if BOARD` entries, matching how
-# configs/pong_defconfig (Nothing Phone 2, SM8450 -- the closest real
-# working precedent to this device's SoC generation) does it.
+# configs/pong_defconfig (Nothing Phone 2, SM8450) does it.
 #
-# These are first-attempt values, NOT independently verified against X716
-# hardware -- picking them right requires knowing the device's actual free
-# physical memory layout, which is a Phase 2/3 hardware-iteration question,
-# not something derivable from source inspection alone. Reasoning:
-#   - TEXT_BASE=0xa8000000: adopted directly from pong_defconfig's real
-#     working value for the closest comparable chip generation, since our
-#     own attempt at deriving a "safe" address from sm8550.dtsi's default
-#     reserved-memory layout turned out to rest on shaky assumptions about
-#     vendor_boot v4 header addressing semantics we couldn't fully verify
-#     from source alone.
-#   - PAYLOAD_ENTRY=0xb8000000 (TEXT_BASE + 256 MiB) and
-#     RAMDISK_ENTRY=0xc8000000 (PAYLOAD_ENTRY + 256 MiB): chosen with
-#     generous separation from TEXT_BASE and from each other, so uniLoader
-#     itself (code + embedded kernel/dtb/ramdisk blobs, likely tens of MB)
-#     and the copied-out kernel Image both have plenty of headroom without
-#     needing to reason precisely about exact sizes in advance.
-# If Phase 2/3 bring-up hangs or crashes immediately after uniLoader's own
-# splash message (if that checkpoint is even reachable), these three
-# values are the first thing to revisit -- see docs/porting-log.md.
-CONFIG_TEXT_BASE=0xa8000000
+# TEXT_BASE=0xC44C9000 is MEASURED, not guessed: the first real flash
+# attempt (2026-09-05) failed (Download Mode fallback), and the sec-log
+# capture from that exact attempt (work/bringup-2026-09-05/last_kmsg-attempt1.txt)
+# showed ABL's own log line "LinuxLoader Load Address to debug ABL:
+# 0xC44C9000" / "LinuxLoaderEntry Address: 0xC44C9B3C" -- i.e. this is
+# where ABL *actually* placed uniLoader that time, dynamically, completely
+# independent of the vendor_boot header's legacy kernel_addr field (which
+# we'd set to 0x80008000 -- nowhere close, confirming ABL ignores that
+# field for physical placement on this device). uniLoader's own
+# "position independent" mode (arch/aarch64/reloc.S) is not true PIC: it
+# compares its actual runtime address against the compiled-in TEXT_BASE
+# and, if they differ, does a forward (non-overlap-safe) memcpy of its
+# entire ~43 MiB self from the real address to TEXT_BASE before jumping.
+# The previous guess (0xa8000000, borrowed from pong_defconfig) forced
+# that self-copy to run for no good reason and is the leading suspect for
+# why the boot never progressed past ABL's own "Exit Boot Services" step.
+# Setting TEXT_BASE to the actual measured load address makes that
+# comparison succeed (source == destination) and skips the copy entirely.
+#
+# PAYLOAD_ENTRY=0xb8000000 and RAMDISK_ENTRY=0xc8000000 are unchanged from
+# the original guess -- confirmed (by hand, against ABL's own "Add Base"
+# available-memory log lines from the same capture) not to overlap the new
+# TEXT_BASE's ~43 MiB footprint [0xC44C9000, 0xC6CC9000) in either
+# direction, with generous margin (~164 MiB below, ~20 MiB above).
+#
+# Caveat: this address was ABL's *dynamic* choice for that specific boot
+# attempt (image sizes, etc.) -- it is not guaranteed stable if embedded
+# blob sizes change significantly later. Re-derive from a fresh sec-log
+# capture if this stops matching.
+CONFIG_TEXT_BASE=0xC44C9000
 CONFIG_PAYLOAD_ENTRY=0xb8000000
 CONFIG_RAMDISK_ENTRY=0xc8000000

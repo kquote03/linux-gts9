@@ -389,6 +389,60 @@ here so a future session doesn't have to rediscover them:
    explicitly on the `make` command line rather than relying on the shared
    shell environment.
 
+## First flash attempt (2026-09-05): Download Mode fallback, diagnosed
+
+Flashed `boot`(uniLoader)/`init_boot`/`vendor_boot`/`dtbo` per the bundle
+described above, rebooted — ABL fell back to Download Mode almost
+immediately (recoverable via button combo, not a brick). Full sec-log
+capture saved at `work/bringup-2026-09-05/last_kmsg-attempt1.txt`.
+
+**Root cause, confirmed from the log, not guessed:**
+
+- The log shows `LinuxLoader Load Address to debug ABL: 0xC44C9000` /
+  `LinuxLoaderEntry Address: 0xC44C9B3C` — ABL loaded uniLoader
+  *dynamically* at `0xC44C9000`, completely independent of the
+  vendor_boot header's legacy `kernel_addr` field (which our build set to
+  `0x80008000` — nowhere close). **This confirms ABL ignores that legacy
+  field for physical placement on this device** — resolves what would
+  otherwise still be an open question about vendor_boot v4 addressing.
+- uniLoader's own `arch/aarch64/reloc.S` "position independent" mode is
+  not true PIC: at entry it compares its actual runtime address against
+  the Kconfig-compiled-in `TEXT_BASE`, and if they differ, does a
+  **forward, non-overlap-safe `memcpy` of its entire ~43 MiB self** from
+  the real load address to `TEXT_BASE` before jumping there.
+- The original `TEXT_BASE=0xa8000000` (borrowed from `pong_defconfig`,
+  Nothing Phone 2/SM8450 — a different device, never verified against this
+  hardware) forced that self-copy to run needlessly. The log's last
+  meaningful line before the Download Mode fallback is ABL's own `Exit
+  Boot Services` — i.e. ABL completed its side of the handoff and jumped
+  into uniLoader; nothing is logged after that (uniLoader has no logging
+  hooked into this shared buffer either way), consistent with a crash
+  during or immediately after that self-copy.
+- **Fix applied**: `uniloader-overlay/gts9-5g_defconfig`'s `TEXT_BASE` is
+  now `0xC44C9000` — the exact measured load address — making the
+  relocation comparison succeed (source == destination) and skipping the
+  copy entirely. Confirmed by inspecting the rebuilt ELF directly:
+  `readelf -h uniLoader.o` shows `Entry point address: 0xC44C9000`,
+  matching exactly. `PAYLOAD_ENTRY`/`RAMDISK_ENTRY` (unchanged) were
+  manually checked against this new range and against the ABL's own
+  logged "Add Base" available-memory regions from the same capture — no
+  overlap, generous margins on both sides.
+- **Caveat**: this address was ABL's dynamic choice for that specific
+  image size combination — not guaranteed stable if embedded blob sizes
+  change significantly later (e.g. a bigger kernel in a future rebuild).
+  Re-derive from a fresh sec-log capture if a later attempt's own
+  "LinuxLoader Load Address" line stops matching.
+- Also confirmed independently from this same log: the vbmeta
+  flags=2/AVB-verification-disabled bypass works exactly as expected
+  (`AUTHENTICATE fail but allow ... binary: vbmeta` /
+  `verifystatus(2)` — logged explicitly for `vbmeta` and `recovery`).
+- Unexplained/unconfirmed noise also present in the log (`SPSS Failed to
+  load metadata`, `HdmAppSendCmd ... status=37`, `sec_update_cmdline:
+  QUEST TOKEN FAIL`) — no stock-boot baseline log exists yet to compare
+  against, so it's unknown whether these are new (caused by our changes)
+  or present on every boot of this device regardless. Worth capturing a
+  stock-boot log for comparison if they recur and start to look load-bearing.
+
 ## Open risks / unverified assumptions (carried into later phases)
 
 1. Whether X716's ABL has the same DTB-append-to-kernel /
