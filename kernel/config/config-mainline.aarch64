@@ -19,3 +19,13 @@ CONFIG_PRINTK_TIME=y
 # kernel via /proc/config.gz, without needing this repo's build artifacts.
 CONFIG_IKCONFIG=y
 CONFIG_IKCONFIG_PROC=y
+
+# defconfig's default CONFIG_DEBUG_INFO=y (DWARF, "reduced" variant) still
+# makes the final vmlinux.o link step memory-hungry enough to get OOM-killed
+# on this dev machine (a shared 14GB desktop, not a dedicated build box --
+# confirmed by reproducing the failure: compiles succeeded cleanly through
+# every object file at -j4, only the single, unparallelizable final `LD
+# vmlinux.o` step got killed). No debugger session is planned for this
+# bring-up, so disable debug info entirely rather than fighting the link
+# step's memory footprint.
+CONFIG_DEBUG_INFO_NONE=y
