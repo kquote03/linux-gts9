@@ -27,6 +27,25 @@ cite this document instead of re-deriving these details.
   (`/proc/device-tree/model` while booted to stock Android — board-id 04 is
   this specific unit's board revision).
 
+## Last verified rollback point
+
+Fresh `boot`/`init_boot`/`vendor_boot`/`dtbo` backup taken directly via
+TWRP `dd` (not TWRP's own nandroid UI) on 2026-09-05, immediately before
+the first custom flash attempt. Pulled off-device and hash-verified to
+match the on-device dump exactly before the on-device tmpfs copy was
+deleted. Stored at `backups/2026-09-05/` (gitignored — binary artifacts
+aren't committed).
+
+| Partition | Size (bytes) | sha256 |
+|---|---|---|
+| `boot` | 100,663,296 | `a8cd8194a3b5e091ffcc25f26785eafe3aef44af5dee05e02074abbc5ca71874` |
+| `init_boot` | 8,388,608 | `2c5311c7f64dc474697ac9ef0ae2c199830fe2679f5a3774fa017b9f67af7bc3` |
+| `vendor_boot` | 100,663,296 | `2deb5fe49d2af14023a02bf36efa0c51faf7ce875f43321bcf000aa6adc35ae4` |
+| `dtbo` | 16,777,216 | `d86cd898016ef2c1819532f22904ba3ae542b1fb99795edfeb1d6f376fb3768d` |
+
+All four sizes match this device's confirmed stock partition sizes exactly
+(see the partition table below) — no surprises going into the first flash.
+
 ## Bootloader / verified boot state
 
 - `ro.boot.flash.locked=0`, `ro.boot.verifiedbootstate=orange`,

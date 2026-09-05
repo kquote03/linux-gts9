@@ -262,3 +262,20 @@ remaining Phase 2/3 unknowns (ABL's DTB source, whether it accepts the
 custom boot chain at all) can only be resolved by actually flashing, which
 needs a fresh backup and explicit per-partition confirmation per
 `docs/boot-strategy.md`.
+
+**Continued same session, with explicit go-ahead**: took the pre-flash
+backup. Rebooted to TWRP (`adb reboot recovery`, plus one extra USB
+reconnect TWRP does itself between its splash screen and menu — noted for
+future sessions), `dd`'d `boot`/`init_boot`/`vendor_boot`/`dtbo` to device
+tmpfs (`/tmp`, not `/data`, to avoid any interaction with the encrypted
+userdata partition), hashed them on-device, pulled all four off with `adb
+pull`, and confirmed the local copies hash-match the on-device dump
+exactly before deleting the on-device tmpfs copy. All four sizes match the
+confirmed stock partition sizes. Recorded as the current "last verified
+rollback point" in `docs/hardware-facts.md`. Stored at
+`backups/2026-09-05/` (gitignored).
+
+Device is currently sitting in TWRP, untouched otherwise.
+
+**Next: the actual first flash attempt**, checking in for explicit
+per-partition confirmation before running `scripts/flash-boot-set.sh`.
