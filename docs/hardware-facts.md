@@ -299,6 +299,34 @@ copying) Samsung's actual downstream driver source
   this channel captures nothing. An earlycon-based capture would be the
   fallback if this proves insufficient in practice.
 
+**End-to-end validation, done directly on this tablet (2026-09-05, read-only
+— no flashing):**
+
+1. On stock Android (currently booted, root via Magisk): `/proc/last_kmsg`
+   exists, `-r--r----- 1 system log`, **exactly 2,097,136 bytes** — this
+   equals `0x200000 (region size) − 16 (header size)` precisely, an exact
+   independent confirmation that our driver's `rmem->size -
+   offsetof(struct sec_log_buf_head, buf)` size calculation is correct.
+   Content was real early-boot kernel log text from the previous boot.
+2. `adb reboot recovery` → TWRP came up (`product:twrp_gts9`,
+   `model:SM_X716B`). **`/proc/last_kmsg` exists there too, same exact size
+   (2,097,136 bytes)**, and its content was stock Android's *late*-session
+   log (service restarts, ~13.8h uptime) — i.e. **TWRP successfully read
+   back sec_log_buf content written by a completely different kernel
+   (stock Android) from the immediately preceding boot.** This is the
+   actual mechanism this project's whole console-less debug strategy
+   depends on, and it now has direct positive evidence on this exact unit,
+   not just an assumption inherited from the X910 reference.
+3. `adb reboot` back to stock Android — came up normally.
+
+**This resolves the "sec-log capture path" item from the open-risks list
+below** (previously listed as needing stock-kernel validation before
+trusting it to debug a mainline kernel) — it's now **measured, confirmed
+working**, not assumed. What remains open is only whether *our own* driver
+(probing later, at `arch_initcall`, versus whatever point Samsung's stock
+driver initializes) reaches that point before a mainline boot might hang —
+see the limitation noted just above.
+
 ## Toolchain gotchas found while getting Phase 1 to actually build
 
 All confirmed by reproducing the failure in isolation and testing the fix
@@ -354,5 +382,10 @@ here so a future session doesn't have to rediscover them:
 3. Whether the 5G SKU's ABL has board-id/partition-selection differences
    from the Wi-Fi-only X910 (e.g. due to the modem partition's presence).
    **Unknown** until first flash.
-4. Whether the `sec_log_buf_region` readback-via-TWRP debug channel actually
-   works on this unit — needs a stock-kernel validation pass first.
+4. ~~Whether the `sec_log_buf_region` readback-via-TWRP debug channel
+   actually works on this unit~~ — **RESOLVED, confirmed working** via a
+   direct end-to-end test on 2026-09-05 (stock Android → TWRP, real content
+   read back at the exact expected size). See the sec-log driver section
+   above for details. Remaining uncertainty is narrower: whether *our*
+   driver's later probe time (`arch_initcall`) captures enough before a
+   possible early hang — not whether the channel works at all.

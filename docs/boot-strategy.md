@@ -97,6 +97,24 @@ pd_ignore_unused regulator_ignore_unused initcall_debug` — `panic=10`
 specifically so a panic auto-reboots after 10s rather than requiring a
 manual power-button recovery between every iteration.
 
+## Sec-log readback: confirmed working (2026-09-05)
+
+Validated end-to-end directly on this tablet, read-only, no flashing: on
+stock Android, `/proc/last_kmsg` exists at exactly 2,097,136 bytes
+(`0x200000` region size minus the 16-byte header — an exact independent
+confirmation of the driver's size math). After `adb reboot recovery`, TWRP
+also exposed `/proc/last_kmsg` at the same size, showing stock Android's
+own late-session log content — i.e. **TWRP successfully read back
+sec_log_buf content written by a different kernel from the previous boot**,
+which is exactly the mechanism this project's whole console-less debug
+strategy depends on. This is no longer an assumption. See
+`docs/hardware-facts.md` for the full detail.
+
+**Gotcha found while testing**: a plain `adb reboot` issued from *within*
+TWRP cycles back into recovery again rather than continuing to a normal
+system boot — use `adb reboot system` explicitly to actually leave
+recovery.
+
 ## Recovery if something goes wrong
 
 TWRP + `adb` first (the backup from the pre-flash checklist restores the

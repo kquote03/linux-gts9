@@ -236,3 +236,29 @@ attempt with the custom boot chain.
 
 **Next session should check in before any further device interaction**,
 starting with the stock-kernel sec-log validation step.
+
+**Continued same session, with explicit go-ahead**: performed the
+stock-kernel sec-log validation directly on the tablet. Checked
+`/proc/last_kmsg` on stock Android first (no reboot needed) — exists,
+exactly 2,097,136 bytes, matching the driver's size calculation exactly.
+Then `adb reboot recovery` → TWRP → **`/proc/last_kmsg` also present there,
+same exact size, showing stock Android's own prior-session log content** —
+direct proof that TWRP can read back sec_log_buf data written by a
+different kernel across a reboot, which is the entire premise this
+project's console-less debug strategy rests on. Then `adb reboot system`
+back to normal Android (a plain `adb reboot` from within TWRP turned out to
+just cycle back into recovery instead of continuing to system boot — noted
+in `docs/boot-strategy.md`). Device confirmed back to normal stock Android,
+fully booted.
+
+**Result**: the sec-log readback mechanism is now confirmed working on
+this exact unit, not an assumption inherited from the X910 reference. This
+was the last open item before an actual flash attempt makes sense. Updated
+`docs/hardware-facts.md`'s open-risks list and `docs/boot-strategy.md`
+accordingly.
+
+**Next session should check in before the first flash attempt** — the
+remaining Phase 2/3 unknowns (ABL's DTB source, whether it accepts the
+custom boot chain at all) can only be resolved by actually flashing, which
+needs a fresh backup and explicit per-partition confirmation per
+`docs/boot-strategy.md`.
