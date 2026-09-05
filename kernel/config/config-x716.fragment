@@ -77,6 +77,13 @@ CONFIG_BOOTPARAM_HUNG_TASK_PANIC=1
 # transition for late-boot events. Built-in (=y), not =m: no rootfs/modprobe
 # exists yet at this bring-up stage. CONFIG_FB/CONFIG_FRAMEBUFFER_CONSOLE
 # are already =y in defconfig at the pinned tag.
+#
+# Kept alongside the new DRM/panel stack below (Session 5): harmless
+# coexistence, not a conflict -- simplefb only claims ABL's splash_region
+# scanout early in boot as a fallback text console, and doesn't touch or
+# get touched by the real msm/dpu driver's own (separate) framebuffer once
+# that probes. Gives two independent chances to see *something* on the
+# panel while the real DRM/panel bring-up is unproven.
 CONFIG_FB_SIMPLE=y
 
 # exFAT, for writing bring-up logs to the already-inserted, already-exFAT
@@ -146,14 +153,16 @@ CONFIG_USB_G_SERIAL=y
 # PHY_QCOM_QMP_COMBO has `depends on DRM || DRM=n` -- Kconfig's
 # consistent-module-state rule means it can't be =y while DRM is =m (a
 # built-in driver can't safely depend on a module that might not be
-# loaded). We have no working DRM-based display path anyway (the earlier
-# simple-framebuffer attempt used the separate, older fbdev/FB_SIMPLE
-# framework, not DRM) -- disabling DRM entirely satisfies the `DRM=n`
-# alternative cleanly, without pulling in DRM's own built-in module
-# dependencies as yet another instance of this same bug class.
+# loaded). At the time this was first hit there was no working DRM-based
+# display path, so `# CONFIG_DRM is not set` satisfied the `DRM=n`
+# alternative. 2026-09-05 (Session 5): reversed now that display bring-up
+# is actually in scope -- `DRM=y` satisfies the exact same dependency just
+# as well as `DRM=n` does (confirmed: ubuntu-galaxy-tab-s9ultra's own
+# fragment builds DRM=y alongside PHY_QCOM_QMP_COMBO=y with no conflict,
+# config-gts9uwifi.fragment:4-6). Building DRM in is the correct branch,
+# not a workaround -- see the "Display / DRM / panel" block below.
 CONFIG_PHY_QCOM_QMP=y
 CONFIG_PHY_QCOM_QMP_COMBO=y
-# CONFIG_DRM is not set
 CONFIG_PHY_SNPS_EUSB2=y
 CONFIG_I2C_QCOM_GENI=y
 CONFIG_PHY_NXP_PTN3222=y
@@ -164,6 +173,53 @@ CONFIG_TYPEC_SM5714=y
 CONFIG_TYPEC_MUX_GPIO_SBU=y
 CONFIG_TYPEC_MUX_PS5169=y
 
+# Display / DRM / panel (Session 5, 2026-09-05). mainline's sm8550.dtsi
+# already ships complete mdss/dpu/dsi/dispcc nodes (status = "disabled"
+# by default) -- nothing to add upstream, just build the driver stack and
+# enable the nodes in the board DTS. There is no mainline driver for this
+# panel (Samsung/Anapass ANA38407 DDIC, part AMSA10FA01), so
+# kernel/drivers/panel-samsung-ana38407-x716.c is a from-scratch driver
+# for it (forked from ubuntu-galaxy-tab-s9ultra's own from-scratch driver
+# for the same DDIC family, different physical part -- see that file's
+# header and docs/porting-log.md's Session 5 entry). Config names/values
+# below mirror config-gts9uwifi.fragment:1-6,142-170 (proven working on
+# the sibling SM8550 board), which is also the proof this whole block is
+# Kconfig-consistent with the CONFIG_PHY_QCOM_QMP_COMBO=y fix above.
+#
+# All built-in (=y), not modules -- same reasoning as everywhere else in
+# this fragment: no rootfs/modprobe exists at this bring-up stage.
+CONFIG_DRM=y
+CONFIG_DRM_MSM=y
+CONFIG_DRM_FBDEV_EMULATION=y
+CONFIG_QCOM_LLCC=y
+CONFIG_SM_GPUCC_8550=y
+CONFIG_SM_DISPCC_8550=y
+CONFIG_BACKLIGHT_CLASS_DEVICE=y
+CONFIG_DRM_PANEL_SAMSUNG_ANA38407_X716=y
+
+# Same "consistent module state" Kconfig class as the earlier
+# CONFIG_PHY_QCOM_QMP_COMBO fix: DRM_MSM has three more
+# `depends on X || X=n` clauses (QCOM_AOSS_QMP, QCOM_OCMEM,
+# QCOM_COMMAND_DB) alongside QCOM_LLCC's. Found by actually building this
+# fragment and reading merge_config.sh's own MISMATCH report rather than
+# guessing: QCOM_AOSS_QMP/QCOM_COMMAND_DB already resolved to =y on their
+# own from other selectors, but QCOM_OCMEM defaulted to =m with nothing
+# else forcing it -- the one that needed an explicit fix here.
+CONFIG_QCOM_OCMEM=y
+
+# Suspend/resume test infrastructure -- the ANA38407 DDIC family is known
+# (from the sibling port's bring-up) to answer a cold-boot ID readback
+# with garbage and only recover after one suspend/resume cycle. pm_test
+# runs the driver .prepare/.suspend/.resume callback chain without
+# actually cutting SoC power or needing a real wakeup source configured,
+# which is what the bring-up ramdisk's /init uses to trigger that
+# recovery cycle early in boot (see scripts/build-bringup-ramdisk.sh).
+CONFIG_PM_DEBUG=y
+CONFIG_PM_ADVANCED_DEBUG=y
+CONFIG_PM_TEST_SUSPEND=y
+
 # Explicitly NOT enabled here (deferred, see docs/hardware-facts.md
-# non-goals): DRM/panel, touchscreen, WCN7850 wifi/bt, camera, audio
-# DSP/APR, sensors, cellular modem remoteproc.
+# non-goals): touchscreen, WCN7850 wifi/bt, camera, audio DSP/APR,
+# sensors, cellular modem remoteproc, GPU acceleration (Mesa/Adreno
+# firmware -- the initial Weston bring-up target uses pixman/DRM dumb
+# buffers only, see docs/porting-log.md's Session 5 entry).

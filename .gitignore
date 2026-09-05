@@ -18,6 +18,11 @@
 # instead, which IS committed)
 /uniloader/upstream/
 
+# Fetched Buildroot source (pinned via scripts/fetch-buildroot.sh, not vendored —
+# active upstream project; our own board config/overlay live in buildroot/configs/
+# and buildroot/rootfs-overlay/ instead, which ARE committed)
+/buildroot/upstream/
+
 # Large binary artifacts — never commit these, they're build output
 *.img
 *.win

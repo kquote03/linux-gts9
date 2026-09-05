@@ -59,6 +59,14 @@ pkgs.mkShell {
 
     # Device interaction
     android-tools # adb (fastboot is not usable on this device family)
+
+    # Buildroot (scripts/fetch-buildroot.sh, scripts/build-buildroot-rootfs.sh)
+    # -- a separate, smaller "prove the display works" Weston rootfs, not the
+    # debootstrap-based Phase 4 Ubuntu rootfs above. Buildroot builds its own
+    # internal toolchain/musl and downloads its own package sources under its
+    # own output/ tree; wget is the one host tool it needs that nothing above
+    # already provides (its own downloader defaults to wget).
+    wget
   ];
 
   shellHook = ''

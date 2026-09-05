@@ -21,16 +21,28 @@ including six real kernel-config/devicetree bugs found and fixed to get there
 modprobe available at this bring-up stage — a recurring pattern, not six
 unrelated problems).
 
+**The display works.** Mainline DRM/KMS drives the internal panel
+(Samsung/Anapass ANA38407 DDIC, part AMSA10FA01) via a from-scratch panel
+driver (`kernel/drivers/panel-samsung-ana38407-x716.c`) — confirmed on real
+hardware: the boot-logo Tux array, then a genuine fbcon text console with a
+blinking cursor, with the whole DPU/DSI/panel stack binding with zero
+errors in `dmesg`. A separate, minimal Buildroot-built rootfs (Weston +
+weston-terminal, no Mesa/GPU — pixman software rendering only) builds
+cleanly and resolves correctly at the Kconfig level but hasn't been flashed
+yet — that's the natural next step now that the underlying pipeline is
+confirmed alive. See `docs/porting-log.md`'s Session 5 entry for the full
+story.
+
 **What doesn't work yet:** a real root filesystem (still a debug-only ramdisk;
-see Phase 4 below), display, touchscreen, WiFi/BT, camera, audio, sensors,
-fingerprint, S-Pen, keyboard cover, cellular/modem, and full USB-C role
-negotiation (the gadget console works because `&usb_1`'s `dr_mode` is forced
-to `"peripheral"`, deliberately bypassing the Type-C PD/role-switch chain —
-`ps5169`/`sm5714-usbpd` stay unbound as a result, which is fine for a fixed
-USB2 console but would need real work for dynamic host/device switching or
-charging). Internal UFS storage also isn't reachable yet (stuck in the kernel's
-own deferred-probe mechanism) — Phase 4 targets the microSD card instead,
-specifically so this isn't a blocker.
+see Phase 4 below), touchscreen, WiFi/BT, camera, audio, sensors,
+fingerprint, S-Pen, keyboard cover, cellular/modem, GPU acceleration, and
+full USB-C role negotiation (the gadget console works because `&usb_1`'s
+`dr_mode` is forced to `"peripheral"`, deliberately bypassing the Type-C
+PD/role-switch chain — `ps5169`/`sm5714-usbpd` stay unbound as a result,
+which is fine for a fixed USB2 console but would need real work for dynamic
+host/device switching or charging). Internal UFS storage also isn't
+reachable yet (stuck in the kernel's own deferred-probe mechanism) — Phase 4
+targets the microSD card instead, specifically so this isn't a blocker.
 
 ## Connecting to the shell (once flashed and booted)
 
@@ -58,8 +70,10 @@ console, since there is no UART cable.
 
 - Cellular/modem — no mainline story exists for Samsung's Shannon modem IPC on
   this SoC; the `modem` partition is left untouched permanently.
-- Display, touchscreen, WiFi/BT, camera, audio, sensors, fingerprint, S-Pen,
-  keyboard cover — all deferred to future work once the MVP boots.
+- Touchscreen, WiFi/BT, camera, audio, sensors, fingerprint, S-Pen,
+  keyboard cover — all deferred to future work once the MVP boots. (Display
+  is no longer a non-goal — see Status above — but GPU acceleration for it
+  still is: the Weston rootfs deliberately uses software rendering only.)
 - Full USB-C PD/role negotiation — the gadget console uses a fixed peripheral
   role; real Type-C role switching, charging, and DisplayPort alt-mode are
   deferred (see `docs/porting-log.md`'s "Session 4" entry for the full trace
@@ -93,12 +107,24 @@ bash scripts/fetch-mainline.sh      # mainline Linux v7.2, pinned commit
 #    kernel/config/config-mainline.aarch64 + config-x716.fragment, builds)
 bash scripts/build-mainline-kernel.sh
 
-# 3. Build the debug-only bring-up ramdisk (static busybox + a minimal
-#    /init — not the real Ubuntu rootfs, that's Phase 4, not yet written)
+# 3. Build a ramdisk -- either the debug-only bring-up ramdisk (static
+#    busybox + a minimal /init) or the minimal Weston rootfs (step 3b);
+#    not the real Ubuntu rootfs, that's Phase 4, not yet written
 bash scripts/build-bringup-ramdisk.sh
 
-# 4. Package boot.img/init_boot.img/vendor_boot.img/dtbo.img
+# 3b. (optional) instead of 3: the Weston + weston-terminal rootfs
+#     (see "Display" in Status above -- not yet validated on real
+#     hardware). Separate from the debug ramdisk; pick one or the other
+#     as step 4's ramdisk input, not both.
+# bash scripts/fetch-buildroot.sh
+# bash scripts/build-buildroot-rootfs.sh
+
+# 4. Package boot.img/init_boot.img/vendor_boot.img/dtbo.img (reads the
+#    debug ramdisk by default; point BRINGUP_RAMDISK at the Weston
+#    rootfs's output instead if you built step 3b)
 bash scripts/build-android-v4-bundle.sh
+# or: BRINGUP_RAMDISK=out/buildroot/images/rootfs.cpio.gz \
+#     bash scripts/build-android-v4-bundle.sh
 
 # 5. Flash (TWRP must be running and reachable via `adb devices`; this is
 #    the ONLY script in the repo that writes to the device, and it refuses
@@ -135,11 +161,18 @@ needed after a devicetree or kernel-config change.
 - `kernel/dts/` — the board devicetree.
 - `kernel/config/` — Kconfig fragments merged on top of `defconfig`.
 - `kernel/drivers/` — from-scratch drivers written for this port: a
-  console-less debug log (`samsung-x716-sec-log.c`) and the USB Type-C stack
+  console-less debug log (`samsung-x716-sec-log.c`), the USB Type-C stack
   (`ps5169.c`, `sm5714_battery.c`, `sm5714_usbpd.c` — GPL-2.0 reimplementations
-  originally written for `ubuntu-galaxy-tab-s9ultra`, adapted here).
+  originally written for `ubuntu-galaxy-tab-s9ultra`, adapted here), and the
+  display panel driver (`panel-samsung-ana38407-x716.c` — forked from that
+  same reference project's own ANA38407-family driver, with DCS byte
+  sequences re-derived for this board's specific panel part).
 - `scripts/` — every build/fetch/flash step; `flash-boot-set.sh` is the only
   one that touches the device.
+- `buildroot/` — `configs/x716_defconfig` (the minimal Weston rootfs's
+  Buildroot config) and `rootfs-overlay/` (its `/etc/init.d/S99weston`
+  autostart script). A separate, smaller thing from the Phase 4 Ubuntu
+  rootfs — see Status above.
 - `uniloader-overlay/` — unused (see uniLoader note above), kept for later.
 - `third_party/android-tools/` — vendored `mkbootimg`/`avbtool` (Apache-2.0,
   from AOSP; see `third_party/android-tools/PROVENANCE.md`).

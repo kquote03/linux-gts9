@@ -141,6 +141,44 @@ Samsung's stock bootloader (ABL) loads, per the by-name partition map:
    now understood to be an isolated, non-boot-blocking problem in its own
    newly-added devicetree wiring, not a sign of a stuck system.
 
+8. **USB serial console (not narrated in detail here -- see the git
+   history/commit messages and README for the full arc)**: a multi-attempt
+   debugging marathon (Kconfig module-vs-built-in traps for
+   `I2C_QCOM_GENI`/`PHY_SNPS_EUSB2`/`PHY_QCOM_QMP_COMBO`, a QUP-wrapper
+   devicetree parent-node fix, forcing `dr_mode = "peripheral"` on
+   `&usb_1`) got a genuine interactive shell over USB gadget serial
+   (`g_serial`/CDC-ACM). This is now the primary iteration channel for
+   everything past this point -- real `dmesg`, not vibration codes.
+9. **Display bring-up (Session 5, 2026-09-05)**: `CONFIG_DRM` had been
+   disabled entirely (`# CONFIG_DRM is not set`) as a side effect of the
+   `PHY_QCOM_QMP_COMBO` fix above -- reversed once display work started,
+   since `DRM=y` satisfies that same dependency just as well as `DRM=n`
+   (confirmed: `ubuntu-galaxy-tab-s9ultra`'s own fragment does exactly
+   that). Enabling `DRM_MSM=y` surfaced one more instance of the same
+   "consistent module state" Kconfig class: `QCOM_OCMEM` defaulted to
+   `=m` with nothing else forcing it, one of three `depends on X || X=n`
+   clauses `DRM_MSM` carries (the other two, `QCOM_AOSS_QMP`/
+   `QCOM_COMMAND_DB`, already resolved to `=y` on their own). Mainline's
+   `sm8550.dtsi` already ships complete but disabled `mdss`/`mdss_dsi0`/
+   `mdss_dsi0_phy`/`dispcc` nodes -- enabled and wired to a new,
+   from-scratch panel driver (`kernel/drivers/panel-samsung-ana38407-x716.c`)
+   for this board's Samsung/Anapass ANA38407 DDIC (part AMSA10FA01, no
+   mainline driver exists), forked from the sibling Ultra port's own
+   ANA38407-family driver (different physical part, AMSA46AS02) but with
+   the actual DCS init/exit byte sequences re-derived from Samsung's own
+   downstream source for THIS panel -- see `docs/porting-log.md`'s
+   Session 5 entry for the extraction and exact citations.
+10. **Display confirmed working on real hardware, same session.** Flashed
+    the kernel-only change (debug ramdisk) and the panel lit up first
+    attempt: the generic SMP boot-logo Tux array, then a real fbcon text
+    console with a blinking cursor. `dmesg` over the USB serial shell
+    confirms a completely clean bind of the whole DPU/DSI/panel stack
+    (zero errors) and a panel-ID readback of `80 00 04` -- independently
+    matching the `lcd_id=800004` ABL's own stock firmware already read
+    from this exact physical panel (visible in the kernel cmdline it
+    hands off). See `docs/porting-log.md`'s "Real-hardware validation"
+    entry for the full evidence.
+
 uniLoader is **not deleted** (`uniloader-overlay/`, `scripts/fetch-uniloader.sh`,
 `scripts/build-uniloader.sh` remain in the repo, unused) but is confirmed
 unnecessary for this SoC generation — the X910 sibling proves direct

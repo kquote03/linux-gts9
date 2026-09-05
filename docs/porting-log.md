@@ -720,3 +720,285 @@ working shell is convenient but no longer required to prove the port
 works), or move to Phase 4 (a real Ubuntu rootfs, replacing the bring-up
 ramdisk) now that the fundamental "does mainline Linux run on this
 hardware" question has a confirmed, positive answer.
+
+**What actually happened next (not narrated blow-by-blow in this file --
+see the git commit history and README for the full arc)**: the USB
+Type-C stack was in fact debugged to a genuine working state. Root causes
+found, in order: `CONFIG_I2C_QCOM_GENI`/`CONFIG_PHY_SNPS_EUSB2`/
+`CONFIG_PHY_QCOM_QMP_COMBO` all defaulting to `=m` in defconfig (useless
+with no rootfs/modprobe at this bring-up stage -- the same bug class
+found three separate times); the QUP wrapper parent nodes
+(`qupv3_id_0`/`qupv3_id_1`/`i2c_master_hub_0`) defaulting to
+`status = "disabled"` in `sm8550.dtsi`, silently no-op'ing every i2c child
+node enabled under them; and finally `dwc3_get_dr_mode()`'s live
+GHWPARAMS0 hardware readback permanently skipping role-switch device
+registration when it resolves to peripheral-only, fixed by forcing
+`dr_mode = "peripheral"` explicitly on `&usb_1` since the actual goal (a
+USB2 gadget console) never needed dynamic role negotiation anyway. Result:
+a genuine `g_serial`/CDC-ACM USB serial console
+(`idVendor=0525, idProduct=a4a7`), reachable with `picocom -b 115200
+/dev/ttyACM0` from any PC with just a USB-C cable -- no vibration codes
+needed for anything past this point.
+
+---
+
+## Session 5 — 2026-09-05 — Display bring-up (DRM/panel) + a minimal Weston rootfs
+
+Goal: drive the internal panel via mainline DRM/KMS + a real panel driver,
+and bring up a very small Buildroot-built rootfs (Weston + weston-terminal)
+to prove pixels actually reach it. Two Explore passes (display/DRM tracing;
+build-script conventions) preceded any code changes -- see the approved
+plan for the full reasoning; only the outcomes are logged here.
+
+**Kconfig**: `CONFIG_DRM` had been disabled entirely
+(`# CONFIG_DRM is not set`) as a side effect of the earlier
+`CONFIG_PHY_QCOM_QMP_COMBO` fix (`depends on DRM || DRM=n`, and at the
+time there was no display work in scope). Reversed: `DRM=y` satisfies that
+exact same dependency just as well as `DRM=n` does --
+`ubuntu-galaxy-tab-s9ultra`'s own fragment builds `DRM=y` alongside
+`PHY_QCOM_QMP_COMBO=y` with no conflict (`config-gts9uwifi.fragment:4-6`).
+Added `DRM_MSM=y`, `SM_DISPCC_8550=y`, `QCOM_LLCC=y`, `SM_GPUCC_8550=y`,
+`BACKLIGHT_CLASS_DEVICE=y`, `DRM_FBDEV_EMULATION=y`,
+`DRM_PANEL_SAMSUNG_ANA38407_X716=y`, plus `PM_DEBUG=y`/
+`PM_ADVANCED_DEBUG=y`/`PM_TEST_SUSPEND=y` (needed for the cold-boot DDIC
+recovery quirk below). Building this fragment for real (not just writing
+it) surfaced one more instance of the exact same "consistent module
+state" Kconfig bug class already found three times during USB bring-up:
+`DRM_MSM` carries `depends on QCOM_AOSS_QMP || QCOM_AOSS_QMP=n`,
+`QCOM_OCMEM || QCOM_OCMEM=n`, `QCOM_COMMAND_DB || QCOM_COMMAND_DB=n` in
+addition to the `QCOM_LLCC` one we already had covered --
+`QCOM_AOSS_QMP`/`QCOM_COMMAND_DB` already resolved to `=y` on their own
+from other selectors, but `QCOM_OCMEM` defaulted to `=m` with nothing
+else forcing it. Found via `merge_config.sh`'s own post-build MISMATCH
+report (the same verification discipline `scripts/build-mainline-kernel.sh`
+already had in place for the USB-era fixes), not guessed -- fixed by
+adding `CONFIG_QCOM_OCMEM=y` explicitly.
+
+**Devicetree**: mainline's `sm8550.dtsi` already ships complete
+`mdss`/`mdss_dsi0`/`mdss_dsi0_phy`/`dispcc` nodes, `status = "disabled"`
+by default -- nothing to add upstream, just enable + wire, mirroring
+`ubuntu-galaxy-tab-s9ultra`'s own working display bring-up structurally.
+Added:
+
+- Three new panel-supply regulators on die "b" (`vreg_l12b_1p8`,
+  `vreg_l11b_1p2`, `vreg_l13b_3p0` for vddio/vdd/vci) -- voltages measured
+  from X716's own stock DTS `dsi_panel_pwr_supply` table
+  (`gts9_eur_openx_w00_r00.dts:9205-9219`), LDO index letters/numbers
+  copied from the X910 Ultra port by analogy (same die-assignment pattern
+  the UFS/USB rails on this board already independently confirm, but not
+  itself independently confirmed for the panel rails specifically).
+- A `display_avdd` fixed regulator (GPIO load switch, ~5.5V AMOLED ELVDD)
+  -- the single least-confident value in this whole session. X716's stock
+  DTS names a `"display_panel_avdd"` regulator but its decompiled form
+  lost the resolved GPIO (proxy-supply/phandle indirection that didn't
+  survive decompilation, same class of gap as the UFS PHY rails from an
+  earlier session). GPIO 187 is a first guess, reused from the stock
+  tree's differently-named `panel_ldo_en` fixed regulator (the only
+  concretely-GPIO'd, panel-adjacent enable line the decompiled tree
+  actually resolves) -- re-verify this first if the panel never powers on.
+- `sde_te` pinctrl state on gpio86 (TE line → MDP vsync input) -- measured
+  independently two ways: X716's own stock DTS
+  (`qcom,platform-te-gpio = 0x56 = 86`, `gts9_eur_openx_w00_r00.dts:8498`)
+  and the X910 Ultra port using the exact same GPIO number for its own
+  (different-part) ANA38407-family panel.
+- `&dispcc`/`&mdss`/`&mdss_dsi0`/`&mdss_dsi0_out`/`&mdss_dsi0_phy` enabled,
+  with a `panel@0` node: `compatible = "samsung,ana38407-amsa10fa01"`,
+  `reset-gpios = <&tlmm 125 ...>` / `te-gpios = <&tlmm 86 ...>` (both
+  cross-confirmed the same two ways as the TE pinctrl state above), 4 DSI
+  data lanes.
+
+**Panel driver** (`kernel/drivers/panel-samsung-ana38407-x716.c`, new
+file): forked from `ubuntu-galaxy-tab-s9ultra/kernel/drivers/panel-samsung-ana38407.c`
+(same ANA38407 DDIC family, different physical part AMSA46AS02) for
+overall structure (regulator sequencing, prepare/enable/disable/unprepare
+split matching this DDIC's own `samsung,delayed-display-on` property,
+backlight device), but the actual DCS init/exit byte sequences are NOT
+carried over from that file -- they were re-derived specifically for
+AMSA10FA01 via a dedicated Explore pass through Samsung's own downstream
+source:
+
+- The real command source of truth turned out not to be plain C byte
+  arrays (unlike what the reference driver's own upstream Samsung source
+  used) -- `GTS9_ANA38407_AMSA10FA01_panel.c` only holds helper logic, and
+  `GTS9_ANA38407_AMSA10FA01_PDF.h` is one opaque 459KB blob. The actual
+  human-readable source is a sibling text file,
+  `.../panel_data_file/GTS9_ANA38407_AMSA10FA01.dat` (1685 lines, a small
+  Samsung-proprietary macro/conditional DSL) -- found and decoded by the
+  investigating agent, not assumed to not exist after the first file came
+  back opaque.
+- Implemented the mass-production ("rev C-Z") init path only, not the
+  separate rev-A-only path the `.dat` also defines (different sleep-out
+  delay, an extra TSP_SYNC_ON macro) -- real hardware is unlikely to still
+  be running pre-production silicon.
+- This DDIC family's indirect-register-write convention turned out to
+  differ between the two panels: AMSA10FA01 uses an Anapass-TCON-specific
+  triple (`0xC1`=data, `0xB0 0x03`+`0xC0`=16-bit target address), not the
+  Samsung-DDIC "gpara" convention (`0xB0`+`0xC1`) the reference
+  AMSA46AS02 driver uses -- confirmed by X716's own DT flag
+  `samsung,anapass-power-seq`, not assumed to be the same mechanism just
+  because it's the same DDIC family.
+- DSC config decoded byte-for-byte from the panel's own 88-byte PPS
+  payload embedded in the `.dat`'s `DSC_SETTING` macro -- resolves to
+  exactly the standard VESA/DSC 8bpp spec-default `rc_buf_thresh`/
+  `rc_range_params` tables (not a custom tuning), and cross-checks exactly
+  against the stock DTS's own DSC display-timing properties.
+  Display-timing porch values (h/v front/back porch, pulse width) for
+  both the 120Hz and 60Hz modes were read directly from the stock DTS's
+  `qcom,mdss-dsi-display-timings` block (`wqxga120hs`/`wqxga60hs`) rather
+  than invented.
+- Brightness: DCS `0x51`, 11-bit (0-2047), confirmed via the downstream
+  candela-map tables -- same bit width the reference AMSA46AS02 driver
+  independently uses, now independently re-confirmed for this panel too
+  rather than assumed transferable.
+- **Deliberately not ported**: Samsung's optical-fingerprint HBM timing
+  machinery. The stock DTS node does carry
+  `samsung,support-optical-fingerprint` and the downstream common driver
+  does have real vsync-relative HBM entry/exit timing code wired to it --
+  which at first reading looks like this panel needs the reference
+  driver's FOD sysfs/watchdog machinery too. But the Tab S9 series ships a
+  side-mounted capacitive fingerprint sensor (a separate SPI device, see
+  this board DTS's `gpio-reserved-ranges` comment), not an in-display
+  optical one -- concluded this flag is inert boilerplate inherited from a
+  phone panel definition with no HAL ever driving it, and left the FOD
+  machinery out entirely (plain dimming path only). Flagged in the driver
+  header as an assumption to revisit if real hardware behavior disagrees.
+  Also not ported: an unconditional-for-rev-B-Z "HBM_FlatZ_SETTING"
+  indirect register write inside the downstream brightness-dimming macro
+  -- byte-identical to the reference driver's own FOD-enable write, which
+  makes its real purpose on this panel genuinely unclear from the source
+  alone; left out rather than guessed at.
+- Cold-boot DDIC recovery quirk: carried over from the reference driver's
+  own finding (this DDIC family answers a cold-boot ID readback with
+  garbage, recovering only after one suspend/resume) as a working
+  assumption for AMSA10FA01 too, not yet independently confirmed on this
+  panel specifically.
+
+**Ramdisk simplified** (`scripts/build-bringup-ramdisk.sh`): the entire
+USB Type-C per-driver vibration-diagnostic marathon from the previous
+session (i2c adapter counts, per-chip bound checks, typec port counts,
+two multi-minute recheck passes) was removed -- it was attempt-specific
+diagnostic code for a now-solved problem, adding several minutes of dead
+time to every boot iteration, which directly worked against this
+session's "fast-iterate on the debug ramdisk" plan. Kept: the 5-pulse
+userspace-reached vibration burst (cheap, no host dependency) and the
+`log()` helper, now defined *before* its first call site (an ordering bug
+in the previous version silently swallowed several early log lines --
+found while doing this cleanup, not previously noticed). Added: the
+cold-boot suspend/resume trigger (`echo platform > /sys/power/pm_test;
+echo mem > /sys/power/state`), guarded by an existence check so it's a
+no-op rather than a failure on a kernel predating the Kconfig addition.
+
+**Buildroot rootfs scaffolding** (`scripts/fetch-buildroot.sh`,
+`scripts/build-buildroot-rootfs.sh`, `buildroot/configs/x716_defconfig`,
+`buildroot/rootfs-overlay/`): a separate, smaller "prove the display
+works" rootfs, explicitly not a replacement for the debootstrap-based
+Phase 4 Ubuntu rootfs `shell.nix` already stages tooling for. Pinned
+Buildroot `2026.08` (verified via `git ls-remote` against the actual
+upstream repo, not guessed from memory -- pinned commit is the tag's
+dereferenced target commit, `d5180309b1b66ef3b8eaccca70ad69be8e0729a1`,
+not the annotated tag object itself). Ships as an initramfs
+(`BR2_TARGET_ROOTFS_CPIO`+`_GZIP`), like the debug bring-up ramdisk --
+nothing in this port's boot chain does a `switch_root` today, so that's
+the natural fit; plugs into the existing `build-android-v4-bundle.sh` via
+its already-supported `BRINGUP_RAMDISK` env var override, no changes
+needed to that script at all.
+
+Design decision: **no Mesa/GPU at all** for this milestone. Weston's DRM
+backend falls back to its `pixman` (CPU) software renderer automatically
+when no EGL/GBM/GLES packages are selected (confirmed by reading
+`package/weston/weston.mk` directly: `-Drenderer-gl` is only set `true`
+when all three of `BR2_PACKAGE_HAS_LIBEGL`/`_LIBGBM`/`_LIBGLES` are
+present) -- no Buildroot toggle needed to force it, just don't select
+Mesa. This sidesteps the session's single biggest potential rabbit hole
+(Adreno GPU firmware loading/signing), which isn't needed just to prove
+pixels reach the panel, and keeps the rootfs far smaller than the ~90MB
+budget originally researched. `weston-terminal` also turned out not to be
+a separate Buildroot package in this release at all -- it's one of
+Weston's own bundled "tools" (`weston.mk` unconditionally passes
+`-Dtools=...,terminal,...`), so plain `BR2_PACKAGE_WESTON=y` is
+sufficient; no separate terminal package exists to select.
+
+Validated by actually building the Buildroot config (not just writing
+it): `make x716_defconfig && make olddefconfig` inside the fetched
+`buildroot/upstream/` tree, then a symbol-by-symbol diff against the
+committed defconfig (same discipline as the kernel fragment check).
+First attempt was missing `BR2_TOOLCHAIN_BUILDROOT_CXX=y` -- weston
+`depends on BR2_INSTALL_LIBSTDCPP`, a plain internal flag with no prompt
+of its own, so its absence didn't produce any warning: `BR2_PACKAGE_WESTON`
+was just silently missing from the resolved `.config` with zero
+diagnostic output, and had to be traced by hand to
+`package/gcc/Config.in.host`'s "Enable C++ support" option. After that
+fix, confirmed clean: `BR2_PACKAGE_WESTON`/`_WESTON_DRM`/`_SEATD`/
+`_EUDEV`/`_HAS_UDEV`/`_DEJAVU`/`_DEJAVU_MONO` all resolve `=y` with no
+mismatches, and `BR2_PACKAGE_MESA3D`/`_HAS_LIBEGL`/`_HAS_LIBGBM`/
+`_HAS_LIBGLES` are all absent (confirming the no-Mesa design actually
+holds). A full package build was not run this session (long, and the
+kernel/panel side needs real-hardware validation first per the approved
+plan's staging) -- `buildroot/configs/x716_defconfig`'s Kconfig-level
+resolution is confirmed correct, but no compiled Weston binary has been
+produced or tested yet.
+
+**Kernel build**: unlike the Buildroot side, the full kernel `Image` +
+board DTB *was* built end-to-end this session (`scripts/build-mainline-kernel.sh`,
+run twice -- the `QCOM_OCMEM` mismatch above was caught by the first run
+and fixed before the second, which completed cleanly). This confirms the
+DTS/Kconfig/panel-driver combination actually compiles against the pinned
+v7.2 tree, which is a real signal (a DTS/Kconfig typo or a panel driver
+API misuse would have failed here) but is not the same as confirming any
+of it works on real hardware -- nothing in this session was flashed.
+
+**Status at end of session (before flashing)**: kernel/DTS/panel-driver
+changes build cleanly; Buildroot rootfs config resolves cleanly at the
+Kconfig level; neither has been flashed or run on the physical tablet yet.
+
+## Real-hardware validation, same session: it worked, first attempt
+
+Flashed the kernel-only change (debug ramdisk, not Buildroot) per the
+plan's staged order. **The panel lights up and shows real content**: the
+generic Linux SMP boot logo (one Tux per CPU core — 8, matching this
+SoC), a brief blank moment (the simplefb → real DPU/panel-driver
+handoff), then a genuine fbcon text console with a blinking cursor,
+alongside the still-working USB serial shell and GPIO heartbeat. This is
+a first-attempt success on the single highest-risk, most-guesswork-laden
+part of this session's work.
+
+Confirmed via the USB serial shell's `dmesg` (zero errors/warnings/Oops
+anywhere in the full boot log):
+
+- `msm_dpu ae01000.display-controller: bound ae94000.dsi (ops dsi_ops)`,
+  `dpu hardware revision:0x90000000`, `[drm] Initialized msm 1.13.0`,
+  `[drm] fb0: msmdrmfb frame buffer device` — the full DPU/DSI/panel
+  stack bound and initialized completely cleanly. ("no GPU device was
+  found" is expected/harmless — no Adreno firmware, out of scope by
+  design, doesn't block display.)
+- `panel-samsung-ana38407-x716 ae94000.dsi.0: ana38407 panel id: 80 00 04`
+  — the panel ID readback matches one of the two IDs the driver treats as
+  valid, **exactly**. Two independent confirmations this is really this
+  panel's genuine ID, not a coincidence: it read correctly (a) here, via
+  our own from-scratch DCS read implementation, and (b) completely
+  independently, ABL's own kernel cmdline for this exact boot carries
+  `msm_drm.lcd_id=800004 sec_common_fn.lcd_id=800004` — Samsung's own
+  stock firmware had already read the identical ID from this exact
+  physical panel before Linux ever started.
+- **The cold-boot DDIC recovery quirk (suspend/resume) turned out to be
+  unnecessary for this panel**: the ID read back correctly on the very
+  first attempt, at `[0.367966]`, before the ramdisk's suspend/resume
+  trigger ever ran (`[10.642393]`) — unlike the X910 Ultra's DDIC, which
+  needs that recovery cycle every cold boot. Either this specific
+  DDIC/fab revision doesn't share that quirk, or ABL's own boot-splash
+  handling of this panel happens to avoid triggering it. The quirk is
+  kept in the ramdisk regardless (harmless — a second `80 00 04` readback
+  after resume confirms no regression), as a safety net for revision
+  variance across units rather than removed.
+- This also means the AVDD regulator's guessed GPIO (187, this session's
+  single least-confident value) was good enough for the panel to power on
+  and respond correctly — no re-verification needed there for now.
+- No errors anywhere in the fw_devlink-resolved OF graph cycle between
+  `dsi@ae94000` and its `panel@0` child (the "Fixed dependency cycle(s)"
+  lines are fw_devlink's normal, benign handling of that expected parent/
+  child link, not a fault).
+
+**Not yet flashed/tested**: the Buildroot Weston rootfs (still just
+Kconfig-validated, no package build run) — now unblocked and the natural
+next step, since the underlying DRM/panel pipeline this whole session
+worried might not work is now confirmed genuinely alive.

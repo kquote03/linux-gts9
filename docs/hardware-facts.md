@@ -148,8 +148,54 @@ booted. **measured**. This is the MVP rootfs target (Phase 4).
   `vreg_l1g_1p2`) — same PM8550-family silicon, different board wiring/
   naming; must not be copied from the X910 DTS.
 - Panel: `samsung,disp-model = "AMSA10FA01"` — **different from X910's**
-  `"AMSA46AS02"`/ANA38407. No mainline driver exists for this panel.
-  **measured**, deferred to future work.
+  `"AMSA46AS02"`/ANA38407 (same DDIC family, different physical part). No
+  mainline driver existed for this panel; one was written from scratch for
+  Session 5 (`kernel/drivers/panel-samsung-ana38407-x716.c`), forked from
+  the X910 Ultra port's own ANA38407-family driver but with the actual DCS
+  init/exit byte sequences re-derived from this panel's own downstream
+  source rather than assumed transferable. **measured and confirmed
+  working on real hardware** (Session 5, same day): panel lights up, DPU/
+  DSI/panel driver bind cleanly with zero errors, panel ID reads back
+  `80 00 04` matching ABL's own independently-read `lcd_id=800004` for
+  this exact unit — see `docs/porting-log.md`'s "Real-hardware validation"
+  entry for the full `dmesg` evidence.
+  - Reset GPIO 125, TE GPIO 86 — cross-confirmed two ways: X716's own
+    stock DTS (`qcom,platform-reset-gpio`/`qcom,platform-te-gpio`) *and*
+    independently matching the exact same GPIO numbers the X910 Ultra
+    port uses for its own (different-part) ANA38407-family panel.
+  - Resolution 2560×1600, DSC 1.1, 2 slices 1280×100, 8bpc/8bpp — decoded
+    byte-for-byte from the panel's own 88-byte PPS payload in Samsung's
+    downstream panel data file, cross-checked against the stock DTS's
+    display-timings block (both agree exactly).
+  - Physical size 236mm×148mm (`qcom,mdss-pan-physical-{width,height}-dimension`).
+  - Panel supply rails vddio (1.8V)/vdd (1.2V)/vci (3.0V) — voltages
+    measured from the stock DTS's `dsi_panel_pwr_supply` table; which
+    RPMh LDO *index* they're actually wired to is **not independently
+    measured**, only copied by analogy from the X910 Ultra port's own
+    panel rails (same SoC generation) — see the DTS comment above these
+    regulators for the exact caveat. **Confirmed working in practice**
+    (Session 5, same day): the panel powers on and responds correctly
+    with these rails as wired, real-hardware evidence the analogy held.
+  - AVDD (~5.5V AMOLED ELVDD, GPIO load switch): was **the least confident
+    value in the whole display subtree** — the stock DTS's decompiled form
+    lost the resolved GPIO for this regulator (proxy-supply/phandle
+    indirection that didn't survive decompilation, the same class of gap
+    already seen with the UFS PHY rails). GPIO 187 was a first guess
+    (reused from the stock tree's differently-named `panel_ldo_en` fixed
+    regulator). **Confirmed good enough in practice** (Session 5, same
+    day): the panel powers on and the ID reads back correctly with this
+    wiring — not independently proven this is the *exact* real AVDD GPIO
+    (a wrong-but-harmless GPIO, or one already high from boot, could in
+    principle produce the same result), but no evidence it's wrong either.
+  - Optical/under-display fingerprint: the stock DTS node *does* carry
+    `samsung,support-optical-fingerprint` and real vsync-relative HBM
+    timing code in the common downstream driver — but the Tab S9 series
+    ships a side-mounted capacitive fingerprint sensor (a separate SPI
+    device, see the `gpio-reserved-ranges` comment in
+    `kernel/dts/sm8550-samsung-x716b.dts`), so this flag is presumed inert
+    boilerplate inherited from a phone panel definition; deliberately not
+    ported into the new driver. **assumed** (a reasonable inference from
+    the tablet's known hardware, not independently disproven).
 - Touchscreen: `compatible = "stm,fts_touch"` (STMicroelectronics) —
   **different from X910's** Goodix `gt9916`. No board-specific mainline
   driver exists yet; mainline has a generic `drivers/input/touchscreen/st/fts`
@@ -602,4 +648,20 @@ board-specific.
    wall" for the full investigation, and `docs/boot-strategy.md` for the
    two channels added to work around it (`simple-framebuffer`, persistent
    microSD logging) — as of this writing, both came back with no signal
-   on the current (post-attempt-8) build, not yet root-caused.
+   on the current (post-attempt-8) build, not yet root-caused. Superseded
+   in practice: a working USB serial shell (see `docs/boot-strategy.md`'s
+   item 8) now gives direct `dmesg` access, which is what later iteration
+   actually used instead of chasing either of these two channels further.
+5. ~~Display/panel bring-up (Session 5, 2026-09-05) is written but not yet
+   flashed/validated on real hardware.~~ — **RESOLVED, first attempt**:
+   flashed and confirmed working the same session. The panel shows real
+   content (boot-logo Tux array, then a genuine fbcon text console), the
+   DPU/DSI/panel driver stack bound with zero errors, and the panel ID
+   read back `80 00 04` — matching, independently, the `lcd_id=800004`
+   ABL's own stock firmware had already read from this exact physical
+   panel (visible in the kernel cmdline). See `docs/porting-log.md`'s
+   Session 5 entry ("Real-hardware validation") for the full `dmesg`
+   evidence. One assumption was actively disproven in the process: the
+   cold-boot suspend/resume DDIC-recovery quirk (needed on the X910
+   Ultra's sibling panel) turned out to be unnecessary here — this
+   panel's ID read correctly before that quirk ever ran.

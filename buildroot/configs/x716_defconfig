@@ -1,0 +1,39 @@
+BR2_aarch64=y
+BR2_TOOLCHAIN_BUILDROOT_MUSL=y
+# weston depends on BR2_INSTALL_LIBSTDCPP (a plain internal flag with no
+# prompt of its own -- confirmed by building this defconfig and finding
+# BR2_PACKAGE_WESTON silently absent from the resolved .config with no
+# warning, then tracing the actual unmet dep to here:
+# package/gcc/Config.in.host's "Enable C++ support").
+BR2_TOOLCHAIN_BUILDROOT_CXX=y
+
+# Buildroot produces the rootfs only -- the kernel/DTB stay owned by this
+# repo's own scripts/build-mainline-kernel.sh (see docs/porting-log.md's
+# Session 5 entry).
+# BR2_LINUX_KERNEL is not set
+
+BR2_TARGET_GENERIC_GETTY=y
+BR2_TARGET_GENERIC_GETTY_PORT="ttyGS0"
+
+# Dynamic /dev via devtmpfs + eudev -- eudev (not busybox mdev) is what
+# actually provides the BR2_PACKAGE_HAS_UDEV weston depends on.
+BR2_ROOTFS_DEVICE_CREATION_DYNAMIC_EUDEV=y
+
+# Weston + weston-terminal, DRM backend, no Mesa/GPU at all (see
+# docs/porting-log.md's Session 5 entry for why: pixman/dumb-KMS-buffer
+# software rendering is enough to prove the panel works, and sidesteps
+# Adreno GPU firmware loading entirely). weston-terminal isn't a separate
+# Buildroot package in this release -- it's one of weston's own bundled
+# "tools" (upstream weston.mk always passes
+# -Dtools=calibrator,debug,info,terminal,touch-calibrator), so plain
+# BR2_PACKAGE_WESTON=y is enough to get it built.
+BR2_PACKAGE_WESTON=y
+BR2_PACKAGE_WESTON_DEFAULT_DRM=y
+
+# Font for weston-terminal -- DejaVu Sans Mono specifically (a monospace
+# family; the plain DejaVu Sans default wouldn't render a terminal well).
+BR2_PACKAGE_DEJAVU=y
+BR2_PACKAGE_DEJAVU_MONO=y
+
+BR2_TARGET_ROOTFS_CPIO=y
+BR2_TARGET_ROOTFS_CPIO_GZIP=y

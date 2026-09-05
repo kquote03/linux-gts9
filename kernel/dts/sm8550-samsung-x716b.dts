@@ -326,6 +326,45 @@
 			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
 						   RPMH_REGULATOR_MODE_HPM>;
 		};
+
+		/*
+		 * ANA38407 panel rails (vddio/vdd/vci). Index letters/numbers
+		 * (l11b/l12b/l13b) copied from ubuntu-galaxy-tab-s9ultra's own
+		 * panel regulators by analogy -- same SoC generation, same
+		 * reference-design die assignment pattern the UFS/USB rails
+		 * on this board already independently confirm (see comments
+		 * above &apps_rsc). UNVERIFIED for X716 specifically, unlike
+		 * the voltages themselves: vddio (1.8V) and vci (3.0V) match
+		 * the Ultra port exactly, but vdd here is 1.2V (not the
+		 * Ultra's 1.1V) because X716's own stock downstream DTS
+		 * decodes its dsi_panel_pwr_supply "vdd" entry as exactly
+		 * 0x124f80 = 1,200,000 uV (see
+		 * android_kernel_samsung_gts9/.../gts9_eur_openx_w00_r00.dts:9210-9219)
+		 * -- a real, board-specific measurement, just not one that
+		 * also tells us the LDO index it's wired to. If the panel
+		 * never powers on, re-verify these three rails' index letters
+		 * first (see docs/porting-log.md's Session 5 entry).
+		 */
+		vreg_l12b_1p8: ldo12 {
+			regulator-name = "vreg_l12b_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l11b_1p2: ldo11 {
+			regulator-name = "vreg_l11b_1p2";
+			regulator-min-microvolt = <1200000>;
+			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l13b_3p0: ldo13 {
+			regulator-name = "vreg_l13b_3p0";
+			regulator-min-microvolt = <3000000>;
+			regulator-max-microvolt = <3000000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
 	};
 
 	regulators-2 {
@@ -524,6 +563,35 @@
 		voltage-min-design-microvolt = <3400000>;
 	};
 
+	/*
+	 * AMOLED ELVDD ("avdd", ~5.5V) behind a GPIO load switch -- the
+	 * panel driver (kernel/drivers/panel-samsung-ana38407-x716.c)
+	 * requires this as a fourth, separate supply alongside vddio/vdd/
+	 * vci. Modeled exactly on ubuntu-galaxy-tab-s9ultra's own
+	 * display_avdd node (kernel/dts/sm8550-samsung-gts9uwifi.dts:1785-1799),
+	 * same voltage. GPIO number is the least-confident part of this
+	 * whole display bring-up: X716's own stock DTS names a
+	 * "display_panel_avdd" regulator (gts9_eur_openx_w00_r00.dts:9328-9337)
+	 * but its decompiled form carries no resolved GPIO property (proxy-
+	 * supply/phandle indirection that didn't survive decompilation --
+	 * same class of gap already seen with the UFS PHY rails, see the
+	 * comment above &apps_rsc). GPIO 187 is reused from that same stock
+	 * tree's "panel_ldo_en" fixed regulator (gts9_eur_openx_w00_r00.dts:777-786),
+	 * the only concretely-GPIO'd, panel-adjacent enable line the
+	 * decompiled tree actually resolves -- a reasonable first guess, not
+	 * a confirmed fact. Re-verify this GPIO first if the panel never
+	 * powers on (see docs/porting-log.md's Session 5 entry).
+	 */
+	display_avdd: regulator-display-avdd {
+		compatible = "regulator-fixed";
+		regulator-name = "display_panel_avdd";
+		regulator-min-microvolt = <5500000>;
+		regulator-max-microvolt = <5500000>;
+		gpio = <&tlmm 187 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+		regulator-boot-on;
+	};
+
 	/* Generic mainline SBU mux for the Type-C connector's AUX/DP path. */
 	usb_c_sbu_mux: usb-c-sbu-mux {
 		compatible = "gpio-sbu-mux";
@@ -579,6 +647,22 @@
 		function = "gpio";
 		drive-strength = <2>;
 		output-low;
+		bias-pull-down;
+	};
+
+	/*
+	 * Panel tear-effect (TE) line routed to the MDP vsync input. gpio86
+	 * is measured, not guessed: X716's own stock DTS decodes the same
+	 * panel node's qcom,platform-te-gpio as 0x56 = 86
+	 * (gts9_eur_openx_w00_r00.dts:8498), and this is independently the
+	 * exact GPIO ubuntu-galaxy-tab-s9ultra's sibling board also uses for
+	 * the same purpose (kernel/dts/sm8550-samsung-gts9uwifi.dts:1092-1097)
+	 * -- two independent sources agreeing on the same platform pin.
+	 */
+	sde_te: sde-te-state {
+		pins = "gpio86";
+		function = "mdp_vsync";
+		drive-strength = <2>;
 		bias-pull-down;
 	};
 };
@@ -808,4 +892,75 @@
 
 &usb_dp_qmpphy_out {
 	remote-endpoint = <&ps5169_ss_in>;
+};
+
+/*
+ * Native display pipeline: Samsung/Anapass ANA38407 DDIC, part AMSA10FA01
+ * (2560x1600, DSC 1.1, 2 slices 1280x100, 8bpp -- measured, see
+ * kernel/drivers/panel-samsung-ana38407-x716.c's header). Added Session 5,
+ * 2026-09-05. mdss/mdss_dsi0/mdss_dsi0_phy/dispcc nodes are already fully
+ * defined in sm8550.dtsi, just status = "disabled" by default -- structure
+ * here mirrors ubuntu-galaxy-tab-s9ultra's own working display bring-up
+ * for the same SoC generation/DDIC family
+ * (kernel/dts/sm8550-samsung-gts9uwifi.dts:746-749,1801-1840) as closely as
+ * possible, with X716-specific reset-gpio/te-gpio/resolution/DSC values
+ * substituted in. See docs/porting-log.md's Session 5 entry for the full
+ * rationale and confidence notes on each individual property below --
+ * this subtree carries more unverified guesses than any other part of
+ * this board file (no mainline driver or DTS precedent exists for this
+ * exact panel part anywhere), and is expected to need real-hardware
+ * iteration to get right, the same way USB bring-up did.
+ */
+&dispcc {
+	status = "okay";
+};
+
+&mdss {
+	status = "okay";
+};
+
+&mdss_dsi0 {
+	vdda-supply = <&vreg_l3e_1p2>;
+	status = "okay";
+
+	panel@0 {
+		compatible = "samsung,ana38407-amsa10fa01";
+		reg = <0>;
+
+		vddio-supply = <&vreg_l12b_1p8>;
+		vdd-supply = <&vreg_l11b_1p2>;
+		vci-supply = <&vreg_l13b_3p0>;
+		avdd-supply = <&display_avdd>;
+
+		/*
+		 * reset-gpios/te-gpios: both cross-confirmed from X716's own
+		 * stock DTS (qcom,platform-reset-gpio = 0x7d = 125,
+		 * qcom,platform-te-gpio = 0x56 = 86;
+		 * gts9_eur_openx_w00_r00.dts:8497-8498), and independently
+		 * matching the exact same GPIO numbers
+		 * ubuntu-galaxy-tab-s9ultra's sibling board uses for its own
+		 * (different-part) ANA38407-family panel -- high confidence.
+		 */
+		reset-gpios = <&tlmm 125 GPIO_ACTIVE_HIGH>;
+		te-gpios = <&tlmm 86 GPIO_ACTIVE_HIGH>;
+
+		pinctrl-0 = <&sde_te>;
+		pinctrl-names = "default";
+
+		port {
+			panel0_in: endpoint {
+				remote-endpoint = <&mdss_dsi0_out>;
+			};
+		};
+	};
+};
+
+&mdss_dsi0_out {
+	data-lanes = <0 1 2 3>;
+	remote-endpoint = <&panel0_in>;
+};
+
+&mdss_dsi0_phy {
+	vdds-supply = <&vreg_l1e_0p88>;
+	status = "okay";
 };

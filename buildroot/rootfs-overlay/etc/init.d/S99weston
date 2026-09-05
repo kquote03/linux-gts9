@@ -1,0 +1,53 @@
+#!/bin/sh
+# Auto-start seatd (session/seat management weston links against -- no
+# systemd-logind here) and a minimal Weston + weston-terminal session on
+# the DRM backend. Runs as root directly on tty1: no separate user/session
+# management needed at this bring-up scale, and weston's DRM backend
+# works fine run this way (libseat's "seatd" backend just needs the seatd
+# daemon reachable over its default /run/seatd.sock).
+#
+# No Mesa/EGL/GBM is built into this rootfs (see buildroot/configs/x716_defconfig
+# and docs/porting-log.md's Session 5 entry) -- weston's DRM backend falls
+# back to its pixman (CPU) renderer automatically, using plain KMS dumb
+# buffers. That's enough to prove the panel works; GPU acceleration is a
+# later stretch goal, not needed here.
+RUNTIME_DIR=/run/user/0
+
+start() {
+	echo "Starting seatd"
+	/usr/bin/seatd -g root &
+	sleep 1
+
+	mkdir -p "$RUNTIME_DIR"
+	chmod 0700 "$RUNTIME_DIR"
+	export XDG_RUNTIME_DIR="$RUNTIME_DIR"
+
+	echo "Starting weston"
+	/usr/bin/weston --tty=1 --backend=drm-backend.so \
+		--log=/var/log/weston.log &
+
+	# weston-terminal is a plain Wayland client -- give the compositor
+	# a moment to create its socket before launching it.
+	sleep 3
+	XDG_RUNTIME_DIR="$RUNTIME_DIR" /usr/bin/weston-terminal &
+}
+
+stop() {
+	killall weston-terminal 2>/dev/null
+	killall weston 2>/dev/null
+	killall seatd 2>/dev/null
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart)
+		stop
+		sleep 1
+		start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac

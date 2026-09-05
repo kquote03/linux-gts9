@@ -35,49 +35,20 @@ cat > "$workdir/init" <<'EOF'
 /bin/busybox mount -t sysfs sysfs /sys
 /bin/busybox mount -t devtmpfs devtmpfs /dev 2>/dev/null
 
-# Repurpose the vibrator (kernel/dts/sm8550-samsung-x716b.dts's gpio-leds
-# node, GPIO 18) the instant userspace starts: a burst of 5 fast pulses,
-# unmistakably different from the kernel's own steady "heartbeat" trigger
-# pattern. Added 2026-09-05 to answer directly: the kernel-side heartbeat
-# alone does NOT prove userspace/PID 1 is ever reached -- it would keep
-# blinking even if the kernel got stuck forever in the deferred-probe/
-# driver-matching mechanism (not a bug, not something hung_task or a
-# panic would catch, just the kernel retrying by design). If this burst
-# is ever felt, /init genuinely started running; if it's never felt, the
-# plain kernel heartbeat continuing proves nothing about userspace.
-for trig in /sys/class/leds/*/trigger; do
-	echo none > "$trig" 2>/dev/null
-done
-i=0
-while [ "$i" -lt 5 ]; do
-	for b in /sys/class/leds/*/brightness; do
-		echo 1 > "$b" 2>/dev/null
-	done
-	/bin/busybox sleep 1
-	for b in /sys/class/leds/*/brightness; do
-		echo 0 > "$b" 2>/dev/null
-	done
-	/bin/busybox sleep 1
-	i=$((i + 1))
-done
-for trig in /sys/class/leds/*/trigger; do
-	echo none > "$trig" 2>/dev/null
-done
+# Plain `echo` depends on /dev/console, which ABL's injected "console=null"
+# cmdline arg makes unreliable (unclear whether it even resolves to a valid
+# device, or silently discards). /dev/kmsg is a direct write into the
+# kernel's own printk ring buffer -- delivered to every *registered*
+# console (our sec-log driver included) regardless of which one "console="
+# nominates as preferred, so it isn't subject to that same failure mode.
+# Defined first, before anything below tries to call it (an earlier
+# revision of this script defined `log` only after several call sites had
+# already used it, silently swallowing those early messages).
+log() {
+	echo "$1" > /dev/kmsg 2>/dev/null
+	echo "$1"
+}
 
-# USB Type-C bring-up probe check: now that userspace is confirmed reached,
-# inspect /sys directly for which of the three new i2c chip drivers
-# actually bound to a device, and vibrate the result -- far faster to
-# iterate on than a kernel rebuild (this is a ramdisk-only change), and
-# doesn't need USB itself to already work. Added 2026-09-05 after a full
-# USB Type-C stack (ptn3222 eUSB2 repeater, ps5169 redriver, sm5714 TCPM)
-# failed to enumerate on the host at all -- see docs/porting-log.md.
-#
-# Encoding: pulse count = (number of chips bound) + 1, i.e. 1 pulse means
-# zero bound, 4 pulses means all three bound (avoids an ambiguous "zero
-# pulses" case). Same 1s on/off rhythm as the userspace-reached burst, but
-# distinguishable by count (always exactly 5 there, 1-4 here) and by the
-# 3s pause separating this group from the burst before it and from the
-# typec-port check after it.
 pulse_n() {
 	n=$1
 	i=0
@@ -90,172 +61,47 @@ pulse_n() {
 	done
 }
 
-# $1 = bus (i2c or platform), $2 = driver name
-is_bound() {
-	dir="/sys/bus/$1/drivers/$2"
-	[ -d "$dir" ] || return 1
-	for e in "$dir"/*; do
-		case "${e##*/}" in
-			bind|unbind|module|uevent|new_device|delete_device|uevent_store) ;;
-			*) return 0 ;;
-		esac
-	done
-	return 1
-}
+log "=== linux-tabs9-port bring-up ramdisk: userspace reached ==="
 
-# Attempt 22 result: 0/3 bound, 0 typec ports. Both i2c6/i2c12/i2c_hub_8/
-# i2c_hub_9 already have default pinctrl states built into sm8550.dtsi
-# (confirmed by reading it) -- board-level wiring shouldn't have been
-# needed for the buses themselves to probe. This next check narrows
-# whether the four bus *controllers* came up at all (adapter count) as
-# distinct from whether our specific chips answered on them (client
-# device count) -- "bus fine, chip never responded" (a power/regulator
-# problem) vs. "bus itself never came up" (something more fundamental)
-# point to very different next fixes.
-#
-# The original /sys/class/i2c-adapter/* glob was wrong -- that class only
-# exists when CONFIG_I2C_CHARDEV registers /sys/class/i2c-dev/, not from
-# the i2c core itself (confirmed by reading drivers/i2c/i2c-dev.c and
-# drivers/i2c/i2c-core-base.c) -- and it was reporting 0 even once
-# ptn3222 was confirmed bound, which is only possible if its adapter
-# exists. The correct, config-independent path is the i2c bus itself:
-# /sys/bus/i2c/devices/i2c-* (adapters are named "i2c-N"; client devices
-# are named "<busnum>-<addr>", e.g. "6-004f", so this glob excludes them).
-adapters=0
-for a in /sys/bus/i2c/devices/i2c-*; do
-	[ -e "$a" ] && adapters=$((adapters + 1))
+# Repurpose the vibrator (kernel/dts/sm8550-samsung-x716b.dts's gpio-leds
+# node, GPIO 18) the instant userspace starts: a burst of 5 fast pulses,
+# unmistakably different from the kernel's own steady "heartbeat" trigger
+# pattern. Kept as a cheap sanity check even now that a real USB serial
+# shell exists (see docs/porting-log.md's Session 4 entry for why this
+# was originally added) -- it needs no host-side USB to already work,
+# which the display/panel bring-up this ramdisk now also serves does not
+# guarantee on every attempt.
+for trig in /sys/class/leds/*/trigger; do
+	echo none > "$trig" 2>/dev/null
 done
-/bin/busybox sleep 3
-log "=== USB Type-C probe check: $adapters i2c adapter(s) present total -- vibrating $((adapters + 1)) pulses ==="
-pulse_n $((adapters + 1))
-
-# Attempt 25 result: real USB electrical attach started happening (host
-# saw low-speed attach attempts, failing at descriptor read) after the
-# QUP-wrapper fix, but the aggregate bound-count check still read 0 --
-# not enough resolution to tell which (if any) of the three chips is the
-# holdout. Checking each individually this time (2 pulses = bound, 1 =
-# not) instead of one combined count.
-for name in ptn3222 ps5169 sm5714-usbpd; do
-	/bin/busybox sleep 3
-	if is_bound i2c "$name"; then
-		log "=== USB Type-C probe check: $name IS bound -- vibrating 2 pulses ==="
-		pulse_n 2
-	else
-		log "=== USB Type-C probe check: $name NOT bound -- vibrating 1 pulse ==="
-		pulse_n 1
-	fi
+pulse_n 5
+for trig in /sys/class/leds/*/trigger; do
+	echo none > "$trig" 2>/dev/null
 done
 
-# Attempt 28 result: forcing dr_mode="peripheral" produced ZERO change in
-# the host-side USB symptom (identical low-speed misdetection/stall on
-# every attempt before and after) -- ruling out OTG/role-switch as the
-# cause. A fork investigation traced ptn3222's actual regulator/reset
-# enable to its PHY framework .init callback, called from
-# usb_1_hsphy's own driver (phy-qcom-snps-eusb2, platform driver name
-# "snps-eusb2-hsphy") -- if THAT never binds, ptn3222's phy_init() never
-# runs regardless of ptn3222 itself being fine. Checking platform-bus
-# driver binding for both the HS PHY and the dwc3-qcom glue driver
-# ("dwc3-qcom") for the first time here.
-for name in snps-eusb2-hsphy dwc3-qcom; do
-	/bin/busybox sleep 3
-	if is_bound platform "$name"; then
-		log "=== USB Type-C probe check: $name IS bound -- vibrating 2 pulses ==="
-		pulse_n 2
-	else
-		log "=== USB Type-C probe check: $name NOT bound -- vibrating 1 pulse ==="
-		pulse_n 1
-	fi
-done
-
-/bin/busybox sleep 3
-typec_ports=0
-for p in /sys/class/typec/*; do
-	[ -e "$p" ] && typec_ports=$((typec_ports + 1))
-done
-log "=== USB Type-C probe check: $typec_ports typec port(s) registered -- vibrating $((typec_ports + 1)) pulses ==="
-pulse_n $((typec_ports + 1))
-
-# Now forcing dr_mode="peripheral" on &usb_1 (kernel/dts/sm8550-samsung-x716b.dts)
-# to bypass dwc3's OTG-hardware-readback-gated role-switch registration
-# entirely (see that DTS comment for the full trace) -- ps5169/sm5714-usbpd
-# staying unbound is now expected, not a problem to keep chasing. What
-# actually matters now: does /dev/ttyGS0 appear at all. Check directly
-# (separate from the background attach-loop above, which already does
-# this for the shell itself) and report via vibration too, since we have
-# no other way to know without host-side USB activity to go on.
-/bin/busybox sleep 3
-tries=0
-ttygs0_found=0
-while [ "$tries" -lt 10 ]; do
-	if [ -c /dev/ttyGS0 ]; then
-		ttygs0_found=1
-		break
-	fi
-	/bin/busybox sleep 1
-	tries=$((tries + 1))
-done
-log "=== USB Type-C probe check: /dev/ttyGS0 present=$ttygs0_found after ${tries}s -- vibrating $((ttygs0_found + 1)) pulses ==="
-pulse_n $((ttygs0_found + 1))
-
-# Attempt 30 result: snps-eusb2-hsphy/dwc3-qcom still unbound even with
-# CONFIG_PHY_SNPS_EUSB2 fixed, but no structural bug found in either
-# probe() on close reading -- both plausibly just mid deferred-probe
-# retry (dwc3-qcom legitimately -EPROBE_DEFERs waiting on
-# snps-eusb2-hsphy; that in turn should get retried once ptn3222, which
-# IS bound, triggers driver_deferred_probe_trigger()). Rechecking
-# everything again after a much longer wait to distinguish "still
-# resolving" from "permanently stuck" -- our earlier checks all ran
-# within the first ~30s of boot, plausibly too early.
-#
-# Attempt 31 result: this 30s recheck showed snps-eusb2-hsphy WAS
-# resolved by then (confirming it was just a slow deferred-probe retry,
-# not a real bug) -- but dwc3-qcom was still unbound even with its own
-# phy dependency now available. Extended to 90s to see whether dwc3-qcom
-# (and the things downstream of it -- ps5169/sm5714-usbpd/ttyGS0, which
-# all could cascade-resolve once dwc3-qcom itself binds and registers
-# usb_1's role-switch device) just needed even more patience.
-/bin/busybox sleep 90
-for name in snps-eusb2-hsphy dwc3-qcom; do
-	if is_bound platform "$name"; then
-		log "=== USB Type-C RECHECK (30s later): $name IS bound -- vibrating 2 pulses ==="
-		pulse_n 2
-	else
-		log "=== USB Type-C RECHECK (30s later): $name NOT bound -- vibrating 1 pulse ==="
-		pulse_n 1
-	fi
-	/bin/busybox sleep 2
-done
-for name in ps5169 sm5714-usbpd; do
-	if is_bound i2c "$name"; then
-		log "=== USB Type-C RECHECK (30s later): $name IS bound -- vibrating 2 pulses ==="
-		pulse_n 2
-	else
-		log "=== USB Type-C RECHECK (30s later): $name NOT bound -- vibrating 1 pulse ==="
-		pulse_n 1
-	fi
-	/bin/busybox sleep 2
-done
-ttygs0_found2=0
-[ -c /dev/ttyGS0 ] && ttygs0_found2=1
-log "=== USB Type-C RECHECK (30s later): /dev/ttyGS0 present=$ttygs0_found2 -- vibrating $((ttygs0_found2 + 1)) pulses ==="
-pulse_n $((ttygs0_found2 + 1))
+# Cold-boot DDIC recovery quirk (Session 5, 2026-09-05): the ANA38407 DDIC
+# family is known (from ubuntu-galaxy-tab-s9ultra's own bring-up,
+# docs/porting-log.md's Session 5 entry) to answer a cold-boot panel-ID
+# readback with garbage/black and only recover after one suspend/resume
+# cycle. pm_test=platform runs the driver .prepare/.suspend/.resume
+# callback chain (including the panel driver's own) without actually
+# cutting SoC power or needing a real wakeup source configured -- exactly
+# what's needed here, since this ramdisk has no such wakeup source.
+# CONFIG_PM_TEST_SUSPEND=y (kernel/config/config-x716.fragment) provides
+# both sysfs knobs below. Guarded by existence checks so this is a no-op
+# (not a failure) on a kernel build that predates this Kconfig addition.
+if [ -w /sys/power/pm_test ] && [ -w /sys/power/state ]; then
+	log "=== triggering one pm_test=platform suspend/resume for ANA38407 DDIC recovery ==="
+	echo platform > /sys/power/pm_test 2>/dev/null
+	echo mem > /sys/power/state 2>/dev/null
+	log "=== suspend/resume cycle done ==="
+else
+	log "=== /sys/power/pm_test or /sys/power/state missing -- skipping DDIC recovery cycle ==="
+fi
 
 for trig in /sys/class/leds/*/trigger; do
 	echo heartbeat > "$trig" 2>/dev/null
 done
-
-# Plain `echo` depends on /dev/console, which ABL's injected "console=null"
-# cmdline arg makes unreliable (unclear whether it even resolves to a valid
-# device, or silently discards). /dev/kmsg is a direct write into the
-# kernel's own printk ring buffer -- delivered to every *registered*
-# console (our sec-log driver included) regardless of which one "console="
-# nominates as preferred, so it isn't subject to that same failure mode.
-log() {
-	echo "$1" > /dev/kmsg 2>/dev/null
-	echo "$1"
-}
-
-log "=== linux-tabs9-port bring-up ramdisk: userspace reached ==="
 log "=== /init running as PID $$, looping forever (this is not a crash) ==="
 
 # USB gadget serial console (kernel/dts/sm8550-samsung-x716b.dts's minimal

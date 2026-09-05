@@ -110,6 +110,30 @@ fi
 grep -q 'ps5169.o' "$mux_dir/Makefile" || \
 	printf 'obj-$(CONFIG_TYPEC_MUX_PS5169)\t+= ps5169.o\n' >> "$mux_dir/Makefile"
 
+echo "== installing display panel driver into the kernel tree =="
+# Display panel driver (Session 5, 2026-09-05): Samsung/Anapass ANA38407
+# DDIC, part AMSA10FA01, no mainline driver exists. Forked from
+# ubuntu-galaxy-tab-s9ultra's own from-scratch driver for the same DDIC
+# family (different physical part) -- see that file's header and
+# kernel/drivers/panel-samsung-ana38407-x716.c's own header for the
+# X716-specific differences. Same idempotent install/Kconfig/Makefile
+# staging pattern as the USB Type-C drivers above.
+panel_dir=$kdir/drivers/gpu/drm/panel
+install -m 0644 "$drv/panel-samsung-ana38407-x716.c" \
+	"$panel_dir/panel-samsung-ana38407-x716.c"
+if ! grep -q 'DRM_PANEL_SAMSUNG_ANA38407_X716' "$panel_dir/Kconfig"; then
+	sed -i '/^endmenu$/i \
+config DRM_PANEL_SAMSUNG_ANA38407_X716\
+\ttristate "Samsung ANA38407 AMSA10FA01 (gts9-5g) DSI command-mode panel"\
+\tdepends on OF\
+\tdepends on DRM_MIPI_DSI\
+\tdepends on BACKLIGHT_CLASS_DEVICE\
+' "$panel_dir/Kconfig"
+fi
+grep -q 'panel-samsung-ana38407-x716.o' "$panel_dir/Makefile" || \
+	printf 'obj-$(CONFIG_DRM_PANEL_SAMSUNG_ANA38407_X716)\t+= panel-samsung-ana38407-x716.o\n' \
+		>> "$panel_dir/Makefile"
+
 mkdir -p "$outdir"
 
 echo "== defconfig =="
