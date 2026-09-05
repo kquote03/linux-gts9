@@ -1,0 +1,15 @@
+# Inserted into the kernel tree's drivers/misc/Kconfig by
+# scripts/build-mainline-kernel.sh, just before that file's closing
+# "endmenu".
+config X716_SEC_LOG
+	bool "Samsung Galaxy Tab S9 5G (SM-X716B) sec-log bring-up console"
+	depends on OF
+	help
+	  Console-less bring-up debug channel for the Samsung Galaxy Tab S9
+	  5G (SM-X716B): writes kernel console output into the same
+	  physical DRAM region and on-disk format Samsung's stock
+	  downstream kernel uses for its persistent "sec_log_buf", so TWRP
+	  can display it after a hang/panic/reboot. See
+	  kernel/drivers/samsung-x716-sec-log.c and docs/boot-strategy.md.
+
+	  UNTESTED / UNFLASHED as of this commit -- see docs/porting-log.md.

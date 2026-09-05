@@ -155,6 +155,22 @@
 			reg = <0x08 0x80c00000 0x00 0xad00000>;
 		};
 	};
+
+	/*
+	 * Consumer of sec_log_buf_region above -- matched by
+	 * kernel/drivers/samsung-x716-sec-log.c (a from-scratch reimplementation
+	 * of Samsung's on-disk sec_log_buf format, not their driver code; see
+	 * that file's header comment). Deliberately a plain node referencing
+	 * the carveout via memory-region, matching how Samsung's own downstream
+	 * driver is wired (a separate consumer node, not the reserved-memory
+	 * node itself) -- confirmed by reading
+	 * drivers/samsung/debug/log_buf/sec_log_buf_main.c in the X716
+	 * downstream source, which matches on this same compatible string.
+	 */
+	samsung_log_buf: log-buf {
+		compatible = "samsung,kernel_log_buf";
+		memory-region = <&sec_log_buf_region>;
+	};
 };
 
 /*

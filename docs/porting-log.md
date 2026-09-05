@@ -157,3 +157,46 @@ pre-flash backup checklist, deciding which uniLoader artifact (plain vs.
 console driver, and the first actual flash attempt. This is where the
 plan's explicit per-step user confirmation requirement starts applying to
 every device-write action.
+
+---
+
+## Session 3 — 2026-09-05
+
+Started Phase 2 prep work (still no device contact). Wrote
+`docs/boot-strategy.md` (boot chain explanation with uniLoader in the loop,
+mandatory pre-flash checklist, flashing mechanics, recovery plan).
+
+**sec-log driver**: rather than guess the on-disk format, read Samsung's
+actual GPL-licensed downstream driver source directly (already present in
+this working directory under `android_kernel_samsung_gts9/`) —
+`drivers/samsung/debug/log_buf/sec_log_buf_main.c` and the public
+`sec_log_buf.h` header gave the exact struct layout (`boot_cnt`/`magic`
+`0x4d474f4c`/`idx`/`prev_idx`/`buf[]`), the real devicetree compatible
+string (`samsung,kernel_log_buf`, a separate consumer node referencing the
+carveout via `memory-region`, not the reserved-memory node itself), and the
+modulo-wrapping ring-buffer write algorithm. Wrote a from-scratch, much
+simpler reimplementation (`kernel/drivers/samsung-x716-sec-log.c`) covering
+only the write side — none of Samsung's compression/debugfs/kprobe/ap_klog
+machinery, which this bring-up doesn't need. Added the matching `log-buf`
+consumer node to the board DTS, a `CONFIG_X716_SEC_LOG` Kconfig entry
+(inserted into `drivers/misc/Kconfig`/`Makefile` by
+`scripts/build-mainline-kernel.sh`, same idempotent-patch pattern already
+used for the uniLoader overlay), and enabled it in `config-x716.fragment`.
+
+Rebuilt the kernel + DTB + uniLoader end to end with the driver included —
+all three still build cleanly (`drivers/misc/x716-sec-log.o` compiles with
+no errors or warnings). New artifact hashes recorded in
+`docs/hardware-facts.md`, which now also documents the driver's real
+limitation honestly: it probes at roughly `arch_initcall` time, so a hang
+earlier than that (plausible, given the UFS/regulator/pinctrl risk already
+flagged) would leave this channel with nothing captured.
+
+**Result**: kernel + DTB + uniLoader all still build successfully with the
+sec-log driver included. Still nothing has touched the physical device.
+
+**Next session should start at**: the remaining Phase 2 items —
+`scripts/build-android-v4-bundle.sh` (mkbootimg/avbtool packaging, still
+needs a decision on plain vs. `.gz` uniLoader artifact), `scripts/
+flash-boot-set.sh`, validating the sec-log readback path with the *stock*
+kernel first, and then — with explicit per-step confirmation — the first
+actual flash attempt.

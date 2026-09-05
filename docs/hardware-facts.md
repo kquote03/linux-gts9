@@ -238,21 +238,27 @@ cross-check. Notable, directly load-bearing findings:
 
 ## Phase 1 build artifacts (all builds succeeded; nothing flashed yet)
 
-- Kernel `Image` (uncompressed, 42,002,944 B), sha256
-  `df61df1ce94a52040e5a0a95720d69b2ef78c06a23bf37d789077511cd951739`,
+Superseded by the sec-log driver addition below (kept for the record; the
+"current" row in each case is what a fresh build now produces):
+
+- Kernel `Image` (uncompressed, 42,002,944 B): now sha256
+  `33d034040df4d113c42c0ebec8f09d6e5c4a5bd7f6a6356d45fdee9c5d0a1dcd`
+  (previously `df61df1ce9...` before `CONFIG_X716_SEC_LOG` was added),
   release string `7.2.0-dirty` (the `-dirty` suffix is expected — our board
   DTS + Makefile line are installed into the working tree, not committed to
   `kernel/linux/`, which is gitignored).
-- Board DTB (`sm8550-samsung-x716b.dtb`, 115,635 B), sha256
-  `23dbee663af124862b8e7da4ce2e56b2355b0221fd717de600a90470212425e3` —
-  identical output whether built standalone via `cpp`+`dtc` or via the full
-  kernel build, a useful cross-check that the build integration didn't
-  silently change anything.
+- Board DTB (`sm8550-samsung-x716b.dtb`, 115,719 B): now sha256
+  `1a58401f9011326c020641b222b7434427092afa06878176d440d1879f123cdc`
+  (previously 115,635 B / `23dbee66...` before the `log-buf` consumer node
+  was added) — identical output whether built standalone via `cpp`+`dtc` or
+  via the full kernel build, a useful cross-check that the build
+  integration didn't silently change anything.
 - uniLoader binary (43,536,384 B — kernel Image + DTB + bring-up ramdisk +
-  uniLoader's own code, all embedded in one flat file), sha256
-  `4397750d9b733be4a56709eb83fe14e9f3b30b849188f1d1d90a2345d2a26ca6`. A
-  gzip-compressed variant (`uniLoader.gz`, 16,333,329 B, sha256
-  `c972bfa98ee3bab3fe0e39b6caad4359ba732e3e36c21e5ef60777b1bef8de47`) is
+  uniLoader's own code, all embedded in one flat file): now sha256
+  `60964b66d25193e25960897010f8d401c81705713b6b5c93d6dcb73765b776b9`
+  (previously `4397750d...`). A gzip-compressed variant (`uniLoader.gz`,
+  16,334,271 B, sha256
+  `86876e3534a7b15a614326a98f3f90b52eb930374a25ab04b66958f4a04c1d1e`) is
   also produced by uniLoader's own default `CONFIG_COMPRESS_GZIP=y` —
   **which of the two to package as the `boot` partition's kernel slot in
   Phase 2 is an open question** (mainline `Image.gz` is a common
@@ -261,7 +267,37 @@ cross-check. Notable, directly load-bearing findings:
 - Bring-up ramdisk (`bringup-ramdisk.cpio.gz`, 851,804 B), sha256
   `053a971233cbc0824700a5b479ada5c1c92d5b92ed432c14f5a0a49d5b3397f5` — static
   aarch64 busybox + an `/init` that prints a proof-of-life line then loops
-  forever.
+  forever. Unchanged by the sec-log driver addition.
+
+## sec-log driver (`kernel/drivers/samsung-x716-sec-log.c`)
+
+Primary Phase 2/3 console-less debug channel. Confirmed by reading (not
+copying) Samsung's actual downstream driver source
+(`drivers/samsung/debug/log_buf/{sec_log_buf_main.c,sec_log_buf.h}` in
+`android_kernel_samsung_gts9`) rather than guessing the format:
+
+- On-disk header: `struct { u32 boot_cnt; u32 magic; u32 idx; u32
+  prev_idx; char buf[]; }`, magic `0x4d474f4c` ("LOGM"). **measured**
+  (read directly from Samsung's GPL source).
+- Devicetree wiring: a **separate consumer node** with
+  `compatible = "samsung,kernel_log_buf"` and a `memory-region` phandle to
+  the carveout — not the reserved-memory node itself. **measured**, and
+  now added to `kernel/dts/sm8550-samsung-x716b.dts` as `log-buf`.
+- Write algorithm: modulo-wrapping ring buffer over `buf[]` (size = region
+  size minus header), `idx` monotonically increasing across boots (never
+  reset except on first-ever init when the magic is invalid). **measured**
+  from `__log_buf_write()`. TWRP's own recovery kernel is presumed to
+  already contain Samsung's stock reader for this same format (it's a
+  Samsung-derived recovery build) — **not independently confirmed that
+  TWRP on this specific unit actually does this**, which is exactly why
+  `docs/boot-strategy.md` calls for validating the capture path with the
+  *stock* kernel before relying on it to debug a mainline one.
+- Our driver probes as a normal `of_platform` device (roughly
+  `arch_initcall` time) — **known limitation, not a confirmed-safe
+  assumption**: if a hang happens earlier than that (plausible, given the
+  UFS/regulator/pinctrl probe-hang risk this project already anticipates),
+  this channel captures nothing. An earlycon-based capture would be the
+  fallback if this proves insufficient in practice.
 
 ## Toolchain gotchas found while getting Phase 1 to actually build
 

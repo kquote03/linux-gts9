@@ -38,6 +38,11 @@ CONFIG_QCOM_SCM=y
 # CONFIG_QCOM_SMEM, CONFIG_REGULATOR_QCOM_RPMH, CONFIG_SCSI_UFSHCD,
 # CONFIG_SCSI_UFSHCD_PLATFORM, CONFIG_PHY_SAMSUNG_UFS, CONFIG_EXT4_FS.
 
+# sec-log bring-up console (kernel/drivers/samsung-x716-sec-log.c) -- the
+# primary Phase 2/3 console-less debug channel. Installed into
+# drivers/misc/ by scripts/build-mainline-kernel.sh.
+CONFIG_X716_SEC_LOG=y
+
 # Explicitly NOT enabled here (deferred, see docs/hardware-facts.md
 # non-goals): DRM/panel, touchscreen, WCN7850 wifi/bt, camera, audio
 # DSP/APR, sensors, cellular modem remoteproc.

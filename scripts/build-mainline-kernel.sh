@@ -30,6 +30,23 @@ if ! grep -q "^dtb-\$(CONFIG_ARCH_QCOM)[[:space:]]*+= $board_dtb\$" "$qcom_dts_d
 	echo "dtb-\$(CONFIG_ARCH_QCOM)	+= $board_dtb" >> "$qcom_dts_dir/Makefile"
 fi
 
+echo "== installing sec-log driver into the kernel tree =="
+cp "$repo_root/kernel/drivers/samsung-x716-sec-log.c" "$kdir/drivers/misc/x716-sec-log.c"
+if ! grep -q "^config X716_SEC_LOG$" "$kdir/drivers/misc/Kconfig"; then
+	awk -v overlay="$repo_root/kernel/config/x716-sec-log.kconfig" '
+		/^endmenu$/ && !done {
+			while ((getline line < overlay) > 0) print line
+			close(overlay)
+			done = 1
+		}
+		{ print }
+	' "$kdir/drivers/misc/Kconfig" > "$kdir/drivers/misc/Kconfig.new"
+	mv "$kdir/drivers/misc/Kconfig.new" "$kdir/drivers/misc/Kconfig"
+fi
+if ! grep -q "CONFIG_X716_SEC_LOG" "$kdir/drivers/misc/Makefile"; then
+	echo 'obj-$(CONFIG_X716_SEC_LOG)	+= x716-sec-log.o' >> "$kdir/drivers/misc/Makefile"
+fi
+
 mkdir -p "$outdir"
 
 echo "== defconfig =="
