@@ -427,11 +427,22 @@ capture saved at `work/bringup-2026-09-05/last_kmsg-attempt1.txt`.
   manually checked against this new range and against the ABL's own
   logged "Add Base" available-memory regions from the same capture — no
   overlap, generous margins on both sides.
-- **Caveat**: this address was ABL's dynamic choice for that specific
-  image size combination — not guaranteed stable if embedded blob sizes
-  change significantly later (e.g. a bigger kernel in a future rebuild).
-  Re-derive from a fresh sec-log capture if a later attempt's own
-  "LinuxLoader Load Address" line stops matching.
+- **Caveat, since CONFIRMED true**: the second flash attempt (with
+  `TEXT_BASE` set to exactly match attempt 1's measured address) *also*
+  fell back to Download Mode, and its own sec-log capture
+  (`last_kmsg-attempt2.txt`) shows ABL logging **two different**
+  "LinuxLoader Load Address" values within that single power-on session
+  (`0xC44C6000`, then `0xC44D0000` after what looks like an automatic ABL
+  retry — a fresh "Loader Build Info"/"ONEUI VER" banner reprints in
+  between), neither matching attempt 1's address or the `TEXT_BASE` we'd
+  just set to match it. **The load address is not stable — matching one
+  observed value is not a viable fix on its own.** uniLoader's self-copy
+  relocation mechanism must actually work correctly (or the real bug lies
+  elsewhere) rather than being avoidable by lucky guessing. See the
+  bring-up checkpoint diagnostic added in `uniloader-overlay/board-gts9-5g.c`
+  (writes progress markers directly into this same sec-log region from
+  within uniLoader's `early_init`/`late_init` hooks) for the next step
+  toward actual visibility into where execution stops.
 - Also confirmed independently from this same log: the vbmeta
   flags=2/AVB-verification-disabled bypass works exactly as expected
   (`AUTHENTICATE fail but allow ... binary: vbmeta` /

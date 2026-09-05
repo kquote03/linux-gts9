@@ -328,3 +328,40 @@ Full detail in `docs/hardware-facts.md`.
 
 **Next: second flash attempt** with the corrected `TEXT_BASE` — checking
 in before flashing/rebooting again.
+
+**Continued same session, with explicit go-ahead**: second attempt also
+fell back to Download Mode. User checked directly from the device screen
+this time (Download Mode UI, no need to poll adb). Pulled the fresh
+capture (`last_kmsg-attempt2.txt`) — and it revealed something important:
+**the "LinuxLoader Load Address" is not stable.** This boot alone logged
+it twice with two different values (`0xC44C6000` then `0xC44D0000`,
+between what look like two automatic ABL retries within the same power-on
+session — "Loader Build Info"/"ONEUI VER" reprinted, a fresh ABL
+invocation banner), neither matching attempt 1's `0xC44C9000` or our
+newly-set `TEXT_BASE`. **Hardcoding a specific measured address is not a
+viable long-term fix — the previous session's approach only happened to
+be directionally right, not actually correct.**
+
+Since we have zero visibility into whether uniLoader's own code runs at
+all after ABL's "Exit Boot Services" handoff (ABL's log ends there either
+way; uniLoader has no logging hooked up by default), added two bring-up
+diagnostic checkpoints to `uniloader-overlay/board-gts9-5g.c` — using the
+`early_init`/`late_init` hooks `main()` already calls, so no upstream
+uniLoader files need patching. Each writes a distinct marker string
+directly into the same physical sec_log_buf region/format the mainline
+kernel's own driver uses, so checkpoint text will show up in
+`/proc/last_kmsg` via TWRP exactly like real kernel console output would:
+- `early_init`: fires right after `main()`'s `early_console_init()` — if
+  this shows up, self-relocation and the jump into uniLoader's C code
+  definitely worked.
+- `late_init`: fires after `driver_probe_all`/`print_splash`, right before
+  `boot_kernel()` (DTB patching + the final jump to the real kernel) — if
+  this shows up but the kernel itself never produces sec-log output, the
+  problem is narrowed to `boot_kernel()`/`arch_load_kernel()` specifically.
+
+Rebuilt uniLoader and the bundle with this change (`TEXT_BASE` left at the
+previous `0xC44C9000` — its exact value matters less now, the checkpoints
+will tell us directly whether the self-relocation path is even the
+problem).
+
+**Next: third flash attempt**, checking in before flashing/rebooting.
