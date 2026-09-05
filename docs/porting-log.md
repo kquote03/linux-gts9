@@ -365,3 +365,34 @@ will tell us directly whether the self-relocation path is even the
 problem).
 
 **Next: third flash attempt**, checking in before flashing/rebooting.
+
+**Continued same session, with explicit go-ahead**: third attempt also
+fell back to Download Mode. Pulled `last_kmsg-attempt3.txt` — **neither
+checkpoint marker appeared at all.** Confirmed this was the right boot's
+data (same "Exit EBS...UEFI End" tail, three more "LinuxLoader Load
+Address" retries logged, none matching `TEXT_BASE` again). Since
+`early_init` is called from `main()`, and `main()` is only reached *after*
+uniLoader's self-relocation code finishes and jumps there, zero signal
+from even the first checkpoint means **execution never reaches `main()`
+at all** — the failure is in the relocation copy itself (`arch/aarch64/
+reloc.S`) or earlier.
+
+Patched `reloc.S` directly (`uniloader-overlay/reloc.S`, installed via
+full-file replacement in `scripts/build-uniloader.sh`, same pattern as
+the board file) with two raw-assembly checkpoints, since this code runs
+before any C runtime or valid stack exists: checkpoint A ("CKPA") right
+at `_reloc_entry`'s start, checkpoint B ("CKPB") right before the final
+jump to `_start` (reached either via the same-address shortcut or after
+the copy loop). Both explicitly set the sec_log header's `magic`+`idx`
+fields (not just poke a byte pattern), since `/proc/last_kmsg` only
+exposes `buf[0..idx)` — a poke without updating `idx` would be invisible
+even if it executed, a mistake caught and fixed before flashing anything.
+Verified: builds and assembles cleanly, `readelf -h uniLoader.o` still
+shows the expected entry point.
+
+**Next: fourth flash attempt**, checking in before flashing/rebooting.
+If CKPA shows up, the relocation entry itself is reached; if CKPB also
+shows up, the copy (or same-address shortcut) completed and the jump to
+`_start` was attempted. If neither shows up again, the problem is even
+earlier than this file — possibly the ARM64 Image header itself being
+rejected by ABL, or the initial branch to `_head` failing outright.

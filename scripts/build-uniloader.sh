@@ -32,6 +32,9 @@ echo "== installing board file =="
 mkdir -p "$ul/board/samsung"
 cp "$overlay/board-gts9-5g.c" "$ul/board/samsung/board-gts9-5g.c"
 
+echo "== installing bring-up diagnostic reloc.S (temporary, see its header comment) =="
+cp "$overlay/reloc.S" "$ul/arch/aarch64/reloc.S"
+
 echo "== patching soc/Kconfig (idempotent) =="
 if ! grep -q "^	config SM8550$" "$ul/soc/Kconfig"; then
 	awk -v overlay="$overlay/soc-sm8550.kconfig" '

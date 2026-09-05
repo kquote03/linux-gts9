@@ -443,6 +443,18 @@ capture saved at `work/bringup-2026-09-05/last_kmsg-attempt1.txt`.
   (writes progress markers directly into this same sec-log region from
   within uniLoader's `early_init`/`late_init` hooks) for the next step
   toward actual visibility into where execution stops.
+- **Attempt 3 result: neither checkpoint fired.** Since `early_init` is
+  only reached after `main()` is called, which only happens after
+  uniLoader's own self-relocation code (`arch/aarch64/reloc.S`) finishes
+  and jumps there, this means **execution never reaches `main()` at
+  all** — narrowing the failure to the relocation copy itself or earlier.
+  Patched `reloc.S` directly (`uniloader-overlay/reloc.S`, full-file
+  replacement) with two raw-assembly checkpoints (magic+idx set
+  explicitly, not just a byte poke, since `/proc/last_kmsg` only exposes
+  `buf[0..idx)` — a poke without updating `idx` would be invisible even if
+  it executed, caught and fixed before flashing) at `_reloc_entry`'s start
+  and right before the final jump to `_start`. See `docs/porting-log.md`
+  for the attempt-4 plan.
 - Also confirmed independently from this same log: the vbmeta
   flags=2/AVB-verification-disabled bypass works exactly as expected
   (`AUTHENTICATE fail but allow ... binary: vbmeta` /
