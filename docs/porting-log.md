@@ -1002,3 +1002,139 @@ anywhere in the full boot log):
 Kconfig-validated, no package build run) — now unblocked and the natural
 next step, since the underlying DRM/panel pipeline this whole session
 worried might not work is now confirmed genuinely alive.
+
+## Buildroot rootfs: built, flashed, Weston confirmed on real hardware
+
+The Buildroot build itself needed five more real fixes before it produced
+anything, every one of them a Nix-hosting quirk rather than a config bug
+(diagnosed by actually building it repeatedly, not guessed):
+
+1. **`host-attr`'s configure failed the C-preprocessor sanity check** --
+   plain `cpp` on PATH resolves to `llvm.clang-unwrapped`'s bare `cpp`
+   (kept on PATH for Kbuild's own LLVM=1 discovery), which has no default
+   header search paths on NixOS. Buildroot's top-level `Makefile`
+   re-resolves `HOSTCPP` via `which cpp` unconditionally
+   (`Makefile:311-332`), so exporting `CPP` doesn't help -- fixed by
+   passing `HOSTCPP=<path to the properly-wrapped gcc's own cpp>`
+   explicitly on the `make` command line in
+   `scripts/build-buildroot-rootfs.sh`.
+2. **`host-gcc-initial`'s own `libcpp` failed to compile**: nixpkgs'
+   compiler wrapper enables a "format" hardening flag
+   (`NIX_HARDENING_ENABLE`) that turns on `-Werror=format-security`, and
+   GCC 15.3.0's own `libcpp/expr.cc`/`macro.cc` have several
+   non-literal-format-string calls that are fine under upstream GCC's own
+   bootstrap toolchain but become hard errors under that flag. Fixed by
+   dropping just the "format" token from `NIX_HARDENING_ENABLE` for this
+   script's own environment.
+3. **`freetype` tried to compile a Windows resource file**: a real
+   `windres` binary exists on PATH (`llvm-windres`, from the same
+   Kbuild-needed package), fooling freetype's libtool-generated build
+   into unconditionally attempting `ftver.rc` (a Windows-only version
+   resource) via `builds/freetype.mk`'s `ifneq ($(RC),)` gate. `RC=:` (a
+   shell no-op, first tried) was the wrong value -- it made that
+   conditional see RC as "present" and still add `ftver.o` to the final
+   link, just without anything actually producing that file, moving the
+   failure to the link step instead. `RC=` (truly empty) is what actually
+   disables it.
+4. **`host-patchelf`'s own binary couldn't run at all** --
+   `error while loading shared libraries: libstdc++.so.6: cannot open
+   shared object file`, even inside nix-shell, since Buildroot resolves
+   `HOSTLD` to the raw `llvm-binutils` `ld` directly (same class of issue
+   as HOSTCPP above) rather than linking through the wrapped `c++`, which
+   is what would normally auto-inject a working rpath on NixOS. Fixed by
+   copying the exact `libstdc++.so.6` the wrapped `c++` resolves to
+   (`c++ -print-file-name=libstdc++.so.6`) into Buildroot's own
+   `host/lib/` -- already on every host tool's rpath (Buildroot's own
+   per-package LDFLAGS explicitly add `-Wl,-rpath,$(HOST_DIR)/lib`), so no
+   further build-system change was needed once the file was there.
+5. Considered and explicitly rejected: switching the whole rootfs to
+   prebuilt Alpine `.apk` packages instead of building from source, to
+   sidestep all of the above. Checked against Alpine's real `v3.24`
+   aarch64 APKINDEX first rather than assumed: Alpine's precompiled
+   `weston` unconditionally links against Mesa (`libEGL.so.1`/
+   `libGLESv2.so.2`/`libgbm.so.1`), whose own Alpine build requires
+   `libLLVM.so.22.1` (`llvm22-libs`: 64 MiB compressed / 176 MiB
+   installed, alone) plus GStreamer/PipeWire -- roughly 250MB+ installed,
+   defeating the entire point of this rootfs (proving the display works
+   without the Adreno GPU firmware/Mesa rabbit hole). Buildroot's own
+   from-source build, with Mesa/EGL/GBM never selected at all, produced a
+   complete `rootfs.cpio.gz` at **15,080,124 bytes (14.4 MiB compressed)**
+   -- confirming the original no-Mesa design decision was right, worth the
+   extra Nix-hosting friction to keep.
+
+**A real, hard packaging limit found next**: pointing
+`BRINGUP_RAMDISK` at this rootfs and building the bundle failed --
+`avbtool`: "Image size of 17743872 exceeds maximum image size of
+8318976 in order to fit in a partition size of 8388608" -- the LZ4-framed
+rootfs (~17 MiB) is bigger than `init_boot`'s fixed 8 MiB partition,
+unlike the tiny (854 KiB) debug ramdisk that always fit comfortably.
+`vendor_boot`'s partition is 96 MiB (`vendor_boot_size=100663296`) and
+currently carries a redundant copy of the same small ramdisk `init_boot`
+does -- ABL combines both into one initramfs at boot (standard mainline
+behavior: concatenated cpio archives, not an Android-specific trick), so
+there's no reason the big rootfs can't simply live in `vendor_boot`'s slot
+instead while `init_boot` carries something tiny. Fixed by splitting
+`scripts/build-android-v4-bundle.sh`'s single `BRINGUP_RAMDISK` input into
+two independent overrides (`INIT_BOOT_RAMDISK`, `VENDOR_RAMDISK`, both
+still defaulting to the old shared `BRINGUP_RAMDISK` for existing
+behavior) plus an explicit per-partition size check that fails fast with
+a clear message instead of avbtool's less obvious one. `init_boot` was
+given a genuinely empty cpio (zero files) rather than reusing the debug
+ramdisk, specifically so there's nothing in it that could override a
+same-named path from `vendor_boot`'s real rootfs regardless of which
+archive ABL concatenates first.
+
+**Flashed and confirmed working, same session.** Booted to the same
+Tux-array/fbcon-cursor sequence as the kernel-only test, this time with a
+real Buildroot userland underneath. Debugged live over the USB serial
+shell (`picocom`, login `root` with an empty password) rather than
+guessing:
+
+- `/etc/init.d/S99weston` didn't come up on its own -- `ps aux` showed no
+  weston/seatd process at all. Running it by hand surfaced two real,
+  independent bugs:
+  - `/usr/bin/seatd: not found` -- `BR2_PACKAGE_SEATD=y` (auto-selected by
+    weston, confirmed present in the resolved Buildroot `.config`) doesn't
+    actually put a `seatd` binary at that path on this rootfs. Turned out
+    not to matter: weston's own log shows libseat's **builtin** backend
+    working completely on its own as root ("Trying libseat launcher...
+    Started embedded seatd ... libseat: session control granted") with no
+    external seatd process at all -- the `seatd` start attempt is now
+    guarded behind an existence check rather than fixed further.
+  - `fatal: failed to create compositor backend`, preceded by
+    `warning: no input devices found... failed to create input devices`.
+    Real cause, not a bug: no touchscreen (explicit non-goal, see below)
+    and no physical keyboard/mouse means libinput finds zero seats, and
+    Weston's DRM backend treats that as fatal by default. This is
+    Weston's own documented scenario (`doc/sphinx/toc/running-weston.rst`,
+    confirmed by reading it in the actual fetched source, not guessed):
+    `--continue-without-input` (or `weston.ini`'s `require-input=false`)
+    is the real, intended flag for exactly this kiosk/no-input case.
+  - `--tty=1` (kept from the original design) turned out to itself cause
+    a *different* fatal error one step later ("unhandled option: --tty=1"
+    at shell-module load, after DRM backend init had already fully
+    succeeded) -- dropped; weston allocates a VT fine without it.
+- Once both were fixed and weston launched by hand, its log confirmed the
+  full pipeline working end to end: `using /dev/dri/card0`, `DRM: supports
+  atomic modesetting`, `DRM: supports GBM modifiers`, `Using Pixman
+  renderer`, `DRM: head 'DSI-1' found, connector 36 is connected`, and
+  both display modes from the panel driver
+  (`2560x1600@120.0, preferred` / `2560x1600@60.0`) recognized correctly.
+  `weston-desktop-shell`/`weston-keyboard` launched, and **`weston-terminal`
+  connected and rendered on the panel** -- confirmed directly by the user
+  looking at the tablet, not just inferred from logs.
+- One iteration snag, not a real bug: a stale `wayland-0` socket lock
+  from an earlier failed attempt made a later successful weston instance
+  bind `wayland-1` instead, so `weston-terminal` needed an explicit
+  `WAYLAND_DISPLAY=wayland-1` to find it that one time -- irrelevant on a
+  clean boot (no stale lock), not something the init script needs to
+  handle.
+
+`buildroot/rootfs-overlay/etc/init.d/S99weston` has been updated to match
+everything found above (dropped `--tty`, added `--continue-without-input`,
+guarded the `seatd` start) but **the fix hasn't been baked into a fresh
+flashed image yet** -- tonight's on-device verification patched and
+re-ran the script live over the serial shell instead of rebuilding.
+Rebuilding the Buildroot rootfs once more (picking up this fix) and
+reflashing is the next concrete step before trusting a cold boot to bring
+Weston up unattended.

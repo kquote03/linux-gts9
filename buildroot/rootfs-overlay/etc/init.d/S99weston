@@ -14,16 +14,39 @@
 RUNTIME_DIR=/run/user/0
 
 start() {
-	echo "Starting seatd"
-	/usr/bin/seatd -g root &
-	sleep 1
+	# libseat has a "builtin" backend that works standalone as root with
+	# no separate seatd daemon at all (confirmed from a real weston.log:
+	# "Trying libseat launcher... Started embedded seatd ... libseat:
+	# session control granted" -- happens automatically, nothing to start
+	# here). A real seatd binary isn't even installed on this rootfs
+	# (weston's own BR2_PACKAGE_SEATD selection notwithstanding) but
+	# nothing needs it -- kept as a guarded, non-fatal attempt in case a
+	# future rootfs does ship one and prefers it.
+	if [ -x /usr/bin/seatd ]; then
+		echo "Starting seatd"
+		/usr/bin/seatd -g root &
+		sleep 1
+	fi
 
 	mkdir -p "$RUNTIME_DIR"
 	chmod 0700 "$RUNTIME_DIR"
 	export XDG_RUNTIME_DIR="$RUNTIME_DIR"
 
+	# --continue-without-input: touchscreen isn't wired up yet (explicit
+	# non-goal) and there's no physical keyboard/mouse, so libinput finds
+	# zero seats -- Weston's DRM backend otherwise treats that as fatal
+	# ("failed to create input devices" / "failed to create compositor
+	# backend", confirmed from a real weston.log run on-device). This is
+	# Weston's own documented flag for exactly this kiosk/no-input
+	# scenario (doc/sphinx/toc/running-weston.rst), not a hidden workaround.
+	# --tty=1 was tried first and made weston fail later, at shell-module
+	# load time, with "fatal: unhandled option: --tty=1" (confirmed live
+	# on-device -- DRM backend init itself succeeds either way, so this
+	# isn't a DRM/VT issue, just an argument weston 15.0.1 doesn't want
+	# here). Omitted; weston picks a VT on its own without it.
 	echo "Starting weston"
-	/usr/bin/weston --tty=1 --backend=drm-backend.so \
+	/usr/bin/weston --backend=drm-backend.so \
+		--continue-without-input \
 		--log=/var/log/weston.log &
 
 	# weston-terminal is a plain Wayland client -- give the compositor

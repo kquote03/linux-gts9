@@ -65,8 +65,14 @@ pkgs.mkShell {
     # debootstrap-based Phase 4 Ubuntu rootfs above. Buildroot builds its own
     # internal toolchain/musl and downloads its own package sources under its
     # own output/ tree; wget is the one host tool it needs that nothing above
-    # already provides (its own downloader defaults to wget).
+    # already provides (its own downloader defaults to wget). `file` is also
+    # required by Buildroot's own dependency check (patched in
+    # scripts/build-buildroot-rootfs.sh to accept it via PATH rather than
+    # NixOS's nonexistent /usr/bin/file) -- listed here so the shell is
+    # self-contained rather than relying on it happening to already be on
+    # PATH from the host's own NixOS config.
     wget
+    file
   ];
 
   shellHook = ''
@@ -82,6 +88,21 @@ pkgs.mkShell {
     # failure and testing the override directly, not guessing.
     export HOSTCC=cc
     export HOSTCXX=c++
+
+    # llvm.clang-unwrapped being on PATH at all (needed for Kbuild's own
+    # LLVM=1 clang/lld discovery, see above) means its bundled bare `cpp`
+    # binary -- not a properly-wrapped one with NixOS's default header
+    # search paths -- is what plain `cpp`/autoconf's preprocessor probe
+    # finds on PATH ahead of the real one, independent of HOSTCC/HOSTCXX
+    # (those only cover Kbuild's own invocations, not every other
+    # program's own toolchain detection). Exporting CPP fixes this for any
+    # tool that consults it directly (confirmed: a bare `cpp` invocation
+    # with a real header include fails without this, succeeds with it).
+    # Buildroot's own host-package builds needed a second, more targeted
+    # fix on top of this -- see scripts/build-buildroot-rootfs.sh's
+    # HOSTCPP override and its comment for why this export alone wasn't
+    # enough there.
+    export CPP="cc -E"
 
     # bare clang-unwrapped doesn't auto-find its own resource-dir (builtin
     # headers like arm_neon.h) on NixOS -- nixpkgs splits it into a separate

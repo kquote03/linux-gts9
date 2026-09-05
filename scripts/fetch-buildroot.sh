@@ -36,12 +36,20 @@ echo "pinned commit verified: $head"
 git -C "$target" describe --always --tags
 
 # Sanity check: this should actually be a Buildroot checkout, not just any
-# repo that happened to be at this commit.
-for f in Makefile "package/weston/Config.in" "package/weston-terminal/Config.in"; do
+# repo that happened to be at this commit. weston-terminal isn't a
+# separate package in this Buildroot release -- it's one of Weston's own
+# bundled "tools" (package/weston/weston.mk unconditionally passes
+# -Dtools=...,terminal,... to its meson build), so check for that instead
+# of a package directory that doesn't exist.
+for f in Makefile "package/weston/Config.in"; do
 	path="$target/$f"
 	if [ ! -f "$path" ]; then
 		echo "expected Buildroot file missing: $path" >&2
 		exit 1
 	fi
 done
-echo "Buildroot layout looks right (weston/weston-terminal packages present)"
+if ! grep -q 'terminal' "$target/package/weston/weston.mk"; then
+	echo "package/weston/weston.mk doesn't reference a 'terminal' tool -- weston-terminal support may have changed in this Buildroot release, re-check" >&2
+	exit 1
+fi
+echo "Buildroot layout looks right (weston present, weston-terminal built as one of its tools)"

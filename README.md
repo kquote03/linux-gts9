@@ -21,17 +21,22 @@ including six real kernel-config/devicetree bugs found and fixed to get there
 modprobe available at this bring-up stage — a recurring pattern, not six
 unrelated problems).
 
-**The display works.** Mainline DRM/KMS drives the internal panel
-(Samsung/Anapass ANA38407 DDIC, part AMSA10FA01) via a from-scratch panel
-driver (`kernel/drivers/panel-samsung-ana38407-x716.c`) — confirmed on real
+**The display works, and so does a real Wayland session on it.** Mainline
+DRM/KMS drives the internal panel (Samsung/Anapass ANA38407 DDIC, part
+AMSA10FA01) via a from-scratch panel driver
+(`kernel/drivers/panel-samsung-ana38407-x716.c`) — confirmed on real
 hardware: the boot-logo Tux array, then a genuine fbcon text console with a
 blinking cursor, with the whole DPU/DSI/panel stack binding with zero
 errors in `dmesg`. A separate, minimal Buildroot-built rootfs (Weston +
-weston-terminal, no Mesa/GPU — pixman software rendering only) builds
-cleanly and resolves correctly at the Kconfig level but hasn't been flashed
-yet — that's the natural next step now that the underlying pipeline is
-confirmed alive. See `docs/porting-log.md`'s Session 5 entry for the full
-story.
+weston-terminal, no Mesa/GPU — pixman software rendering only, ~14.4 MiB
+compressed) builds cleanly, flashes into `vendor_boot`'s ramdisk slot
+(too big for `init_boot`'s fixed 8 MiB — see `docs/porting-log.md`'s
+Session 5 entry), and **weston-terminal renders on the panel**, confirmed
+directly on the tablet. One fix (dropping a `--tty` flag that turned out
+to fail, adding `--continue-without-input` since there's no touchscreen or
+keyboard yet) was verified live over the serial shell but not yet baked
+into a freshly-flashed image — rebuilding once more to pick that up is a
+loose end, not a real unknown.
 
 **What doesn't work yet:** a real root filesystem (still a debug-only ramdisk;
 see Phase 4 below), touchscreen, WiFi/BT, camera, audio, sensors,
@@ -54,10 +59,13 @@ nix-shell -p picocom --run "picocom -b 115200 /dev/ttyACM0"
 # or: nix-shell -p screen --run "screen /dev/ttyACM0 115200"
 ```
 
-Press Enter once or twice for a prompt. If it looks stuck (stray input from
-something else that wrote to the port), send Ctrl-D once — the ramdisk
-respawns a fresh shell automatically. Exit picocom with Ctrl-A then Ctrl-X;
-exit screen with Ctrl-A then `k`, then confirm.
+Press Enter once or twice for a prompt. On the debug ramdisk this drops
+straight into a shell (if it looks stuck — stray input from something else
+that wrote to the port — send Ctrl-D once, it respawns a fresh shell
+automatically). On the Weston rootfs it's a real login prompt instead
+(`buildroot login:`) — log in as `root` with an empty password (just press
+Enter at the password prompt). Exit picocom with Ctrl-A then Ctrl-X; exit
+screen with Ctrl-A then `k`, then confirm.
 
 ## Scope
 
@@ -112,18 +120,28 @@ bash scripts/build-mainline-kernel.sh
 #    not the real Ubuntu rootfs, that's Phase 4, not yet written
 bash scripts/build-bringup-ramdisk.sh
 
-# 3b. (optional) instead of 3: the Weston + weston-terminal rootfs
-#     (see "Display" in Status above -- not yet validated on real
-#     hardware). Separate from the debug ramdisk; pick one or the other
-#     as step 4's ramdisk input, not both.
+# 3b. (optional) instead of 3: the Weston + weston-terminal rootfs --
+#     confirmed working on real hardware (weston-terminal rendering on
+#     the panel), see docs/porting-log.md's Session 5 entry. This is a
+#     real build-from-source (Buildroot builds its own toolchain + every
+#     package), so it takes a while -- ~15 MiB compressed once done,
+#     deliberately built with no Mesa/GPU (pixman software rendering only).
 # bash scripts/fetch-buildroot.sh
 # bash scripts/build-buildroot-rootfs.sh
 
 # 4. Package boot.img/init_boot.img/vendor_boot.img/dtbo.img (reads the
-#    debug ramdisk by default; point BRINGUP_RAMDISK at the Weston
-#    rootfs's output instead if you built step 3b)
+#    debug ramdisk by default; the Weston rootfs needs a different
+#    invocation -- see below -- since it's too big for init_boot's fixed
+#    8 MiB partition and has to go into vendor_boot's 96 MiB one instead)
 bash scripts/build-android-v4-bundle.sh
-# or: BRINGUP_RAMDISK=out/buildroot/images/rootfs.cpio.gz \
+
+# or, for the Weston rootfs from step 3b: init_boot gets a genuinely
+# empty ramdisk (nothing in it to conflict with vendor_boot's real
+# rootfs, whichever way ABL concatenates the two at boot) and vendor_boot
+# gets the real Weston rootfs.
+# bash scripts/build-empty-ramdisk.sh
+# INIT_BOOT_RAMDISK=out/empty-ramdisk.cpio.gz \
+#     VENDOR_RAMDISK=out/buildroot/images/rootfs.cpio.gz \
 #     bash scripts/build-android-v4-bundle.sh
 
 # 5. Flash (TWRP must be running and reachable via `adb devices`; this is

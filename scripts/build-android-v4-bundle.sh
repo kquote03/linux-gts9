@@ -42,7 +42,24 @@ kernel_image=${KERNEL_IMAGE:-$repo_root/out/kernel/arch/arm64/boot/Image}
 ramdisk=${BRINGUP_RAMDISK:-$repo_root/out/bringup-ramdisk.cpio.gz}
 board_dtb=${BOARD_DTB:-$repo_root/out/kernel/arch/arm64/boot/dts/qcom/sm8550-samsung-x716b.dtb}
 
-for f in "$kernel_image" "$ramdisk" "$board_dtb"; do
+# init_boot (8 MiB) and vendor_boot (96 MiB) each carry their own ramdisk
+# -- ABL concatenates them into one combined initramfs at boot (standard
+# mainline behavior: multiple concatenated cpio archives, later entries
+# overriding earlier ones for the same path -- not an Android-specific
+# trick). They default to the SAME small ramdisk (historically both were
+# the tiny debug bring-up ramdisk, comfortably under either partition's
+# size), but can be pointed at different inputs independently -- needed
+# once a real rootfs (e.g. the Buildroot Weston rootfs, ~15-18 MiB) is
+# bigger than init_boot's fixed 8 MiB but still fits vendor_boot's 96 MiB
+# easily. See docs/porting-log.md's Session 5 entry for why this split
+# was added: a first attempt just pointing BRINGUP_RAMDISK at the Weston
+# rootfs failed outright ("Image size ... exceeds maximum image size ...
+# in order to fit in a partition size of 8388608") since it defaulted
+# into BOTH slots including the too-small init_boot one.
+init_boot_ramdisk=${INIT_BOOT_RAMDISK:-$ramdisk}
+vendor_ramdisk_src=${VENDOR_RAMDISK:-$ramdisk}
+
+for f in "$kernel_image" "$init_boot_ramdisk" "$vendor_ramdisk_src" "$board_dtb"; do
 	if [ ! -f "$f" ]; then
 		echo "missing build input: $f" >&2
 		exit 1
@@ -53,29 +70,53 @@ done
 # framing, not gzip -- confirmed by ubuntu-galaxy-tab-s9ultra's own script
 # comment: "stock uses the legacy LZ4 stream format... a gzip generic
 # ramdisk is a valid Android v4 image but Linux rejects the resulting
-# initrd with 'invalid magic at start of compressed archive'." Our
-# bring-up ramdisk is built as gzip cpio (scripts/build-bringup-ramdisk.sh),
-# so convert it here rather than changing that script's output format.
-case $(head -c4 "$ramdisk" | od -An -tx1 | tr -d ' \n') in
-	02214c18)
-		lz4_ramdisk=$ramdisk
-		;;
-	1f8b*)
-		lz4_ramdisk=$workdir/bringup-ramdisk.lz4
-		gzip -dc "$ramdisk" | lz4 -l -12 - "$lz4_ramdisk" >/dev/null
-		;;
-	*)
-		echo "ramdisk $ramdisk is neither gzip nor legacy LZ4; refusing" >&2
-		exit 1
-		;;
-esac
+# initrd with 'invalid magic at start of compressed archive'." Our own
+# ramdisk builders produce gzip cpio, so convert here rather than
+# changing either of those scripts' output format.
+to_lz4() {
+	local src=$1 dst=$2
+	case $(head -c4 "$src" | od -An -tx1 | tr -d ' \n') in
+		02214c18)
+			printf '%s' "$src"
+			;;
+		1f8b*)
+			gzip -dc "$src" | lz4 -l -12 - "$dst" >/dev/null
+			printf '%s' "$dst"
+			;;
+		*)
+			echo "ramdisk $src is neither gzip nor legacy LZ4; refusing" >&2
+			exit 1
+			;;
+	esac
+}
+lz4_ramdisk=$(to_lz4 "$init_boot_ramdisk" "$workdir/init-boot-ramdisk.lz4")
+vendor_lz4_ramdisk=$(to_lz4 "$vendor_ramdisk_src" "$workdir/vendor-ramdisk.lz4")
 
 # Confirmed partition sizes (docs/hardware-facts.md) -- avbtool needs these
-# to size the footer correctly.
+# to size the footer correctly, and used below to fail fast with a clear
+# message (rather than avbtool's own less obvious error) if a ramdisk is
+# too big for the slot it's headed for.
 boot_size=100663296
 init_boot_size=8388608
 vendor_boot_size=100663296
 dtbo_size=16777216
+
+check_fits() {
+	local file=$1 partition_size=$2 label=$3
+	local size
+	size=$(stat -c%s "$file")
+	# avbtool's hash footer itself needs room too -- same margin avbtool
+	# already enforces internally, checked here just to fail earlier with
+	# a clearer message naming the actual ramdisk that's too big.
+	if [ "$size" -gt $((partition_size - 69632)) ]; then
+		echo "$label ramdisk ($file, $size bytes) is too big for its" \
+			"partition ($partition_size bytes) -- point INIT_BOOT_RAMDISK/" \
+			"VENDOR_RAMDISK at something smaller, or move it to the other slot" >&2
+		exit 1
+	fi
+}
+check_fits "$lz4_ramdisk" "$init_boot_size" "init_boot"
+check_fits "$vendor_lz4_ramdisk" "$vendor_boot_size" "vendor_boot"
 
 # fw_devlink=off + deferred_probe_timeout=10 was tried 2026-09-05 to test
 # whether late boot was stuck waiting indefinitely in the deferred-probe
@@ -139,7 +180,7 @@ python3 "$mkbootimg" \
 	--dtb "$board_dtb" \
 	--dtb_offset 0x1f00000 \
 	--vendor_cmdline "$cmdline" \
-	--vendor_ramdisk "$lz4_ramdisk" \
+	--vendor_ramdisk "$vendor_lz4_ramdisk" \
 	--vendor_boot "$android_out/vendor_boot.img"
 python3 "$avbtool" add_hash_footer \
 	--image "$android_out/vendor_boot.img" \
