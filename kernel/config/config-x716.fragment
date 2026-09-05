@@ -43,6 +43,127 @@ CONFIG_QCOM_SCM=y
 # drivers/misc/ by scripts/build-mainline-kernel.sh.
 CONFIG_X716_SEC_LOG=y
 
+# Lockup/hang detection, forced to panic (then auto-reboot via the
+# cmdline's panic=10). Added 2026-09-05 after attempts 9/10 hung silently
+# (no Oops/panic, no auto-reset) instead of crashing -- with no display
+# and no way to see a hang in progress, every hang otherwise requires a
+# manual hardware reset, and each manual reset attempt writes enough TWRP
+# preamble noise into the small (2 MiB) sec-log ring buffer to overwrite
+# whatever our own kernel had managed to log before hanging. Turning a
+# silent hang into a bounded panic+reboot removes the user from that loop
+# entirely and keeps the ring buffer far less contaminated by the time a
+# capture is taken. Note: ABL appends its own "nowatchdog" to the cmdline
+# (visible in captures, logged as an "Unknown kernel command line
+# parameter" since this kernel didn't recognize it before this change)
+# which would otherwise neutralize a *cmdline-only* watchdog approach --
+# these detectors are turned on by Kconfig default instead, not by a
+# cmdline flag, so ABL's injected "nowatchdog" can't disable them the same
+# way (nowatchdog's actual effect, once CONFIG_LOCKUP_DETECTOR exists, is
+# nosoftlockup+nohardlockup -- verify this doesn't reappear as a problem
+# if lockup detection still doesn't fire).
+CONFIG_SOFTLOCKUP_DETECTOR=y
+CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC=1
+CONFIG_HARDLOCKUP_DETECTOR=y
+CONFIG_BOOTPARAM_HARDLOCKUP_PANIC=y
+CONFIG_DETECT_HUNG_TASK=y
+CONFIG_DEFAULT_HUNG_TASK_TIMEOUT=15
+CONFIG_BOOTPARAM_HUNG_TASK_PANIC=1
+
+# simplefb: inherits ABL's already-configured boot-splash scanout buffer
+# for a plain fbcon text console -- no real panel/DRM driver needed. Added
+# 2026-09-05 alongside the DTS's "simple-framebuffer" node (see
+# kernel/dts/sm8550-samsung-x716b.dts's chosen node) once the sec-log/
+# last_kmsg channel proved unable to survive the boot-cycle-to-reach-TWRP
+# transition for late-boot events. Built-in (=y), not =m: no rootfs/modprobe
+# exists yet at this bring-up stage. CONFIG_FB/CONFIG_FRAMEBUFFER_CONSOLE
+# are already =y in defconfig at the pinned tag.
+CONFIG_FB_SIMPLE=y
+
+# exFAT, for writing bring-up logs to the already-inserted, already-exFAT
+# -formatted microSD card (kernel/dts/sm8550-samsung-x716b.dts's &sdhc_2).
+# Added 2026-09-05: the sec-log/last_kmsg ring buffer (2 MiB, shared with
+# ABL/XBL's own verbose preamble) proved unable to survive the mandatory
+# reboot-to-TWRP transition needed just to read it back, erasing late-boot/
+# userspace evidence on every attempt. A file written to the SD card
+# persists across any number of subsequent reboots. CONFIG_MMC_SDHCI_MSM
+# is already =y in defconfig at the pinned tag -- only exFAT support itself
+# was missing.
+CONFIG_EXFAT_FS=y
+
+# USB gadget serial console (ttyGS0), builtin (=y) -- CONFIG_USB_CONFIGFS
+# defaults to =m (module) which is useless with no rootfs/modprobe at this
+# bring-up stage; g_serial is a simple legacy gadget driver that needs no
+# userspace configfs setup at all. Added 2026-09-05 alongside
+# kernel/dts/sm8550-samsung-x716b.dts's minimal &usb_1/&usb_1_hsphy nodes,
+# after sec-log/last_kmsg, simple-framebuffer, and microSD logging all
+# failed to show anything past attempt 8's known-good point (though a
+# GPIO-heartbeat LED confirmed the kernel is genuinely alive, not crashed).
+CONFIG_USB_G_SERIAL=y
+
+# Full USB Type-C stack (sm5714 TCPM + ps5169 redriver + ptn3222 eUSB2
+# repeater), added 2026-09-05 after a minimal HS-only gadget attempt (no
+# role-switch/redriver at all) failed to enumerate on the host -- the
+# external redriver most likely does real, necessary Type-C lane-routing
+# work, not just signal conditioning. Drivers installed by
+# scripts/build-mainline-kernel.sh from kernel/drivers/{sm5714_battery,
+# sm5714_usbpd,ps5169}.c (ubuntu-galaxy-tab-s9ultra originals, GPL-2.0,
+# proven on the SM-X910 Ultra -- same SoC generation). All built-in (=y),
+# not modules -- no rootfs/modprobe exists at this bring-up stage.
+# TYPEC_DP_ALTMODE deliberately excluded: it can only be built in (=y) if
+# CONFIG_DRM is also =y, which it isn't (=m, and modules are useless with
+# no rootfs/modprobe at this stage) -- and DisplayPort-over-USB-C is
+# orthogonal to the actual goal here (a USB data/serial console), so the
+# DTS's altmode/displayport properties were dropped too rather than
+# fighting this dependency.
+# The actual root cause of "zero i2c adapters, zero USB chip drivers ever
+# probed" (found 2026-09-05 after all i2c-bus-level DTS wiring checked out
+# fine and even the bus *controllers* themselves showed zero adapters via
+# a userspace /sys check): CONFIG_I2C_QCOM_GENI defaults to =m in
+# defconfig, and with no rootfs/modprobe at this bring-up stage, a module
+# never loads -- so i2c6/i2c12/i2c_hub_8/i2c_hub_9 (all "qcom,geni-i2c"/
+# "qcom,geni-i2c-master-hub") never had a working driver at all, before
+# ever reaching the question of whether ptn3222/ps5169/sm5714's own
+# regulators were guessed correctly.
+# Same class of bug as CONFIG_I2C_QCOM_GENI above, found 2026-09-05 the
+# same way (a userspace /sys platform-driver-bound check, reported via
+# vibration codes): CONFIG_PHY_SNPS_EUSB2 (the driver for usb_1_hsphy,
+# "qcom,sm8550-snps-eusb2-phy") also defaults to =m in defconfig. With no
+# module ever loading, usb_1_hsphy never binds, which means it never
+# calls phy_init() on ptn3222 (the eUSB2 repeater) either -- even though
+# ptn3222 itself binds fine as an i2c client, its regulators/reset are
+# gated behind that phy_init() call and never actually get enabled. This
+# is the most likely full explanation for the USB PHY's persistent
+# "low-speed misdetection, stall on first descriptor" symptom: the D+/D-
+# lines were never coming out of an undefined/reset state at all.
+# Fourth instance of this exact bug class this session (module defaults
+# with no modprobe available), found 2026-09-05: CONFIG_PHY_QCOM_QMP_COMBO
+# (the USB3/DisplayPort combo PHY driver for usb_dp_qmpphy,
+# "qcom,sm8550-qmp-usb3-dp-phy") also defaults to =m. dwc3_core_probe()
+# needs to resolve BOTH entries in usb_1's `phys` list (usb_1_hsphy AND
+# usb_dp_qmpphy) to succeed -- with this one stuck as a never-loading
+# module, dwc3-qcom's own probe was permanently blocked regardless of how
+# long snps-eusb2-hsphy's own (separate, now-resolved) dependency took.
+# PHY_QCOM_QMP_COMBO has `depends on DRM || DRM=n` -- Kconfig's
+# consistent-module-state rule means it can't be =y while DRM is =m (a
+# built-in driver can't safely depend on a module that might not be
+# loaded). We have no working DRM-based display path anyway (the earlier
+# simple-framebuffer attempt used the separate, older fbdev/FB_SIMPLE
+# framework, not DRM) -- disabling DRM entirely satisfies the `DRM=n`
+# alternative cleanly, without pulling in DRM's own built-in module
+# dependencies as yet another instance of this same bug class.
+CONFIG_PHY_QCOM_QMP=y
+CONFIG_PHY_QCOM_QMP_COMBO=y
+# CONFIG_DRM is not set
+CONFIG_PHY_SNPS_EUSB2=y
+CONFIG_I2C_QCOM_GENI=y
+CONFIG_PHY_NXP_PTN3222=y
+CONFIG_TYPEC=y
+CONFIG_TYPEC_TCPM=y
+CONFIG_BATTERY_SM5714=y
+CONFIG_TYPEC_SM5714=y
+CONFIG_TYPEC_MUX_GPIO_SBU=y
+CONFIG_TYPEC_MUX_PS5169=y
+
 # Explicitly NOT enabled here (deferred, see docs/hardware-facts.md
 # non-goals): DRM/panel, touchscreen, WCN7850 wifi/bt, camera, audio
 # DSP/APR, sensors, cellular modem remoteproc.

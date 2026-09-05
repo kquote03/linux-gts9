@@ -503,22 +503,103 @@ capture saved at `work/bringup-2026-09-05/last_kmsg-attempt1.txt`.
   or present on every boot of this device regardless. Worth capturing a
   stock-boot log for comparison if they recur and start to look load-bearing.
 
+### Root cause found (2026-09-05, attempt 6): the "Exit Boot Services"
+diagnosis above was a misattribution — real failure is much earlier
+
+After dropping uniLoader and testing a raw mainline kernel `Image`
+(attempt 6), the result was superficially identical (Download Mode again)
+— but this time the full `/proc/last_kmsg` capture was read carefully
+line-by-line instead of just grepped for expected markers, and it
+revealed the actual failure point directly, identically present **in all
+six attempts including the five uniLoader ones**:
+
+```
+[ ABL ] No Valid Dtb
+[ ABL ] Unable to find the Board Dtb
+[ ABL ] Error: Board Dtbo blob not found
+[ ABL ] Launching odin -927639495
+```
+
+Confirmed by grepping every saved capture
+(`work/bringup-2026-09-05/last_kmsg-attempt{1,2,3,4,5-gzip,6-rawkernel}.txt`)
+— this exact sequence is present in **all six**, at the point right after
+ABL sets `SetDdiKernelType: init_boot` and before any kernel/payload code
+could possibly run. **ABL never executed uniLoader or the mainline kernel
+in any of the six attempts** — it fails its own DTB/DTBO validation step
+and launches Odin (Download Mode) directly as an error path, before ever
+reaching kernel decompression or jump. This also resolves the earlier
+"every attempt ends at XBL `Exit Boot Services`/`+0xB3C`" observation from
+attempts 1–4: that log content actually belongs to the **subsequent
+automatic-fallback boot into `recovery` (TWRP)** after a warm reset
+following the Odin launch, not to our own boot attempt — `SetDdiKernelType:
+recovery` and a second `SetDdiKernelType: vbmeta` pass are visible
+immediately before it in every capture. All of the uniLoader-specific
+debugging (checkpoints, `TEXT_BASE`, gzip-vs-plain) was chasing a problem
+that was never in uniLoader's code — the boot chain died at DTB/DTBO
+validation, upstream of the kernel slot entirely, every single time.
+
+**Concrete bug found and fixed**: `scripts/build-android-v4-bundle.sh`'s
+`dtbo.img` fallback builder (used because `mkdtboimg.py` isn't vendored)
+packed only **7** `uint32` header fields (28 bytes) while declaring
+`header_size=32` and `dt_entries_offset=32` — Android's real
+`dt_table_header` struct has **8** fields (adds a trailing `version`
+field), confirmed directly against `backups/2026-09-05/dtbo.img`'s actual
+header bytes (`d7b7ab1e 0031192e 00000020 00000020 00000004 00000020
+00001000 00000000`). The missing field misaligned every subsequent byte
+by 4, so ABL was parsing garbage for the (single, no-op) DTBO entry — a
+plausible direct explanation for the exact "no valid/unable to find"
+errors observed. Fixed by adding the `version=0` field to the struct pack
+call. Rebuilt bundle's `dtbo.img` verified by unpacking the new header:
+`entries_offset=32` now correctly lines up with the entry's actual byte
+position (previously off by 4), entry `size=140, offset=64` are sane
+relative to the embedded no-op blob.
+
+**Attempt 7**: reflashed all four partitions with only `dtbo.img` content
+changed (same raw-kernel `boot.img`/`init_boot.img`/`vendor_boot.img` as
+attempt 6) to isolate this one variable. See `docs/porting-log.md` for the
+result.
+
+Open question if attempt 7 still fails the same way: whether ABL further
+requires the DTBO table's single entry to carry non-zero `id`/`rev` fields
+matching this board's actual board-id/soc-id (rather than accepting an
+`id=0, rev=0` no-op/wildcard entry) — the stock `dtbo.img`'s entry 0 also
+has `id=0, rev=0` though, which is at least suggestive that 0/0 is an
+accepted default/always-match entry, not something ABL requires to be
+board-specific.
+
 ## Open risks / unverified assumptions (carried into later phases)
 
-1. Whether X716's ABL has the same DTB-append-to-kernel /
-   DTBO-fallback-to-inert-stub behavior the X910 reference relies on.
-   **Unverified** — first flash attempt (Phase 2) is the real test.
-2. Whether ABL reads the boot DTB from `vendor_boot` or from `boot`
-   (appended to `Image.gz`) — assumed to match X910 by analogy, must be
-   confirmed on X716 specifically before trusting DTS-only iteration to
-   "just work" by reflashing `vendor_boot`.
+1. ~~Whether X716's ABL has the same DTB-append-to-kernel /
+   DTBO-fallback-to-inert-stub behavior the X910 reference relies on.~~ —
+   **RESOLVED**, but not the way originally assumed: the working recipe is
+   *not* "append DTB to boot, real dtbo table with fallback" — it's
+   "`vendor_boot` carries the real DTB, `dtbo.img` is a **4096-byte
+   all-zero blob** (not a DT table at all, not even an empty one), `boot`'s
+   kernel is gzip'd with the DTB *also* appended after it." Adopted
+   verbatim from `ubuntu-galaxy-tab-s9ultra` (same SM8550 generation,
+   proven on real hardware) after six consecutive attempts all failed
+   identically at ABL's own DTB/DTBO validation (`"No Valid Dtb"`) — see
+   `docs/porting-log.md`'s "Session 4" entry for the full story and
+   `docs/boot-strategy.md` for the current, validated boot chain.
+2. ~~Whether ABL reads the boot DTB from `vendor_boot` or from `boot`~~ —
+   **RESOLVED**: `vendor_boot`'s DTB is what's actually applied (confirmed
+   by attempt 8's kernel correctly parsing this board's regulators/UFS/
+   sec-log reserved-memory node); `boot`'s appended copy matches the X910
+   recipe's structure but isn't the one in effect.
 3. Whether the 5G SKU's ABL has board-id/partition-selection differences
    from the Wi-Fi-only X910 (e.g. due to the modem partition's presence).
-   **Unknown** until first flash.
+   **Still unknown** — nothing found so far suggests a difference, but
+   nothing has specifically tested for one either.
 4. ~~Whether the `sec_log_buf_region` readback-via-TWRP debug channel
-   actually works on this unit~~ — **RESOLVED, confirmed working** via a
-   direct end-to-end test on 2026-09-05 (stock Android → TWRP, real content
-   read back at the exact expected size). See the sec-log driver section
-   above for details. Remaining uncertainty is narrower: whether *our*
-   driver's later probe time (`arch_initcall`) captures enough before a
-   possible early hang — not whether the channel works at all.
+   actually works on this unit~~ — confirmed working for *early-to-mid*
+   boot content (attempt 8 captured our own kernel's boot banner and
+   sec-log driver registration cleanly), but **a real, hard capacity limit
+   was found**: reaching TWRP at all requires a boot cycle whose own
+   XBL/PBL/ABL preamble is verbose enough to overwrite our kernel's late-
+   boot/userspace-stage output almost every time. Not useful for
+   diagnosing anything past roughly the point attempt 8 reached. See
+   `docs/porting-log.md`'s "the diagnostic channel hits a hard capacity
+   wall" for the full investigation, and `docs/boot-strategy.md` for the
+   two channels added to work around it (`simple-framebuffer`, persistent
+   microSD logging) — as of this writing, both came back with no signal
+   on the current (post-attempt-8) build, not yet root-caused.

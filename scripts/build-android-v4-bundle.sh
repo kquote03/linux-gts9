@@ -1,10 +1,27 @@
 #!/usr/bin/env bash
-# Package uniLoader + a ramdisk + the board DTB into boot.img/init_boot.img/
-# vendor_boot.img/dtbo.img, matching this device's confirmed partition
-# sizes and header format (measured from the 2026-09-04 TWRP backup -- see
-# docs/hardware-facts.md). No AVB signing keys are used: vbmeta on this
-# device already has verification disabled (AVB flags=2, confirmed), so
-# these footers are structural only (--algorithm NONE), not cryptographic.
+# Package the raw mainline kernel Image + a ramdisk + the board DTB into
+# boot.img/init_boot.img/vendor_boot.img/dtbo.img, matching this device's
+# confirmed partition sizes and header format (measured from the
+# 2026-09-04 TWRP backup -- see docs/hardware-facts.md). No AVB signing
+# keys are used: vbmeta on this device already has verification disabled
+# (AVB flags=2, confirmed), so these footers are structural only
+# (--algorithm NONE), not cryptographic.
+#
+# uniLoader was tried as an intermediate bootloader in boot's kernel slot
+# and dropped after five inconclusive flash attempts (zero diagnostic
+# signal despite verified-correct code). Those five attempts, plus two
+# more with a raw kernel Image, all turned out to fail identically at
+# ABL's own DTB/DTBO validation step ("No Valid Dtb" / "Unable to find
+# the Board Dtb" / "Error: Board Dtbo blob not found" -- see
+# docs/hardware-facts.md's root-cause section) -- never reaching the
+# kernel/payload slot at all. This script now follows the validated,
+# real-hardware-proven recipe from ubuntu-galaxy-tab-s9ultra/ (the SM-X910
+# Ultra port -- same SM8550 "kalama" chip generation as this device):
+# gzip the kernel and append the board DTB directly after it, and make
+# dtbo.img deliberately NOT a DT table (a zero-filled blob) so ABL can't
+# take its downstream "ufdt" merge path, which is what was rejecting our
+# mainline DTB every time. uniloader-overlay/ and scripts/build-uniloader.sh
+# remain in the repo, unused, in case it's worth revisiting later.
 #
 # Produces files under out/android/ -- nothing is flashed by this script.
 # See docs/boot-strategy.md for the pre-flash checklist that must be
@@ -15,25 +32,43 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 outdir=${BUILD_OUT:-$repo_root/out}
 android_out=$outdir/android
 mkdir -p "$android_out"
+workdir=$(mktemp -d)
+trap 'rm -rf "$workdir"' EXIT
 
 mkbootimg=$repo_root/third_party/android-tools/mkbootimg/mkbootimg.py
 avbtool=$repo_root/third_party/android-tools/avb/avbtool.py
 
-# CONFIG_COMPRESS_GZIP=y also builds uniLoader.gz; which of the two ABL
-# actually wants is unconfirmed (see docs/hardware-facts.md) -- defaulting
-# to the uncompressed binary since that's the more conservative choice
-# structurally (no assumption that ABL will decompress it), overridable via
-# UNILOADER_KERNEL for the first flash attempt to try the alternative.
-uniloader=${UNILOADER_KERNEL:-$repo_root/uniloader/upstream/uniLoader}
+kernel_image=${KERNEL_IMAGE:-$repo_root/out/kernel/arch/arm64/boot/Image}
 ramdisk=${BRINGUP_RAMDISK:-$repo_root/out/bringup-ramdisk.cpio.gz}
 board_dtb=${BOARD_DTB:-$repo_root/out/kernel/arch/arm64/boot/dts/qcom/sm8550-samsung-x716b.dtb}
 
-for f in "$uniloader" "$ramdisk" "$board_dtb"; do
+for f in "$kernel_image" "$ramdisk" "$board_dtb"; do
 	if [ ! -f "$f" ]; then
 		echo "missing build input: $f" >&2
 		exit 1
 	fi
 done
+
+# Samsung's boot chain expects the generic/vendor ramdisks in legacy LZ4
+# framing, not gzip -- confirmed by ubuntu-galaxy-tab-s9ultra's own script
+# comment: "stock uses the legacy LZ4 stream format... a gzip generic
+# ramdisk is a valid Android v4 image but Linux rejects the resulting
+# initrd with 'invalid magic at start of compressed archive'." Our
+# bring-up ramdisk is built as gzip cpio (scripts/build-bringup-ramdisk.sh),
+# so convert it here rather than changing that script's output format.
+case $(head -c4 "$ramdisk" | od -An -tx1 | tr -d ' \n') in
+	02214c18)
+		lz4_ramdisk=$ramdisk
+		;;
+	1f8b*)
+		lz4_ramdisk=$workdir/bringup-ramdisk.lz4
+		gzip -dc "$ramdisk" | lz4 -l -12 - "$lz4_ramdisk" >/dev/null
+		;;
+	*)
+		echo "ramdisk $ramdisk is neither gzip nor legacy LZ4; refusing" >&2
+		exit 1
+		;;
+esac
 
 # Confirmed partition sizes (docs/hardware-facts.md) -- avbtool needs these
 # to size the footer correctly.
@@ -42,12 +77,32 @@ init_boot_size=8388608
 vendor_boot_size=100663296
 dtbo_size=16777216
 
+# fw_devlink=off + deferred_probe_timeout=10 was tried 2026-09-05 to test
+# whether late boot was stuck waiting indefinitely in the deferred-probe
+# mechanism -- confirmed via the userspace-reached vibration burst (see
+# docs/porting-log.md) that userspace is fine regardless, so that test's
+# job was done. Reverted here after a deep investigation found it was
+# actively HURTING one of the new USB Type-C drivers: ps5169.c's probe()
+# calls fwnode_usb_role_switch_get(), a legitimate supplier dependency on
+# &usb_1's role-switch registration that needs an -EPROBE_DEFER retry --
+# with fw_devlink off and only a 10s deferred_probe_timeout, the driver
+# core gave up permanently instead of retrying once usb_1 was ready.
 cmdline="earlycon loglevel=8 log_buf_len=4M panic=10 clk_ignore_unused pd_ignore_unused regulator_ignore_unused initcall_debug"
 
-echo "== boot.img (kernel = uniLoader, no ramdisk -- GKI-style split, ramdisk lives in init_boot) =="
+echo "== boot.img (kernel = gzip'd mainline Image with board DTB appended, no ramdisk -- GKI-style split, ramdisk lives in init_boot) =="
+# ABL's own log unconditionally shows a "Decompressing kernel image" step
+# (observed in attempt 6's /proc/last_kmsg capture) -- direct evidence it
+# expects a compressed kernel in this slot, not a raw Image. The DTB is
+# concatenated directly after the gzip stream (the classic ARM64
+# "Image.gz-dtb" appended-DTB convention), matching
+# ubuntu-galaxy-tab-s9ultra's validated recipe exactly.
+boot_kernel=$workdir/Image.gz-dtb
+gzip -c "$kernel_image" > "$workdir/Image.gz"
+cat "$workdir/Image.gz" "$board_dtb" > "$boot_kernel"
+
 python3 "$mkbootimg" \
 	--header_version 4 \
-	--kernel "$uniloader" \
+	--kernel "$boot_kernel" \
 	--cmdline "" \
 	--os_version 15.0.0 \
 	--os_patch_level 2026-09 \
@@ -61,7 +116,7 @@ python3 "$avbtool" add_hash_footer \
 echo "== init_boot.img (generic ramdisk only) =="
 python3 "$mkbootimg" \
 	--header_version 4 \
-	--ramdisk "$ramdisk" \
+	--ramdisk "$lz4_ramdisk" \
 	-o "$android_out/init_boot.img"
 python3 "$avbtool" add_hash_footer \
 	--image "$android_out/init_boot.img" \
@@ -84,7 +139,7 @@ python3 "$mkbootimg" \
 	--dtb "$board_dtb" \
 	--dtb_offset 0x1f00000 \
 	--vendor_cmdline "$cmdline" \
-	--vendor_ramdisk "$ramdisk" \
+	--vendor_ramdisk "$lz4_ramdisk" \
 	--vendor_boot "$android_out/vendor_boot.img"
 python3 "$avbtool" add_hash_footer \
 	--image "$android_out/vendor_boot.img" \
@@ -92,54 +147,27 @@ python3 "$avbtool" add_hash_footer \
 	--partition_size "$vendor_boot_size" \
 	--algorithm NONE
 
-echo "== dtbo.img (inert no-op table, forces ABL to fall back to the appended/vendor_boot DTB) =="
-noop_dts=$(mktemp --suffix=.dts)
-cat > "$noop_dts" <<'EOF'
-/dts-v1/;
-/plugin/;
-/ {
-	fragment@0 {
-		target-path = "/";
-		__overlay__ { };
-	};
-};
-EOF
-noop_dtbo=$(mktemp --suffix=.dtbo)
-dtc -@ -I dts -O dtb -o "$noop_dtbo" "$noop_dts"
-mkdtboimg=$repo_root/third_party/android-tools/mkbootimg/mkdtboimg.py
-if [ -f "$mkdtboimg" ]; then
-	python3 "$mkdtboimg" create "$android_out/dtbo.img" "$noop_dtbo"
-else
-	# mkdtboimg.py isn't vendored (only mkbootimg/repack/unpack + avbtool
-	# were) -- a single-entry DTBO table's header is simple enough to build
-	# directly: magic, tot_size, header_size=32, dt_entry_size=32,
-	# dt_entry_count=1, entries_offset=32, then one entry (size, offset,
-	# id=0, rev=0, 4 reserved words), then the dtbo blob itself.
-	python3 - "$noop_dtbo" "$android_out/dtbo.img" <<'PYEOF'
-import struct, sys
-dtbo_path, out_path = sys.argv[1], sys.argv[2]
-with open(dtbo_path, "rb") as f:
-	dtbo = f.read()
-header_size = 32
-entry_size = 32
-entries_offset = header_size
-dtbo_offset = entries_offset + entry_size
-total_size = dtbo_offset + len(dtbo)
-header = struct.pack(">IIIIIII",
-	0xd7b7ab1e, total_size, header_size, entry_size, 1, entries_offset, 4096)
-entry = struct.pack(">IIIIIIII", len(dtbo), dtbo_offset, 0, 0, 0, 0, 0, 0)
-with open(out_path, "wb") as f:
-	f.write(header)
-	f.write(entry)
-	f.write(dtbo)
-PYEOF
-fi
+echo "== dtbo.img (deliberately NOT a DT table, forces ABL past its downstream ufdt merge path onto vendor_boot's DTB directly) =="
+# An earlier version of this script built a structurally-valid (if,
+# earlier this session, buggy-header) empty DTBO table here. That was the
+# wrong fix: ANY parseable DT table -- empty or not -- makes ABL take its
+# downstream "ufdt" merge path and reject a mainline base DTB outright
+# ("No Valid Dtb" / "Unable to find the Board Dtb" / "Error: Board Dtbo
+# blob not found", confirmed identically across all seven attempts before
+# this fix -- see docs/hardware-facts.md). ubuntu-galaxy-tab-s9ultra
+# (SM-X910 Ultra, same SM8550 chip generation, proven on real hardware)
+# uses exactly this fix: a zero-filled blob with no DT-table magic at all,
+# so ABL can't take that path and falls back to vendor_boot's DTB,
+# unmerged. Its own validate-bundle.sh asserts this by name: a dtbo.img
+# whose first 4 bytes parse as the DT table magic fails its build with
+# "dtbo.img is a DT table; ABL will take the ufdt path and reject the DTB".
+rm -f "$android_out/dtbo.img"
+truncate -s 4096 "$android_out/dtbo.img"
 python3 "$avbtool" add_hash_footer \
 	--image "$android_out/dtbo.img" \
 	--partition_name dtbo \
 	--partition_size "$dtbo_size" \
 	--algorithm NONE
-rm -f "$noop_dts" "$noop_dtbo"
 
 echo
 echo "== bundle artifacts (not flashed -- see docs/boot-strategy.md) =="

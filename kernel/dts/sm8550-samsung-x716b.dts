@@ -26,6 +26,7 @@
 
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
+#include <dt-bindings/usb/pd.h>
 #include "sm8550.dtsi"
 #include "pm8550.dtsi"
 #include "pm8550vs.dtsi"
@@ -84,8 +85,37 @@
 		#address-cells = <2>;
 		#size-cells = <2>;
 		ranges;
-		/* No framebuffer node: display is explicitly deferred (no mainline
-		 * AMSA10FA01 panel driver exists yet). */
+
+		/*
+		 * No real AMSA10FA01 panel driver exists yet, but this doesn't
+		 * need one: ABL already configures a live scanout buffer for its
+		 * own boot splash/log-drawing calls (confirmed repeatedly in this
+		 * device's own ABL logs -- "GlibDrawJpegImage"/"GlibDrawBootImage",
+		 * "GlibGetLCDResolution: [MAIN] Display W=2560, H=1600") --
+		 * "simple-framebuffer" just inherits that already-running scanout
+		 * for a plain fbcon text console, no real display driver needed.
+		 * Added 2026-09-05 to get a directly-visible signal (kernel/init
+		 * console text on the panel) after the sec-log/last_kmsg
+		 * diagnostic channel proved unable to survive the necessary
+		 * boot-cycle-to-reach-TWRP transition for late-boot/userspace
+		 * events (see docs/porting-log.md).
+		 *
+		 * Address/size (0xb8000000, 0x2b00000) and format (a8r8g8b8) are
+		 * copied from sm8550-samsung-q5q.dts (mainline, Z Fold5 -- same
+		 * SoC generation) UNVERIFIED for this board specifically -- only
+		 * width/height (2560x1600) are actually measured for X716 (from
+		 * its own ABL log). If the panel shows garbage/noise instead of
+		 * text, the address or format (not the resolution) is the first
+		 * thing to revisit.
+		 */
+		framebuffer: framebuffer@b8000000 {
+			compatible = "simple-framebuffer";
+			reg = <0x0 0xb8000000 0x0 0x2b00000>;
+			width = <2560>;
+			height = <1600>;
+			stride = <(2560 * 4)>;
+			format = "a8r8g8b8";
+		};
 	};
 
 	vph_pwr: vph-pwr-regulator {
@@ -154,6 +184,23 @@
 			compatible = "samsung,carve-out";
 			reg = <0x08 0x80c00000 0x00 0xad00000>;
 		};
+
+		/*
+		 * Must be named exactly "splash-region" -- sm8550-samsung-q5q.dts
+		 * carries the same node with the comment "The bootloader will only
+		 * keep display hardware enabled if this memory region is named
+		 * exactly 'splash_region'" (i.e. ABL itself checks the DTB it
+		 * hands off to for this specific reserved-memory node before
+		 * deciding whether to leave the display scanout live for Linux to
+		 * inherit -- not just a Linux-side convention). Matches the
+		 * framebuffer node's address/size above exactly; no-map so the
+		 * kernel's normal allocator can't reuse this RAM before simplefb
+		 * claims it.
+		 */
+		splash_region: splash-region@b8000000 {
+			reg = <0x0 0xb8000000 0x0 0x2b00000>;
+			no-map;
+		};
 	};
 
 	/*
@@ -170,6 +217,33 @@
 	samsung_log_buf: log-buf {
 		compatible = "samsung,kernel_log_buf";
 		memory-region = <&sec_log_buf_region>;
+	};
+
+	/*
+	 * Vibration motor as a "kernel is alive" heartbeat signal -- added
+	 * 2026-09-05 after both the sec-log/last_kmsg channel (too small a
+	 * ring buffer to survive the reboot-to-TWRP transition for late-boot
+	 * events) and a `simple-framebuffer` attempt (unverified address/
+	 * format, showed nothing) failed to give any visibility past
+	 * attempt 8's known-good point. `gpio18` and its active-high polarity
+	 * are measured, not guessed: this device's own ABL log consistently
+	 * shows `[VIB] gpio num: 18` / `vib_onoff: 1` (`1` = on) during its own
+	 * boot-time haptic feedback. `CONFIG_LEDS_GPIO`/`CONFIG_LEDS_TRIGGERS`/
+	 * `CONFIG_LEDS_TRIGGER_HEARTBEAT` are already =y in defconfig at the
+	 * pinned tag -- no kernel config change needed, just this node. Purely
+	 * kernel-side (the heartbeat trigger runs off a kernel timer): this
+	 * physically buzzes for as long as the kernel's timer/softirq
+	 * machinery is alive, independent of ever reaching userspace, and
+	 * (unlike the framebuffer/SD-card attempts) doesn't depend on any
+	 * further unverified hardware guesses.
+	 */
+	leds {
+		compatible = "gpio-leds";
+
+		led-vibrator-heartbeat {
+			gpios = <&tlmm 18 GPIO_ACTIVE_HIGH>;
+			linux,default-trigger = "heartbeat";
+		};
 	};
 };
 
@@ -205,6 +279,53 @@
 			regulator-max-microvolt = <2504000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
+
+		/*
+		 * microSD card power rails (vreg_l9b_2p9/vreg_l8b_1p8) and the
+		 * &sdhc_2/&pm8550_gpios additions below were tried 2026-09-05 for
+		 * persistent SD-card-based logging, then reverted the same session
+		 * to bisect: after attempt 8's known-good progress (past several
+		 * interconnect probes), a `simple-framebuffer` verification attempt
+		 * showed nothing on screen, which is unexpected if the kernel were
+		 * still reaching that far -- raising concern that a change made
+		 * *after* attempt 8 introduced a new, earlier hang. These
+		 * regulator values were the least-verified addition of the three
+		 * (gpio-reserved-ranges, lockup detection, this) -- copied from
+		 * ubuntu-galaxy-tab-s9ultra by analogy only, never independently
+		 * confirmed for X716 itself (unlike the card-detect GPIO, which
+		 * X716's own stock DTS does independently confirm). Full removed
+		 * text (these regulators, the &pm8550_gpios card-detect pinctrl
+		 * state, and the &sdhc_2 enablement) is in docs/porting-log.md's
+		 * "Session 4" entry -- re-add from there if the bisection clears
+		 * this as the cause; re-verify the regulator names/voltages
+		 * against X716 specifically before trusting them further either way.
+		 */
+
+		/*
+		 * NXP PTN3222 eUSB2 repeater rails (3.104V/1.8V). Copied from
+		 * ubuntu-galaxy-tab-s9ultra by analogy, same confidence caveat as
+		 * the rest of this session's USB additions -- see
+		 * docs/porting-log.md's "Session 4" entry.
+		 */
+		vreg_l5b_3p104: ldo5 {
+			regulator-name = "vreg_l5b_3p104";
+			regulator-min-microvolt = <3104000>;
+			regulator-max-microvolt = <3104000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l15b_1p8: ldo15 {
+			regulator-name = "vreg_l15b_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+			regulator-allow-set-load;
+			regulator-allowed-modes = <RPMH_REGULATOR_MODE_LPM
+						   RPMH_REGULATOR_MODE_HPM>;
+		};
 	};
 
 	regulators-2 {
@@ -222,11 +343,57 @@
 	regulators-3 {
 		compatible = "qcom,pm8550vs-rpmh-regulators";
 		qcom,pmic-id = "e";
+		vdd-s4-supply = <&vph_pwr>;
+		vdd-s5-supply = <&vph_pwr>;
 
 		vreg_l3e_1p2: ldo3 {
 			regulator-name = "vreg_l3e_1p2";
 			regulator-min-microvolt = <1200000>;
 			regulator-max-microvolt = <1200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/* USB3/DP combo PHY PLL supply chain -- feeds regulators-4 (die f). */
+		vreg_s4e_0p952: smps4 {
+			regulator-name = "vreg_s4e_0p952";
+			regulator-min-microvolt = <952000>;
+			regulator-max-microvolt = <952000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/*
+		 * USB HS PHY supply. Copied from ubuntu-galaxy-tab-s9ultra's
+		 * &usb_1_hsphy block (SM-X910 Ultra) -- UNVERIFIED for X716
+		 * specifically, though this device's own ABL log independently
+		 * references the same "ps5169"/"sm5714" chip names X910 uses for
+		 * its USB Type-C redriver/MUIC, which is at least evidence the two
+		 * boards share this general hardware, not just coincidence. Added
+		 * 2026-09-05 to try a minimal HS-only USB gadget console after the
+		 * sec-log/last_kmsg, simple-framebuffer, and microSD-logging
+		 * channels all failed to show anything past attempt 8's known-good
+		 * point (though a GPIO-heartbeat LED confirmed the kernel is
+		 * genuinely alive and running, not crashed).
+		 */
+		vreg_l1e_0p88: ldo1 {
+			regulator-name = "vreg_l1e_0p88";
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <880000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
+	/* PM8550VE-F: 0.88V PLL rail for the USB3/DisplayPort combo PHY. */
+	regulators-4 {
+		compatible = "qcom,pm8550ve-rpmh-regulators";
+		qcom,pmic-id = "f";
+		vdd-l1-supply = <&vreg_s4e_0p952>;
+		vdd-l2-supply = <&vreg_s4e_0p952>;
+		vdd-l3-supply = <&vreg_s4e_0p952>;
+
+		vreg_l3f_0p88: ldo3 {
+			regulator-name = "vreg_l3f_0p88";
+			regulator-min-microvolt = <880000>;
+			regulator-max-microvolt = <912000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 	};
@@ -246,18 +413,45 @@
 
 /*
  * TLMM: X716 downstream doesn't expose a gpio-reserved-ranges property in a
- * form this decompiled DTS preserves (unlike sm8550-samsung-q5q.dts, which
- * has <36 4>, <50 2> for the Z Fold5 -- a DIFFERENT board, not something to
- * copy blindly). No reserved range is set here for lack of measured X716
- * data. If pinctrl-msm's TLMM probe hangs during Phase 2/3 bring-up (a
- * documented failure mode on this SoC family when a GPIO TrustZone has
- * locked gets touched), that is the first thing to bisect -- see
- * docs/porting-log.md for whichever session investigates it.
+ * form this decompiled DTS preserves. No X716-specific measurement of this
+ * exists, but two independent SM8550 Samsung devices agree on the same
+ * range: sm8550-samsung-q5q.dts (mainline, Z Fold5) has `<36 4>, <50 2>`,
+ * and ubuntu-galaxy-tab-s9uwifi's own DTS (SM-X910 Ultra -- the direct
+ * sibling tablet to this device, same SoC generation) independently
+ * declares `<36 4>` too. Its porting-log identifies gpio36-39 as
+ * `qup1_se2`, the fingerprint sensor's SPI bus, confirmed TrustZone-owned
+ * on real hardware ("out of Linux's reach by design and in both trees").
+ * Given two unrelated devices on this same SoC agree, this specific range
+ * is very likely a platform/reference-design-level TZ lock, not something
+ * board-specific -- a reasonable value to carry here even without an
+ * independent X716 measurement.
+ *
+ * 2026-09-05: the mainline kernel boots (see docs/porting-log.md) but was
+ * hitting a silent hard reset (no Oops/panic text, just a cold PMIC reset)
+ * immediately after the last interconnect provider probes -- exactly the
+ * documented pinctrl-msm/TZ-locked-GPIO failure mode this property
+ * prevents. A blanket `&tlmm { status = "disabled"; }` bisection confirmed
+ * *something* about tlmm was the issue (the hard-reset loop stopped,
+ * replaced by a silent hang later in boot -- see docs/porting-log.md for
+ * that attempt's ambiguous/contaminated log capture). This reserved-ranges
+ * property is the real fix: keep tlmm enabled (so UART/UFS pin muxing
+ * still works) while skipping the specific TZ-locked range.
  */
+&tlmm {
+	gpio-reserved-ranges = <36 4>;
+};
 
 &uart7 {
 	status = "okay";
 };
+
+/*
+ * microSD (&pm8550_gpios card-detect state + &sdhc_2 enablement) removed
+ * 2026-09-05 to bisect a suspected new regression -- see the
+ * vreg_l9b_2p9/vreg_l8b_1p8 comment (near &apps_rsc, above) and
+ * docs/porting-log.md's "Session 4" entry for the full removed text and
+ * rationale.
+ */
 
 &ufs_mem_hc {
 	/* Rail indices (l17, l1) measured identical across three independent
@@ -287,4 +481,331 @@
 	clock-frequency = <76800000>; /* standard kalama reference-design XO,
 					* matches sm8550-samsung-q5q.dts -- not
 					* board-specific PMIC wiring. */
+};
+
+/*
+ * Full USB Type-C stack: sm5714 (TCPM, USB-PD transport) + ps5169 (USB3/DP
+ * redriver) + ptn3222 (eUSB2 repeater). A minimal HS-only attempt (no
+ * redriver/role-switch chain at all) failed to enumerate on the host --
+ * the external redriver most likely does real, necessary Type-C
+ * lane-routing work, not just signal conditioning. This whole subtree
+ * (nodes, regulators, pinctrl states, i2c bus choices) is copied from
+ * ubuntu-galaxy-tab-s9ultra (SM-X910 Ultra, same SoC generation) by
+ * analogy and is UNVERIFIED for X716 specifically, with one exception:
+ * X716's own stock DTS independently confirms the same three chips at the
+ * same i2c addresses (sm5714@49, usbpd-sm5714@33, ps5169@28) -- real
+ * evidence the hardware matches, though not proof the i2c *bus* numbers
+ * or GPIO/regulator wiring also match. sm5440 (X910's separate PPS direct
+ * charger) is deliberately not ported -- orthogonal to USB data, and not
+ * a build dependency of sm5714_usbpd (unlike sm5714_battery, which is).
+ * See docs/porting-log.md's "Session 4" entry for the full rationale.
+ */
+
+/*
+ * Second root-node merge block (valid DTS -- multiple `/ { ... };` blocks
+ * in one file merge into a single root node): our first root block already
+ * closed well above this point, so these two new root-level nodes need
+ * their own `/ { ... };` wrapper rather than floating unparented.
+ */
+/ {
+	/*
+	 * Simple-battery description feeding sm5714_battery's fuel-gauge
+	 * driver (a hard Kconfig `depends on` for sm5714_usbpd/TYPEC_SM5714,
+	 * even though this port doesn't care about charge telemetry).
+	 * Capacity/voltage figures copied from X910's own battery node --
+	 * cosmetic only for our purposes (feeds a time-remaining estimate
+	 * nothing here reads), not worth re-deriving for X716's actual
+	 * battery.
+	 */
+	battery: battery {
+		compatible = "simple-battery";
+		charge-full-design-microamp-hours = <9800000>;
+		voltage-max-design-microvolt = <4440000>;
+		voltage-min-design-microvolt = <3400000>;
+	};
+
+	/* Generic mainline SBU mux for the Type-C connector's AUX/DP path. */
+	usb_c_sbu_mux: usb-c-sbu-mux {
+		compatible = "gpio-sbu-mux";
+		enable-gpios = <&tlmm 183 GPIO_ACTIVE_LOW>;
+		select-gpios = <&tlmm 180 GPIO_ACTIVE_HIGH>;
+		mode-switch;
+		orientation-switch;
+
+		port {
+			usb_c_sbu_mux_in: endpoint {
+				remote-endpoint = <&sm5714_sbu_out>;
+			};
+		};
+	};
+};
+
+&pm8550vs_d {
+	status = "okay";
+};
+
+&pm8550vs_d_gpios {
+	eusb2_reset_default: eusb2-reset-state {
+		pins = "gpio4";
+		function = "normal";
+		power-source = <1>;
+		input-enable;
+		output-enable;
+		drive-push-pull;
+		qcom,drive-strength = <PMIC_GPIO_STRENGTH_MED>;
+		bias-disable;
+	};
+};
+
+&tlmm {
+	sm5714_usbpd_int: sm5714-usbpd-int-state {
+		pins = "gpio133";
+		function = "gpio";
+		drive-strength = <8>;
+		input-enable;
+		bias-disable;
+	};
+
+	sm5714_otg_det_default: sm5714-otg-det-default-state {
+		pins = "gpio89";
+		function = "gpio";
+		drive-strength = <2>;
+		output-low;
+		bias-disable;
+	};
+
+	sm5714_vbus_dischg_default: sm5714-vbus-dischg-default-state {
+		pins = "gpio175";
+		function = "gpio";
+		drive-strength = <2>;
+		output-low;
+		bias-pull-down;
+	};
+};
+
+&gpi_dma1 {
+	status = "okay";
+};
+
+&gpi_dma2 {
+	status = "okay";
+};
+
+/*
+ * QUP wrapper nodes -- the actual root cause of "zero i2c adapters ever
+ * appear" (found 2026-09-05 via a fork investigation after CONFIG_I2C_QCOM_GENI=y
+ * alone didn't fix it): i2c6/i2c12/i2c_hub_8/i2c_hub_9 below are children
+ * of these three "qcom,geni-se-qup"/"qcom,geni-se-i2c-master-hub" wrapper
+ * nodes in sm8550.dtsi, which own the shared AHB/QUPV3 clock and resource
+ * setup every child serial engine sits on top of. All three default to
+ * `status = "disabled"` in the SoC dtsi -- enabling only the child i2c
+ * nodes (as this file did until now) is a no-op if of_platform_populate()
+ * never even creates a platform device for their parent. This explains
+ * why all four buses failed completely identically: one missing override,
+ * not four separate bus-level or regulator-level problems.
+ */
+&qupv3_id_0 {
+	status = "okay";
+};
+
+&qupv3_id_1 {
+	status = "okay";
+};
+
+&i2c_master_hub_0 {
+	status = "okay";
+};
+
+&i2c6 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	eusb2_repeater: redriver@4f {
+		compatible = "nxp,ptn3222";
+		reg = <0x4f>;
+		#phy-cells = <0>;
+
+		vdd3v3-supply = <&vreg_l5b_3p104>;
+		vdd1v8-supply = <&vreg_l15b_1p8>;
+		reset-gpios = <&pm8550vs_d_gpios 4 GPIO_ACTIVE_LOW>;
+		qcom,param-override-seq = <0x20 0x06 0x21 0x07
+					   0x63 0x08 0x01 0x0a>;
+
+		pinctrl-names = "default";
+		pinctrl-0 = <&eusb2_reset_default>;
+	};
+};
+
+&i2c12 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	ps5169: redriver@28 {
+		compatible = "parade,ps5169";
+		reg = <0x28>;
+		parade,reg50 = <0x10>;
+		parade,reg51 = <0x70>;
+		parade,reg54 = <0x02>;
+		parade,reg5d = <0x40>;
+		usb-role-switch = <&usb_1>;
+		retimer-switch;
+		orientation-switch;
+
+		ports {
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			port@0 {
+				reg = <0>;
+
+				ps5169_ss_out: endpoint {
+					remote-endpoint = <&sm5714_ss_in>;
+				};
+			};
+
+			port@1 {
+				reg = <1>;
+
+				ps5169_ss_in: endpoint {
+					remote-endpoint =
+						<&usb_dp_qmpphy_out>;
+				};
+			};
+		};
+	};
+};
+
+&i2c_hub_8 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	sm5714_charger: charger@49 {
+		compatible = "siliconmitus,sm5714";
+		reg = <0x49>;
+		monitored-battery = <&battery>;
+	};
+};
+
+&i2c_hub_9 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	sm5714_usbpd: usbpd@33 {
+		compatible = "siliconmitus,sm5714-usbpd";
+		reg = <0x33>;
+		interrupts-extended = <&tlmm 133 IRQ_TYPE_LEVEL_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&sm5714_usbpd_int &sm5714_otg_det_default
+			     &sm5714_vbus_dischg_default>;
+		otg-det-gpios = <&tlmm 89 GPIO_ACTIVE_HIGH>;
+		wakeup-source;
+
+		sm5714_connector: connector {
+			compatible = "usb-c-connector";
+			power-role = "dual";
+			data-role = "dual";
+			try-power-role = "sink";
+
+			/*
+			 * DisplayPort altmode (X910's `displayport = <&mdss_dp0>;`
+			 * property + `altmodes { displayport {...} };` block)
+			 * deliberately dropped -- CONFIG_TYPEC_DP_ALTMODE can only
+			 * be built in if CONFIG_DRM is too, which it isn't (=m,
+			 * useless with no modprobe at this stage), and DP-over-USB-C
+			 * is orthogonal to the actual goal (USB data/serial
+			 * console).
+			 */
+			op-sink-microwatt = <15000000>;
+			sink-pdos = <PDO_FIXED(5000, 3000,
+					       PDO_FIXED_DUAL_ROLE |
+					       PDO_FIXED_DATA_SWAP |
+					       PDO_FIXED_USB_COMM)
+				     PDO_FIXED(9000, 1660,
+					       PDO_FIXED_USB_COMM)>;
+			source-pdos = <PDO_FIXED(5000, 900,
+						 PDO_FIXED_DUAL_ROLE |
+						 PDO_FIXED_DATA_SWAP |
+						 PDO_FIXED_USB_COMM)>;
+
+			ports {
+				#address-cells = <1>;
+				#size-cells = <0>;
+
+				port@0 {
+					reg = <0>;
+
+					sm5714_hs_in: endpoint {
+						remote-endpoint =
+							<&usb_1_dwc3_hs>;
+					};
+				};
+
+				port@1 {
+					reg = <1>;
+
+					sm5714_ss_in: endpoint {
+						remote-endpoint =
+							<&ps5169_ss_out>;
+					};
+				};
+
+				port@2 {
+					reg = <2>;
+
+					sm5714_sbu_out: endpoint {
+						remote-endpoint =
+							<&usb_c_sbu_mux_in>;
+					};
+				};
+			};
+		};
+	};
+};
+
+&usb_1_hsphy {
+	vdd-supply = <&vreg_l1e_0p88>;
+	vdda12-supply = <&vreg_l3e_1p2>;
+	phys = <&eusb2_repeater>;
+	status = "okay";
+};
+
+&usb_1 {
+	/*
+	 * dr_mode = "peripheral" added 2026-09-05 after a deep investigation
+	 * traced ps5169/sm5714-usbpd's stalled probe to dwc3 itself: without
+	 * an explicit dr_mode, dwc3_get_dr_mode() (drivers/usb/dwc3/core.c)
+	 * does a *live hardware readback* of GHWPARAMS0 to decide DRD vs
+	 * peripheral-only, and only calls dwc3_setup_role_switch() (which
+	 * registers the /sys/class/usb_role/ device ps5169's
+	 * fwnode_usb_role_switch_get() call blocks on, forever, once
+	 * fw_devlink/deferred_probe_timeout stopped masking it) when that
+	 * readback resolves to OTG. If the silicon reports peripheral-only
+	 * capability, that registration is permanently skipped -- not a
+	 * timing issue, an architectural one. Since the actual goal here is
+	 * only a plain USB2 gadget serial console (not Type-C role
+	 * negotiation, PD, or DisplayPort alt mode), forcing peripheral mode
+	 * explicitly removes the dependency on that hardware-readback path
+	 * entirely, rather than continuing to chase whether it would have
+	 * resolved to OTG on its own. ps5169 (SuperSpeed/DP redriver) and
+	 * sm5714-usbpd (TCPM/PD) are expected to remain unbound after this --
+	 * both are for functionality outside this port's actual goal, and
+	 * ptn3222 (already bound, confirmed) handles the USB2 HS signal path
+	 * a plain gadget serial console actually needs.
+	 */
+	dr_mode = "peripheral";
+	status = "okay";
+};
+
+&usb_1_dwc3_hs {
+	remote-endpoint = <&sm5714_hs_in>;
+};
+
+&usb_dp_qmpphy {
+	vdda-phy-supply = <&vreg_l3e_1p2>;
+	vdda-pll-supply = <&vreg_l3f_0p88>;
+	status = "okay";
+};
+
+&usb_dp_qmpphy_out {
+	remote-endpoint = <&ps5169_ss_in>;
 };

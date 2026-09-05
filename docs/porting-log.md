@@ -434,3 +434,289 @@ signal" conclusion so far could be an artifact of the diagnostic path,
 not proof our code never executed. Reported this honestly to the user
 rather than continuing to add more checkpoints on an unverified
 assumption.
+
+## Session 4 (2026-09-05, continued): the real root cause, mainline finally
+boots, and a new post-boot mystery
+
+**Dropped uniLoader** (plan revision, user-directed): packaged the raw
+mainline kernel `Image` directly as `boot`'s kernel slot instead. Attempt 6
+failed identically to all five uniLoader attempts — but this time the
+*entire* `/proc/last_kmsg` capture was read line-by-line instead of grepped
+for expected markers, and it found the real failure, present identically
+in all six attempts: `"No Valid Dtb" / "Unable to find the Board Dtb" /
+"Error: Board Dtbo blob not found"`, immediately followed by ABL launching
+Odin — **before ABL ever touches the kernel payload slot**. Every earlier
+"uniLoader crashed after Exit Boot Services" conclusion was a
+misattribution: that content belonged to ABL's automatic fallback boot
+into `recovery` after this exact error, not to the attempt being diagnosed.
+This resolved the open "Download Mode might be clearing the diagnostic
+region" concern from Session 3 as moot — the sec-log capture path was
+working fine the whole time; the earlier sessions were just looking at the
+wrong boot cycle's content within it.
+
+Attempt 7 fixed a real bug in the DTBO builder (missing 8th header field,
+misaligning every entry by 4 bytes) — insufficient: a *correctly-formed*
+empty DT table is still a DT table, still triggers ABL's rejection path.
+
+**The actual fix**, found by the user pointing at two locally-cloned
+reference ports:
+- `sm-x800-linux/` (postmarketOS, Tab S8+, SM8450 — older SoC generation):
+  confirms ABL's DTBO-fragment-merge corrupts a mainline DTB, and
+  documents uniLoader as the fix on *that* SoC.
+- `ubuntu-galaxy-tab-s9ultra/` (SM-X910 Ultra — **same SM8550 chip
+  generation as this device**): boots mainline directly, no uniLoader.
+  Its `validate-bundle.sh` asserts, by name, that a `dtbo.img` whose first
+  4 bytes parse as the DT table magic fails the build — exactly our error,
+  named and guarded against on the one port that's proven this chip
+  generation's ABL on real hardware. Its recipe: `dtbo.img` is a
+  **4096-byte all-zero blob** (no DT-table magic at all, so ABL can't take
+  the ufdt path and falls back to `vendor_boot`'s DTB, unmerged); `boot`'s
+  kernel is **gzip'd with the board DTB concatenated directly after** the
+  compressed stream (confirmed independently: ABL's own log unconditionally
+  shows a `"Decompressing kernel image"` step); generic/vendor ramdisks are
+  **legacy LZ4**, not gzip.
+
+Adopted this recipe verbatim in `scripts/build-android-v4-bundle.sh`
+(**attempt 8**) — **it worked**: no more Download Mode, zero occurrences of
+`"No Valid Dtb"`, and genuine mainline kernel boot text in
+`/proc/last_kmsg` for the first time: `Linux version 7.2.0-dirty`, all 8
+CPUs at EL1, and — the first time this session's own from-scratch driver
+ever produced output — `x716-sec-log log-buf: sec-log console registered`.
+uniLoader is now confirmed **unnecessary** for this SoC generation and
+dropped for good (files kept in-repo, unused).
+
+Attempt 8 then hit a **silent hard reset** — no Oops/panic text, just a
+cold PMIC reset — immediately after the last interconnect provider probe
+(`7e40000.interconnect`). Matched a risk already flagged in this project's
+own DTS comments: pinctrl-msm's TLMM probe touching a TrustZone-locked
+GPIO is a documented SM8550-family crash cause, and this board had no
+`gpio-reserved-ranges`. Attempt 9 (`&tlmm { status = "disabled"; }`,
+blanket bisection) changed the symptom to a **silent hang** (black screen,
+no auto-reset, needs a manual power cycle) — confirming *something* about
+tlmm was the issue. Attempt 10 replaced the blanket disable with the real
+fix: `gpio-reserved-ranges = <36 4>` (GPIOs 36-39, `qup1_se2`) — found by
+checking `ubuntu-galaxy-tab-s9uwifi`'s own DTS (same reservation) and its
+`porting-log.md`, which identifies that exact range as the fingerprint
+sensor's SPI bus, confirmed TrustZone-owned on real X910 hardware; and
+independently, X716's own stock decompiled DTS agrees on the same
+`pm8550_gpios "gpio12"` pin for an unrelated purpose (SD card detect),
+reinforcing that the two boards share PMIC/pin wiring closely enough for
+this to be trustworthy. Same qualitative result as the blanket disable
+(silent hang, no crash-loop) — while keeping tlmm/UART/UFS functional.
+
+### The diagnostic channel hits a hard capacity wall
+
+Getting a clean capture of what happens *after* the tlmm fix proved much
+harder than expected. Root cause, confirmed by careful investigation (not
+assumed): reaching TWRP at all — the only way to read `/proc/last_kmsg` —
+requires a full boot cycle, and that cycle's own necessary XBL/PBL/ABL
+preamble text is verbose enough (thousands of lines) to overwrite our own
+kernel's comparatively tiny console output (at most a few hundred lines
+before hanging) in the shared 2 MiB ring buffer almost every time. This
+explains a sequence of confusing/contradictory-seeming captures:
+byte-identical reads across separate real reboots (early on, before
+understanding this), and consistently seeing what turned out to be
+**TWRP's own kernel boot banner** (`Linux version 5.15.167-gae6e4eea
+(edgars@arch)`, loading `hung_task_enh.ko` and dozens of stock Android
+driver modules) rather than anything from our own kernel — a red herring
+that took real effort to recognize as such. A tight `until adb get-state
+...; done` polling loop (grab `last_kmsg` the instant `recovery` is
+reachable, rather than waiting on manual confirmation) reduced but did not
+eliminate this — even a *single* required transition to recovery is
+often enough noise to erase everything.
+
+One genuinely informative data point survived this problem despite the
+noise: **a 3-minute stretch of silent black screen with zero auto-reboot**,
+despite kernel-level hung-task detection being active (see below) with a
+15-second timeout. This is inconsistent with a real D-state deadlock
+(which should have triggered `panic()` well within 3 minutes) and
+consistent with the kernel having reached the bring-up ramdisk's own
+intentional infinite `sleep`-loop `/init` — a possible, unconfirmed,
+genuinely exciting "reached userspace" result.
+
+**Kernel-level lockup/hang detection added** (`kernel/config/config-x716.fragment`):
+`CONFIG_SOFTLOCKUP_DETECTOR`, `CONFIG_HARDLOCKUP_DETECTOR`,
+`CONFIG_DETECT_HUNG_TASK` (+`BOOTPARAM_*_PANIC`), so a genuine hang turns
+into a bounded `panic()` + `panic=10` auto-reboot instead of requiring
+manual intervention (which was itself contributing to buffer
+contamination). Note: ABL injects its own `nowatchdog` into the cmdline
+(confirmed from captures — printed as an "Unknown kernel command line
+parameter" before this change, since the handler didn't exist yet), which
+disables the *softlockup/hardlockup* subsystem specifically
+(`watchdog_user_enabled = 0` in `kernel/watchdog.c`) — unavoidable, since
+ABL appends this after anything we control. `hung_task` detection
+(`kernel/hung_task.c`) is a **separate subsystem with no such cmdline
+hook**, and calls `panic()` directly — the one still expected to be
+reliable.
+
+### Two more verification attempts, to sidestep the ring-buffer problem entirely
+
+1. **`simple-framebuffer`**: added a `/chosen/framebuffer` node + matching
+   `splash-region@b8000000` reserved-memory node (name matters — copied
+   from `sm8550-samsung-q5q.dts`'s own comment: *"the bootloader will only
+   keep display hardware enabled if this memory region is named exactly
+   'splash_region'"*) plus `CONFIG_FB_SIMPLE=y`, to inherit ABL's
+   already-running boot-splash scanout for a plain `fbcon` text console —
+   no real panel driver needed. Address/format (`0xb8000000`, `a8r8g8b8`)
+   copied from `q5q.dts`, **unverified for X716**; only the resolution
+   (2560×1600) is independently measured (from this device's own repeated
+   `GlibGetLCDResolution` ABL log lines). **Result: nothing rendered.**
+2. **Persistent microSD logging**: added `&sdhc_2` (regulators
+   `vreg_l9b_2p9`/`vreg_l8b_1p8`, `pm8550_gpios` card-detect pin 12, pinctrl
+   `sdc2_default`/`sdc2_sleep` already in `sm8550.dtsi`) + `CONFIG_EXFAT_FS=y`,
+   and updated the bring-up ramdisk's `/init` to mount the card and
+   periodically dump `dmesg` to a file — a persistence mechanism immune to
+   ring-buffer wraparound entirely, since it survives indefinitely on the
+   card regardless of how many subsequent reboots happen. Card-detect GPIO
+   independently cross-validated (X716's own stock DTS and the X910
+   reference both use `pm8550_gpios` pin 12), but the regulator names are
+   **unverified for X716**, copied from the X910 reference by analogy only.
+   **Result: no file appeared on the card** (confirmed by mounting it
+   directly via `adb shell` from TWRP and listing its contents — TWRP's own
+   kernel *can* mount it fine as exfat, so the card and filesystem
+   themselves aren't the problem).
+
+Both verification attempts came back empty, on the same "black screen"
+symptom as before. This is itself informative: if the kernel were reaching
+anywhere near as far as attempt 8 did (past several interconnect probes),
+`fbcon` should show *something*, independent of whether the ramdisk's own
+`/init` ever runs. Zero output from either channel raises real concern that
+one of the changes made *after* attempt 8 (the `gpio-reserved-ranges` fix,
+lockup-detector config, or the new `&sdhc_2`/regulator additions) may have
+introduced a **new, earlier** hang rather than progressing forward from
+attempt 8's crash point. Not yet bisected — see the plan for the proposed
+next step (temporarily revert `&sdhc_2` to isolate it as a variable, since
+its regulator values are the least-verified addition of the three).
+
+### Bisection result, and a fourth verification channel: the kernel is definitely alive
+
+Attempt 16 reverted `&sdhc_2`/its regulators (keeping `gpio-reserved-ranges`,
+lockup detection, and the framebuffer) and reproduced **the exact same**
+black-screen symptom as attempt 14 — ruling out the SD-card work as a new
+regression. Direct memory inspection of the framebuffer region via TWRP's
+own `/dev/mem` was also tried (to check whether our kernel ever actually
+wrote there) and hit the same `STRICT_DEVMEM` wall as the earlier sec-log
+`/dev/mem` attempt (Session 3) — `/proc/iomem` tags `0xb8000000` as plain
+`System RAM` in TWRP's own memory map, so this path is a dead end too.
+
+**The decisive test (attempt 17)**: added a `gpio-leds` node with
+`linux,default-trigger = "heartbeat"` on GPIO 18 — measured, not guessed,
+from this device's own ABL log (`[VIB] gpio num: 18` / `vib_onoff: 1`).
+`CONFIG_LEDS_GPIO`/`CONFIG_LEDS_TRIGGERS`/`CONFIG_LEDS_TRIGGER_HEARTBEAT`
+were already `=y` in defconfig — no kernel config change needed, just the
+DTS node. **The tablet physically vibrated in a heartbeat pattern.** This
+is a purely kernel-side signal (the heartbeat trigger runs off a kernel
+timer, independent of ever reaching userspace) but it's unambiguous and
+requires no log capture at all: **the kernel is genuinely alive, with
+working GPIO/pinctrl/regulators/timers, deep into boot** — not crashed,
+not deadlocked. This single result is worth more than every ring-buffer
+capture attempted so far combined, and directly resolves the concern
+raised by the bisection above: nothing added since attempt 8 broke the
+kernel; it's still running.
+
+**Follow-up (attempt 18)**: tried a minimal USB gadget serial console
+(`CONFIG_USB_G_SERIAL=y`, `&usb_1`/`&usb_1_hsphy` enabled, `dr_mode =
+"peripheral"`) to get a live interactive shell over USB, deliberately
+skipping the real Type-C signal path — X716's own ABL log references the
+same `ps5169` redriver and `sm5714` MUIC chip names `ubuntu-galaxy-tab-s9ultra`
+(X910 Ultra) uses for real, working USB, but wiring those up is a
+significant addition (i2c drivers, port-endpoint graph, more regulators)
+with its own real risk of a wrong guess, so the simpler "just try the bare
+PHY" version was tried first. **No `/dev/ttyACM*`/`/dev/ttyUSB*` device
+appeared on the host.** Consistent with the flagged risk: the external
+redriver most likely does real, necessary Type-C lane-routing work, not
+just signal conditioning — the DWC3 core can probably initialize
+internally without it, but the signal likely never reaches the physical
+connector. Not yet reverted (harmless to leave in place; doesn't explain
+the black screen either way, since the heartbeat already proves the
+kernel survives past this point regardless of whether USB enumerates).
+
+**Where this leaves Phase 3**: the kernel is confirmed alive deep into
+boot. What remains unconfirmed is specifically whether **userspace/PID 1**
+(the bring-up ramdisk's `/init`) is ever reached — the heartbeat trigger
+doesn't require this, and all three userspace-dependent verification
+channels tried (SD-card write, USB shell, and indirectly the framebuffer
+text which `/init` doesn't touch anyway) came back empty. The real Type-C
+redriver/MUIC stack (`ps5169`/`sm5714`, matching X910's proven setup) is
+the most promising next step for USB specifically, being the closest to a
+already-proven-on-real-hardware recipe of the remaining options; the
+SD-card regulator names are the next most likely wrong guess to revisit
+otherwise, being copied from X910 without X716-specific confirmation
+(unlike the card-detect GPIO, which is independently confirmed).
+
+All raw captures for this session are under
+`work/bringup-2026-09-05/last_kmsg-attempt{6,7,8,9,9b,9c,9d,9e,10,11,12,13,15,16,18,19}.txt`.
+
+### Attempts 20-21: the full USB stack doesn't enumerate, and the real question gets asked
+
+Attempt 20 built out the *full* USB Type-C stack matching X910's real, working
+setup -- not just a bare PHY. Ported all three of X910's from-scratch GPL-2.0
+drivers (`sm5714_battery.c`, `sm5714_usbpd.c` -- TCPM transport,
+`ps5169.c` -- USB3/DP redriver) into the kernel tree (mainline already has
+`phy-nxp-ptn3222.c` for the third chip, the eUSB2 repeater), plus the full
+devicetree subtree: `sm5714_usbpd`'s USB-C connector node with real PDO
+tables, the `ps5169`/`ptn3222` port-endpoint graph, `usb_dp_qmpphy` for the
+SuperSpeed lanes, three new regulators (`vreg_l5b_3p104`, `vreg_l15b_1p8`,
+`vreg_l3f_0p88`, the last needing a new `regulators-4`/die-"f" block and
+`vreg_s4e_0p952`), and the i2c/i2c-hub buses each chip sits on. X716's own
+stock DTS independently confirms the same three chips at the same i2c
+addresses (`sm5714@49`, `usbpd-sm5714@33`, `ps5169@28`) as X910 -- real
+evidence, though not proof the i2c *bus* numbers or regulator/GPIO wiring
+also match. Two build fixes needed along the way: `sm5714_usbpd.c` used two
+`struct tcpc_dev` fields (`adopt_retained_source_ufp`/
+`consume_retained_sink_dfp`) that don't exist at this project's pinned
+kernel tag (removed -- an X910-specific dock-reboot edge case, irrelevant
+here regardless); `CONFIG_TYPEC_DP_ALTMODE` can only build in (`=y`) if
+`CONFIG_DRM` is too (ours is `=m`), so DP altmode was dropped from both the
+config and the DTS's connector node (orthogonal to the actual goal of a USB
+data console); and `pm8550ve.dtsi` (needed, it seemed, for the die-"f"
+regulator block) turned out to be unnecessary entirely -- X910's own DTS
+doesn't include it either, since RPMh regulators are independent of the raw
+SPMI PMIC node that file describes.
+
+**Result: no `/dev/ttyACM*`/`/dev/ttyUSB*` device appeared on the host, and
+zero USB activity in the host's own `dmesg` even after replugging and
+rotating the cable** -- not just a failed enumeration, but no sign the
+physical connection was ever negotiated at the electrical level at all.
+Strongly suggests one of the three new i2c-based drivers failed to probe
+(most likely an unverified regulator/GPIO/i2c-bus guess, the same failure
+category as the microSD attempt), stalling the whole role-switch chain
+before `dwc3` ever gets told to become a peripheral.
+
+**The question that mattered more than the USB failure itself**: does the
+GPIO-heartbeat vibration (attempt 17) actually prove the boot is healthy,
+or could the kernel be permanently stuck in the deferred-probe/driver-
+matching mechanism -- which doesn't panic or trigger `hung_task` (it's not
+a bug, just the kernel retrying forever by design) -- meaning userspace
+might *never* be reached regardless of how long the heartbeat keeps going?
+This is a real, known failure mode for boards with new/incomplete
+devicetrees, and this session had just added a lot of new, heavily
+phandle-linked devicetree in one sitting (framebuffer, LEDs, and now a
+dozen-plus USB nodes). Tested directly and cheaply: added
+`fw_devlink=off deferred_probe_timeout=10` to the cmdline (attempt 20's
+cmdline, no kernel rebuild needed) -- **zero change in observed behavior**,
+ruling out fw_devlink-mediated deferred-probe deadlock as the explanation
+(or at least, nothing was actually blocked by it).
+
+**Attempt 21: definitive proof userspace is reached.** Rather than
+continuing to guess, `scripts/build-bringup-ramdisk.sh`'s `/init` was
+changed to repurpose the same GPIO-18 vibrator the kernel's own heartbeat
+trigger uses, the instant userspace starts: turn off the `heartbeat`
+LED trigger, do a burst of 5 fast one-second pulses (unmistakably
+different from the kernel's own steady heartbeat pattern), then hand the
+trigger back. **The distinct burst was felt.** This is unambiguous,
+real-time, physical proof -- independent of any log capture -- that
+`/init` genuinely runs. **Phase 3's exit criterion (kernel reaches late
+boot / PID 1 handoff) is met.** The USB gadget's failure to enumerate is
+now understood to be an isolated, independent problem with the new
+Type-C devicetree's own wiring (almost certainly a wrong regulator/GPIO/
+i2c-bus guess in the newly-added subtree), not a sign of a stuck or
+half-booted system.
+
+This is the single most important result of this entire session. Next
+steps: either continue bisecting the USB Type-C stack now that it's known
+to be a self-contained, non-boot-blocking problem (lower urgency, since a
+working shell is convenient but no longer required to prove the port
+works), or move to Phase 4 (a real Ubuntu rootfs, replacing the bring-up
+ramdisk) now that the fundamental "does mainline Linux run on this
+hardware" question has a confirmed, positive answer.

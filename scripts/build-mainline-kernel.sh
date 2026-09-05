@@ -47,6 +47,69 @@ if ! grep -q "CONFIG_X716_SEC_LOG" "$kdir/drivers/misc/Makefile"; then
 	echo 'obj-$(CONFIG_X716_SEC_LOG)	+= x716-sec-log.o' >> "$kdir/drivers/misc/Makefile"
 fi
 
+echo "== installing USB Type-C stack (sm5714 TCPM + ps5169 redriver) into the kernel tree =="
+# From-scratch GPL-2.0 reimplementations by ubuntu-galaxy-tab-s9ultra (SM-X910
+# Ultra, same SM8550 chip generation, proven on real hardware) -- written
+# after reading (not copying) Samsung's downstream drivers, using mainline's
+# own TYPEC/TCPM/typec-mux frameworks instead of Samsung's private notifier
+# interfaces. X716's own stock DTS independently confirms the same chips at
+# the same i2c addresses (sm5714@49, usbpd-sm5714@33, ps5169@28), though the
+# i2c *bus* assignments and most regulator/GPIO wiring in
+# kernel/dts/sm8550-samsung-x716b.dts are carried over from X910 by analogy,
+# unverified for X716 specifically -- see that file's comments.
+drv=$repo_root/kernel/drivers
+
+supply_dir=$kdir/drivers/power/supply
+install -m 0644 "$drv/sm5714_battery.c" "$supply_dir/sm5714_battery.c"
+if ! grep -q 'BATTERY_SM5714' "$supply_dir/Kconfig"; then
+	sed -i '/^endif # POWER_SUPPLY$/i \
+config BATTERY_SM5714\
+\ttristate "Silicon Mitus SM5714 charger and fuel gauge"\
+\tdepends on I2C\
+\tdepends on IIO\
+\thelp\
+\t  Battery state of charge and charging status on boards that drive the\
+\t  SM5714 combo PMIC from the AP, such as the Galaxy Tab S9 5G/Ultra.\
+' "$supply_dir/Kconfig"
+fi
+grep -q 'sm5714_battery.o' "$supply_dir/Makefile" || \
+	printf 'obj-$(CONFIG_BATTERY_SM5714)\t+= sm5714_battery.o\n' \
+		>> "$supply_dir/Makefile"
+
+tcpm_dir=$kdir/drivers/usb/typec/tcpm
+install -m 0644 "$drv/sm5714_usbpd.c" "$tcpm_dir/sm5714_usbpd.c"
+if ! grep -q 'TYPEC_SM5714' "$tcpm_dir/Kconfig"; then
+	sed -i '/^endif # TYPEC_TCPM$/i \
+config TYPEC_SM5714\
+\ttristate "Silicon Mitus SM5714 USB Type-C and PD controller"\
+\tdepends on I2C\
+\tdepends on TYPEC_TCPM\
+\tdepends on BATTERY_SM5714\
+\thelp\
+\t  USB Type-C CC and USB-PD message transport for the SM5714 PDIC.\
+' "$tcpm_dir/Kconfig"
+fi
+grep -q 'sm5714_usbpd.o' "$tcpm_dir/Makefile" || \
+	printf 'obj-$(CONFIG_TYPEC_SM5714)\t+= sm5714_usbpd.o\n' \
+		>> "$tcpm_dir/Makefile"
+
+mux_dir=$kdir/drivers/usb/typec/mux
+install -m 0644 "$drv/ps5169.c" "$mux_dir/ps5169.c"
+if ! grep -q 'TYPEC_MUX_PS5169' "$mux_dir/Kconfig"; then
+	cat >> "$mux_dir/Kconfig" <<'KCEOF'
+
+config TYPEC_MUX_PS5169
+	tristate "Parade PS5169 Type-C redriver"
+	depends on I2C
+	depends on TYPEC
+	depends on USB_ROLE_SWITCH
+	help
+	  USB 3.x and DisplayPort lane redriver used by the Galaxy Tab S9 5G/Ultra.
+KCEOF
+fi
+grep -q 'ps5169.o' "$mux_dir/Makefile" || \
+	printf 'obj-$(CONFIG_TYPEC_MUX_PS5169)\t+= ps5169.o\n' >> "$mux_dir/Makefile"
+
 mkdir -p "$outdir"
 
 echo "== defconfig =="
