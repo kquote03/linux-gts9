@@ -1,0 +1,11 @@
+# Inserted into uniLoader's board/Kconfig by scripts/build-uniloader.sh,
+# inside the "Device Support" menu (alongside the other CONFIG_SAMSUNG_*
+# entries).
+	config SAMSUNG_GTS9_5G
+		bool "Support for Samsung Galaxy Tab S9 5G"
+		default n
+		depends on SM8550
+		help
+		  Say Y if you want to include support for the Samsung Galaxy
+		  Tab S9 5G (SM-X716B). UNTESTED / UNFLASHED as of this
+		  commit -- see docs/porting-log.md.

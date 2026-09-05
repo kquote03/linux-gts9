@@ -18,10 +18,11 @@ fi
 
 # Kbuild's LLVM=1 points HOSTCC/HOSTCXX at bare clang-unwrapped even when an
 # environment-exported override is present -- only a command-line-supplied
-# HOSTCC/HOSTCXX takes effect. See shell.nix and commit history for how
-# this was found (bare clang-unwrapped has no default header search paths
-# on NixOS, breaking host tool builds like scripts/kconfig/fixdep).
-make_args=(ARCH=arm64 LLVM=1 HOSTCC=cc HOSTCXX=c++ O="$outdir")
+# HOSTCC/HOSTCXX takes effect. Same is true of KCFLAGS (needed for
+# -resource-dir, see shell.nix -- bare clang-unwrapped doesn't auto-find its
+# own builtin headers like arm_neon.h on NixOS). Confirmed both by
+# reproducing the failures with only the environment-exported form set.
+make_args=(ARCH=arm64 LLVM=1 HOSTCC=cc HOSTCXX=c++ "KCFLAGS=${KCFLAGS:-}" O="$outdir")
 
 echo "== installing board DTS into the kernel tree =="
 cp "$repo_root/kernel/dts/$board_dts" "$qcom_dts_dir/$board_dts"
@@ -61,7 +62,7 @@ fi
 echo "all fragment symbols present as requested"
 
 echo "== building Image (uncompressed -- uniLoader embeds a raw Image, not Image.gz) =="
-make -C "$kdir" "${make_args[@]}" -j"$(nproc)" Image
+make -C "$kdir" "${make_args[@]}" -j"${BUILD_JOBS:-4}" Image
 
 echo "== building board DTB =="
 make -C "$kdir" "${make_args[@]}" -j"$(nproc)" "qcom/$board_dtb"

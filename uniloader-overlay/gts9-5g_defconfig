@@ -1,0 +1,34 @@
+# uniLoader defconfig for the Samsung Galaxy Tab S9 5G (SM-X716B).
+# UNTESTED / UNFLASHED.
+CONFIG_POSITION_INDEPENDENT=y
+CONFIG_LINUX_KRNL_HEADER_IMG=y
+CONFIG_SM8550=y
+CONFIG_SAMSUNG_GTS9_5G=y
+
+# TEXT_BASE/PAYLOAD_ENTRY/RAMDISK_ENTRY are set directly here rather than
+# via board/Kconfig `default ... if BOARD` entries, matching how
+# configs/pong_defconfig (Nothing Phone 2, SM8450 -- the closest real
+# working precedent to this device's SoC generation) does it.
+#
+# These are first-attempt values, NOT independently verified against X716
+# hardware -- picking them right requires knowing the device's actual free
+# physical memory layout, which is a Phase 2/3 hardware-iteration question,
+# not something derivable from source inspection alone. Reasoning:
+#   - TEXT_BASE=0xa8000000: adopted directly from pong_defconfig's real
+#     working value for the closest comparable chip generation, since our
+#     own attempt at deriving a "safe" address from sm8550.dtsi's default
+#     reserved-memory layout turned out to rest on shaky assumptions about
+#     vendor_boot v4 header addressing semantics we couldn't fully verify
+#     from source alone.
+#   - PAYLOAD_ENTRY=0xb8000000 (TEXT_BASE + 256 MiB) and
+#     RAMDISK_ENTRY=0xc8000000 (PAYLOAD_ENTRY + 256 MiB): chosen with
+#     generous separation from TEXT_BASE and from each other, so uniLoader
+#     itself (code + embedded kernel/dtb/ramdisk blobs, likely tens of MB)
+#     and the copied-out kernel Image both have plenty of headroom without
+#     needing to reason precisely about exact sizes in advance.
+# If Phase 2/3 bring-up hangs or crashes immediately after uniLoader's own
+# splash message (if that checkpoint is even reachable), these three
+# values are the first thing to revisit -- see docs/porting-log.md.
+CONFIG_TEXT_BASE=0xa8000000
+CONFIG_PAYLOAD_ENTRY=0xb8000000
+CONFIG_RAMDISK_ENTRY=0xc8000000

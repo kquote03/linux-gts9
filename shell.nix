@@ -80,8 +80,13 @@ pkgs.mkShell {
     # ".lib" output rather than the same prefix as the clang binary. Found
     # this by reproducing a real build failure ("arm_neon.h file not
     # found" compiling lib/crc/crc64-neon.o) and confirming the header
-    # lives under llvmPackages_19.clang-unwrapped.lib instead.
-    export KCFLAGS="-resource-dir=${llvm.clang-unwrapped.lib}/lib/clang/${pkgs.lib.versions.major llvm.clang-unwrapped.version}"
+    # lives under llvmPackages_19.clang-unwrapped.lib instead. -resource-dir
+    # alone isn't enough under the kernel's -nostdinc flag though (verified
+    # in isolation: -nostdinc drops resource-dir/include from the search
+    # path entirely, not just the normal system dirs) -- needs an explicit
+    # -isystem pointing at the same directory too.
+    clangResDir="${llvm.clang-unwrapped.lib}/lib/clang/${pkgs.lib.versions.major llvm.clang-unwrapped.version}"
+    export KCFLAGS="-resource-dir=$clangResDir -isystem $clangResDir/include"
 
     # Fully static aarch64 busybox for the bring-up initramfs
     # (scripts/build-bringup-ramdisk.sh) -- the default dynamically-linked

@@ -1,0 +1,21 @@
+# Inserted into uniLoader's soc/Kconfig by scripts/build-uniloader.sh,
+# immediately after the existing "config SM8450" entry.
+#
+# No soc/qualcomm/sm8550.c backend file is needed: `soc_init()` is declared
+# extern in include/main/main.h but has no call site anywhere in arch/ or
+# main/ in this codebase (confirmed by grep) -- it's vestigial/unused, and
+# the existing SM8450/SM8650/SM8850 entries already work with zero backend
+# implementation (no `lib-$(CONFIG_SM8xxx) +=` line in soc/Makefile for any
+# of them). This entry follows that same precedent.
+config SM8550
+	bool "Support for QUALCOMM SM8550"
+	select QUALCOMM
+	help
+	  Say Y if your device uses this Qualcomm SoC
+
+	  NOTE: uniLoader's own Kconfig flags SM8650/SM8850 (the two
+	  Snapdragon generations after this one) with a stability warning
+	  due to Gunyah hypervisor use, while SM8450 (the generation before)
+	  carries no such warning. SM8550 sits between them and its
+	  Gunyah/pKVM behavior under uniLoader is untested -- treat as an
+	  open risk for this bring-up, not a resolved one either way.
