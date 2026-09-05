@@ -75,6 +75,21 @@ pkgs.mkShell {
     export HOSTCC=cc
     export HOSTCXX=c++
 
+    # bare clang-unwrapped doesn't auto-find its own resource-dir (builtin
+    # headers like arm_neon.h) on NixOS -- nixpkgs splits it into a separate
+    # ".lib" output rather than the same prefix as the clang binary. Found
+    # this by reproducing a real build failure ("arm_neon.h file not
+    # found" compiling lib/crc/crc64-neon.o) and confirming the header
+    # lives under llvmPackages_19.clang-unwrapped.lib instead.
+    export KCFLAGS="-resource-dir=${llvm.clang-unwrapped.lib}/lib/clang/${pkgs.lib.versions.major llvm.clang-unwrapped.version}"
+
+    # Fully static aarch64 busybox for the bring-up initramfs
+    # (scripts/build-bringup-ramdisk.sh) -- the default dynamically-linked
+    # busybox references a Nix store path as its ELF interpreter, which
+    # won't exist on-device. Not added to `packages`/PATH since it's a
+    # foreign-arch binary, not a host tool.
+    export BUSYBOX_AARCH64_STATIC=${pkgs.pkgsCross.aarch64-multiplatform.pkgsStatic.busybox}/bin/busybox
+
     echo "linux-tabs9-port build shell ready."
     echo "  clang:  $(${llvm.clang-unwrapped}/bin/clang --version | head -1)"
     echo "  adb:    $(adb --version | head -1)"
