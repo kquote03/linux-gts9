@@ -224,6 +224,18 @@ CONFIG_PM_TEST_SUSPEND=y
 # CONFIG_INPUT_TOUCHSCREEN is already =y by mainline defconfig.
 CONFIG_TOUCHSCREEN_FTS1BA90A_X716=y
 
+# &i2c4 (the touchscreen's bus) never probed on real hardware even after the
+# Session 7 regulator fix -- confirmed via a live serial-console session:
+# `a90000.i2c: deferred probe pending: geni_i2c: Failed to get tx DMA ch`,
+# forever, because mainline's defconfig ships CONFIG_QCOM_GPI_DMA=m and this
+# board's rootfs (both the debug ramdisk and the Buildroot/Weston image)
+# never loads kernel modules -- so gpi_dma1/gpi_dma2 (dma-controller@a00000
+# and @800000 in sm8550.dtsi) never bind, and every QUP I2C/SPI bus that
+# depends on either of them (not just i2c4 -- i2c6 too, per its own `dmas =
+# <&gpi_dma1 ...>` property) is stuck in permanent deferred-probe. Force it
+# built-in instead of a module -- see docs/porting-log.md's Session 7 entry.
+CONFIG_QCOM_GPI_DMA=y
+
 # Explicitly NOT enabled here (deferred, see docs/hardware-facts.md
 # non-goals): WCN7850 wifi/bt, camera, audio DSP/APR, sensors, cellular
 # modem remoteproc, GPU acceleration (Mesa/Adreno firmware -- the initial

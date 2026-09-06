@@ -3,11 +3,13 @@
  * Minimal bring-up devicetree for the Samsung Galaxy Tab S9 5G (SM-X716B).
  *
  * Display (DSI panel) and USB were confirmed working on real hardware in
- * Session 5. Touchscreen (Session 6) has a from-scratch driver ready but
- * its DTS node is deliberately left `status = "disabled"` -- enabling its
- * AVDD regulator caused a real-hardware boot regression (silent hard
- * reset), root-caused but not yet resolved with a safe fix. See
- * docs/hardware-facts.md and docs/porting-log.md.
+ * Session 5. Touchscreen (Session 6/7) works end to end on real hardware:
+ * chip ID validated, resident firmware read back, correct coordinates.
+ * Getting there took three real bugs (a wrong AVDD voltage not achievable
+ * on that LDO's hardware ladder, CONFIG_QCOM_GPI_DMA shipping as a module
+ * with no modprobe available, and a coordinate range copied from the wrong
+ * stock board revision), each root-caused from source rather than guessed
+ * -- see docs/porting-log.md's Session 7 entry for the full investigation.
  *
  * Structural template: arch/arm64/boot/dts/qcom/sm8550-samsung-q5q.dts
  * (mainline, Samsung Galaxy Z Fold5 -- a real accepted-upstream SM8550
@@ -374,25 +376,70 @@
 		};
 
 		/*
-		 * TEMPORARILY REMOVED for regression testing (2026-09-06):
-		 * defining this node alone -- regardless of whether anything
-		 * ever calls regulator_enable() on it -- broke display+USB on
-		 * real hardware, reproducing identically whether the
-		 * touchscreen's own i2c4 bus was enabled or disabled. Leading
-		 * theory: min-uV==max-uV here sets apply_uV (of_regulator.c),
-		 * which set_machine_constraints() (drivers/regulator/core.c)
-		 * acts on unconditionally at PMIC regulator *registration*
-		 * time, independent of any consumer -- if PM8550-b LDO14 is
-		 * TrustZone-restricted (unlike l11b/l12b/l13b, already proven
-		 * safe by the working panel), an RPMH voltage-set attempt on
-		 * it could cause exactly the kind of silent hard reset this
-		 * project already root-caused once before for a TZ-locked
-		 * GPIO range (see docs/porting-log.md). Testing that theory
-		 * now by removing the node entirely. See
-		 * kernel/drivers/touchscreen-fts1ba90a-x716.c -- its
-		 * avdd-supply reference is correspondingly commented out below
-		 * until this is resolved.
+		 * Touch AVDD. Session 6 first defined this at 3300000 uV
+		 * (`vreg_l14b_3p3`) -- reading the stock DTS's `tsp_avdd_ldo`
+		 * as "3.3V" -- and that alone (regardless of whether anything
+		 * ever called regulator_enable() on it) caused a real-hardware
+		 * silent hard reset, reproducing identically whether the
+		 * touchscreen's own i2c4 bus was enabled or disabled. The
+		 * initial theory (a TrustZone-restricted PMIC resource, by
+		 * analogy to this project's earlier reserved-GPIO-range crash)
+		 * turned out to be wrong. Four parallel research agents
+		 * (kernel-source tracing, the X910 Ultra sibling port, the
+		 * downstream driver, and public docs/other SM8550 boards)
+		 * converged on the real cause: 3300000 uV is not a value this
+		 * LDO's hardware can produce at all. PM8550-b LDO14 is a
+		 * pmic5_pldo, whose voltage ladder is 1504000 + N*8000 uV
+		 * (N=0..255) -- (3300000-1504000)/8000 = 224.5, landing exactly
+		 * between selector 224 (3296000) and 225 (3304000). Because
+		 * regulator-min-microvolt == regulator-max-microvolt sets
+		 * apply_uV (drivers/regulator/of_regulator.c), this gets
+		 * checked unconditionally at PMIC registration time
+		 * (machine_constraints_voltage(), drivers/regulator/core.c),
+		 * which clamps to the achievable range (max_uV=3296000 <
+		 * min_uV=3304000) and fails with -EINVAL *before* any RPMH
+		 * command is ever sent for this rail. Because ldo14 was the
+		 * last child node in this regulators-0 block, that single
+		 * probe failure aborted rpmh_regulator_probe()'s child loop,
+		 * and the resulting devm_regulator_register() teardown
+		 * (device_unbind_cleanup() -> devres_release_all()) unregisters
+		 * every *already-registered* sibling regulator from the same
+		 * failed probe call too -- including vreg_l17b_2p5 (UFS vcc),
+		 * which is why the whole board went dark rather than just
+		 * touch failing to probe. cmd-db/TrustZone-restriction was an
+		 * available theory but is actively refuted by the driver's own
+		 * source: a cmd-db miss or unauthorized resource fails
+		 * gracefully (dev_err + -ENODEV), never silently.
+		 *
+		 * 3200000 uV (an exact selector, N=212) is the correct value:
+		 * it's what Qualcomm's own reference tree names this exact
+		 * rail (kalama-regulators.dtsi's pm_humu_l14/L14B, which our
+		 * board's stock DTS inherits unmodified -- its overlay only
+		 * fixes up consumers, never redefines the regulator itself,
+		 * confirmed by decompiling gts9_eur_openx_w00_r04.dts and
+		 * finding no `&L14B { ... }` override anywhere in this
+		 * device's tree), it's the exact value the sibling X910 Ultra
+		 * port uses for the same physical LDO14 index powering its own
+		 * touch chip's AVDD (`vreg_l14b_3p2`,
+		 * ubuntu-galaxy-tab-s9ultra/kernel/dts/sm8550-samsung-
+		 * gts9uwifi.dts), and it's the exact value mainline's own
+		 * upstream Samsung SM8550 board uses for this same node
+		 * (`vreg_l14b_3p2`, arch/arm64/boot/dts/qcom/sm8550-samsung-
+		 * q5q.dts, the Galaxy Z Fold5 -- defined with zero consumers,
+		 * same as this node had during the original crash, and it does
+		 * not crash there). The earlier "3.3V measured" claim in
+		 * docs/hardware-facts.md was a misread of the stock DTS: no
+		 * literal voltage was ever encoded per-board (it's a phandle
+		 * fixup, not a value), so 3.2V is what's now documented there.
+		 * See docs/porting-log.md's Session 7 entry for the full
+		 * four-agent investigation.
 		 */
+		vreg_l14b_3p2: ldo14 {
+			regulator-name = "vreg_l14b_3p2";
+			regulator-min-microvolt = <3200000>;
+			regulator-max-microvolt = <3200000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
 	};
 
 	regulators-2 {
@@ -737,40 +784,55 @@
  * own citations, and docs/porting-log.md for why this needed a from-scratch
  * driver port rather than just this DTS node.
  *
- * DELIBERATELY DISABLED (`status = "disabled"` below), and its AVDD
- * regulator node removed entirely: defining a PM8550-b LDO14 node
- * (`vreg_l14b_3p3`, the touch AVDD rail per the stock DTS's `tsp_avdd_ldo`)
- * caused a real-hardware regression -- a silent hard reset with zero kernel
- * console output, confirmed via `/proc/last_kmsg` capture (ABL loads our
- * cmdline/kernel, then nothing -- straight to TWRP's own recovery kernel,
- * matching this project's own earlier-diagnosed "TrustZone-restricted PMIC
- * resource" crash signature for a reserved GPIO range). Root cause
- * suspected but not yet proven: `regulator-min/max-microvolt` being equal
- * sets `apply_uV` (`drivers/regulator/of_regulator.c`), which
- * `set_machine_constraints()` (`drivers/regulator/core.c`) acts on
- * unconditionally at PMIC regulator *registration* time -- independent of
- * whether the touchscreen driver ever runs -- and if LDO14 is TZ-restricted
- * (unlike l11b/l12b/l13b, already proven safe by the working panel), an
- * RPMH voltage-set on it could cause exactly this. Removing the node fixed
- * the regression on real hardware (confirmed). See docs/porting-log.md's
- * Session 6 entry for the full investigation (three other hypotheses ruled
- * out first: Kconfig side effects, a stale build artifact, and an
- * incomplete flash). Re-enabling touch needs either a correct, non-TZ
- * regulator index for this rail (not yet found), or a different way to
- * power it that doesn't route through a plain devicetree regulator node.
+ * Re-enabled in Session 7 after Session 6's crash was root-caused to a
+ * wrong AVDD voltage value, not a TrustZone restriction -- see the
+ * vreg_l14b_3p2 node comment above (&apps_rsc's regulators-0 block) and
+ * docs/porting-log.md's Session 7 entry for the full investigation.
  */
 &i2c4 {
 	clock-frequency = <400000>;
-	status = "disabled";
+	status = "okay";
 
 	touchscreen@49 {
 		compatible = "stm,fts_touch";
 		reg = <0x49>;
 		interrupts-extended = <&tlmm 25 IRQ_TYPE_LEVEL_LOW>;
 		vddio-supply = <&vreg_l12b_1p8>;
-		/* avdd-supply intentionally omitted -- see the node comment above. */
-		touchscreen-size-x = <1752>;
-		touchscreen-size-y = <2800>;
+		avdd-supply = <&vreg_l14b_3p2>;
+		/*
+		 * touchscreen-size-x/y: 1600/2560, from `sec,max_coords`
+		 * in THIS board's own stock DTS
+		 * (gts9_eur_openx_w00_r04.dts, matching this tablet's
+		 * measured board-id 04) -- verified to equal the ANA38407
+		 * panel's own native pixel resolution exactly
+		 * (qcom,mdss-dsi-panel-width/height = 2560/1600), i.e. zero
+		 * border/margin between raw touch units and panel pixels.
+		 * Session 7 first used 1752/2800 here -- the r00
+		 * (pre-production, still wired to the Tab S8+'s "gts8p"
+		 * touch firmware/calibration) board revision's value, not
+		 * r04's -- which produced a consistent ~3/4cm real-hardware
+		 * touch offset. Fixed and confirmed correct on real hardware.
+		 * See docs/porting-log.md's Session 7 entry.
+		 */
+		touchscreen-size-x = <1600>;
+		touchscreen-size-y = <2560>;
+		/*
+		 * The sensor's native axes don't match the panel's mounted
+		 * orientation: confirmed on real hardware (Session 7) by
+		 * tapping the on-screen top-left and bottom-right corners and
+		 * capturing raw ABS_MT_POSITION_X/Y events (top-left ->
+		 * raw ~(1535, 50); bottom-right -> raw ~(55, 2505)). The raw
+		 * Y axis's ~2455 span vs. raw X's ~1480 span (ratio ~1.66)
+		 * matches the panel's own 2560x1600 aspect ratio (1.6),
+		 * confirming a swap; working through
+		 * touchscreen_parse_properties()'s exact transform order
+		 * (invert pre-swap, then swap) against both measured corners
+		 * gives this combination -- swap plus inverting only the
+		 * pre-swap X axis -- as the one that maps both corners
+		 * correctly. See docs/porting-log.md's Session 7 entry.
+		 */
+		touchscreen-swapped-x-y;
+		touchscreen-inverted-x;
 	};
 };
 

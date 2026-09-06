@@ -201,8 +201,13 @@ booted. **measured**. This is the MVP rootfs target (Phase 4).
   `0x49` on `qupv3_se4_i2c` (`&i2c4`; not yet wired in our board DTS, but
   its GPI-DMA prerequisite (`&gpi_dma1`) already is). IRQ gpio 25, no
   dedicated reset-gpio (regulator power-cycle + in-band SW reset instead),
-  `tsp_io_ldo`/`tsp_avdd_ldo` = 1.8 V / 3.3 V. **Correction (was wrong
-  above):** the pinned mainline tree (v7.2) has **no**
+  `tsp_io_ldo`/`tsp_avdd_ldo` = PM8550-b LDO12/LDO14. **Correction (Session
+  7):** the "3.3V" figure previously given here for `tsp_avdd_ldo` was a
+  misread — the stock DTS only carries a phandle fixup for this rail
+  (`pm_humu_l14`/`L14B`), never a literal voltage; it inherits Qualcomm's
+  reference value for this rail unmodified. The real value is **3.2 V**
+  (see the Session 7 entry in `docs/porting-log.md`). **Correction (was
+  wrong above):** the pinned mainline tree (v7.2) has **no**
   `drivers/input/touchscreen/st/fts` at all. The only in-tree candidate is
   `stmfts.c` (`compatible = "st,stmfts"`), which targets an older
   Galaxy-S6/S7-era ST "FingerTip" chip with a disjoint opcode set from the
@@ -216,20 +221,57 @@ booted. **measured**. This is the MVP rootfs target (Phase 4).
   kept at `vendor-firmware-dump/`, gitignored/proprietary). **measured**
   (DTS/GPIO/regulator facts), driver gap **measured**. A minimal from-scratch
   driver now exists (`kernel/drivers/touchscreen-fts1ba90a-x716.c`) and is
-  compiled in, but its DTS node is deliberately `status = "disabled"` —
-  enabling it (specifically, defining an AVDD regulator node for it) caused
-  a real-hardware boot regression (silent hard reset, zero kernel console
-  output). Root cause suspected: PM8550-b **LDO14 may be
-  TrustZone-restricted** — a plain devicetree regulator node with
-  `min-uV == max-uV` triggers an unconditional RPMH voltage-set at PMIC
-  registration time regardless of any consumer (`set_machine_constraints()`,
-  `drivers/regulator/core.c`), unlike the panel's L11B/L12B/L13B (same
-  pattern, already proven safe). Removing the LDO14 node fixed the
-  regression on real hardware (**measured**, confirmed via `/proc/last_kmsg`
-  capture). Not yet resolved: how to actually power this chip's AVDD rail
-  safely. See `docs/porting-log.md`'s Session 6 entry for the full
-  investigation (three other hypotheses ruled out first: Kconfig side
-  effects, a stale build artifact, an incomplete flash).
+  compiled in. Session 6 first wired up its DTS node with the AVDD rail
+  (`vreg_l14b_3p3`, PM8550-b LDO14) at 3.3V and hit a real-hardware boot
+  regression (silent hard reset, zero kernel console output) — the
+  TrustZone-restriction theory written here at the time turned out to be
+  wrong. Session 7's four-agent investigation (kernel-source tracing, the
+  X910 Ultra sibling port, the downstream driver, and public/upstream SM8550
+  boards) found the real cause: **3.3V (3300000 uV) is not a value this
+  LDO's hardware can produce.** PM8550-b LDO14 is a `pmic5_pldo` with an
+  8mV-step ladder from 1.504V (`1504000 + N*8000`, N=0..255); 3300000 falls
+  exactly between two selectors (3296000/3304000). `regulator-min-microvolt
+  == regulator-max-microvolt` sets `apply_uV`
+  (`drivers/regulator/of_regulator.c`), so this gets checked unconditionally
+  at PMIC registration time; the clamp to the achievable range makes
+  `max_uV < min_uV` and `machine_constraints_voltage()`
+  (`drivers/regulator/core.c`) fails with a clean `-EINVAL` — before any
+  RPMH command is ever sent for this rail, so cmd-db/TrustZone restriction
+  was never actually involved. Because this LDO14 node was the last child
+  in its `regulators-0` block, that one failure aborted
+  `rpmh_regulator_probe()`'s child loop, and the resulting `devm` teardown
+  unregistered every already-registered sibling regulator from the same
+  probe call too (including `vreg_l17b_2p5`, UFS vcc) — which is why the
+  whole board went dark rather than just touch failing to probe. **The
+  correct value is 3.2V** (`vreg_l14b_3p2`, exact selector N=212): it
+  matches Qualcomm's own reference tree for this exact rail
+  (`kalama-regulators.dtsi`'s `pm_humu_l14`, which our stock DTS inherits
+  unmodified), it's what the sibling X910 Ultra port uses for the identical
+  physical LDO14 index powering its own touch chip's AVDD, and it's what
+  mainline's own upstream Samsung SM8550 board
+  (`sm8550-samsung-q5q.dts`, Galaxy Z Fold5) uses for this same node. Fixed
+  in Session 7 (re-enabled `&i2c4`, restored `avdd-supply`, corrected the
+  voltage) — **confirmed on real hardware**, display/USB unaffected.
+
+  Two more bugs surfaced (and were fixed) the same session before touch was
+  fully working: (1) `&i2c4`'s controller was stuck in permanent deferred
+  probe (`geni_i2c: Failed to get tx DMA ch`) because mainline's defconfig
+  ships `CONFIG_QCOM_GPI_DMA=m` and this board's rootfs never loads kernel
+  modules — fixed by forcing it `=y` in `kernel/config/config-x716.fragment`
+  (this also unblocks any other QUP bus depending on `gpi_dma1`/`gpi_dma2`,
+  not just i2c4); and (2) `touchscreen-size-x/y` had been copied from the
+  wrong stock board revision (`gts9_eur_openx_w00_r00.dts`'s pre-production,
+  Tab-S8+-firmware-era `sec,max_coords`, `1752`/`2800`) instead of this
+  board's real one (`r04`'s `1600`/`2560`, independently confirmed to equal
+  the ANA38407 panel's own native pixel resolution exactly) — causing a
+  consistent ~3/4cm touch offset. Also added `touchscreen-swapped-x-y` +
+  `touchscreen-inverted-x` (the sensor's native axes don't match the
+  panel's mounted orientation; derived algebraically from two measured
+  reference points, not by trial). **Touch is now fully working on real
+  hardware**, confirmed by the user, chip ID validated + resident firmware
+  read + input device registered + correct coordinates. See
+  `docs/porting-log.md`'s Session 6 and 7 entries for the full
+  investigation.
 - Radio: this is the 5G SKU (unlike the Wi-Fi-only X910 reference) — has a
   `modem` partition (188 MiB, FAT16 container). Permanently out of scope; no
   mainline story exists for Samsung's Shannon modem IPC on this platform.

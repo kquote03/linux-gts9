@@ -33,29 +33,35 @@ compressed) builds cleanly, flashes into `vendor_boot`'s ramdisk slot
 (too big for `init_boot`'s fixed 8 MiB — see `docs/porting-log.md`'s
 Session 5 entry), and **weston-terminal renders on the panel**, confirmed
 directly on the tablet. One fix (dropping a `--tty` flag that turned out
-to fail, adding `--continue-without-input` since there's no touchscreen or
-keyboard yet) was verified live over the serial shell but not yet baked
-into a freshly-flashed image — rebuilding once more to pick that up is a
-loose end, not a real unknown.
+to fail, adding `--continue-without-input` since there was no working input
+device at the time) was verified live over the serial shell but not yet
+baked into a freshly-flashed image — rebuilding once more to pick that up
+is a loose end, not a real unknown. Touch now works (see below), so a
+future rootfs rebuild can drop `--continue-without-input` entirely once
+there's still no keyboard.
 
-**Touchscreen has a driver, but is disabled pending a safe power fix.**
-Mainline has no usable driver for the real chip (an ST fts1ba90a — the
-in-tree `stmfts.c` targets an unrelated, older ST part), so
-`kernel/drivers/touchscreen-fts1ba90a-x716.c` is a from-scratch port.
-Enabling its DTS node (specifically, a PM8550-b LDO14 regulator node for its
-AVDD rail) caused a real-hardware regression — a silent hard reset, no
-kernel console output at all, killing display and USB. Root-caused (not yet
-100% proven) to that regulator being TrustZone-restricted: a devicetree
-node with matching min/max microvolts triggers an unconditional RPMH
-voltage-set at PMIC registration time regardless of any consumer, unlike
-the panel's regulators (same pattern, already proven safe). Removing the
-node fixed the regression, confirmed on real hardware — see
-`docs/porting-log.md`'s Session 6 entry for the full investigation (three
-other hypotheses ruled out first). The driver and DTS node stay in the tree,
-disabled, until a safe way to power this rail is found.
+**Touchscreen works, end to end, on real hardware.** Mainline has no usable
+driver for the real chip (an ST fts1ba90a — the in-tree `stmfts.c` targets
+an unrelated, older ST part), so `kernel/drivers/touchscreen-fts1ba90a-x716.c`
+is a from-scratch port. Getting there took three real bugs, each root-caused
+from source rather than guessed: (1) the AVDD regulator's declared voltage
+(3.3V) wasn't achievable on that PM8550-b LDO's 8mV-step hardware ladder,
+which caused a silent full-board hard reset at boot — fixed by using 3.2V,
+the value Qualcomm's own reference tree, the sibling Ultra port, and
+mainline's own upstream Samsung SM8550 board all use for this exact rail;
+(2) the touch I2C bus's DMA channel could never bind because mainline's
+defconfig ships `CONFIG_QCOM_GPI_DMA=m` and this board's rootfs never loads
+kernel modules — fixed by forcing it built-in; (3) the touch coordinate
+range (`touchscreen-size-x/y`) had been copied from a pre-production stock
+board revision instead of this board's real one, causing a small but
+consistent physical offset — fixed using the real board's own stock
+values, cross-confirmed against the panel's native pixel resolution. Chip
+ID validates, resident firmware reads back correctly, coordinates are
+correctly oriented and calibrated, and touch drives weston directly. See
+`docs/porting-log.md`'s Session 6 and 7 entries for the full investigation.
 
 **What doesn't work yet:** a real root filesystem (still a debug-only ramdisk;
-see Phase 4 below), touchscreen (see above), WiFi/BT, camera, audio, sensors,
+see Phase 4 below), WiFi/BT, camera, audio, sensors,
 fingerprint, S-Pen, keyboard cover, cellular/modem, GPU acceleration, and
 full USB-C role negotiation (the gadget console works because `&usb_1`'s
 `dr_mode` is forced to `"peripheral"`, deliberately bypassing the Type-C
