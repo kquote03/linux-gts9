@@ -196,10 +196,40 @@ booted. **measured**. This is the MVP rootfs target (Phase 4).
     boilerplate inherited from a phone panel definition; deliberately not
     ported into the new driver. **assumed** (a reasonable inference from
     the tablet's known hardware, not independently disproven).
-- Touchscreen: `compatible = "stm,fts_touch"` (STMicroelectronics) —
-  **different from X910's** Goodix `gt9916`. No board-specific mainline
-  driver exists yet; mainline has a generic `drivers/input/touchscreen/st/fts`
-  as a possible starting point. **measured**, deferred to future work.
+- Touchscreen: `compatible = "stm,fts_touch"` (STMicroelectronics
+  `fts1ba90a`) — **different from X910's** Goodix `gt9916`. I2C addr
+  `0x49` on `qupv3_se4_i2c` (`&i2c4`; not yet wired in our board DTS, but
+  its GPI-DMA prerequisite (`&gpi_dma1`) already is). IRQ gpio 25, no
+  dedicated reset-gpio (regulator power-cycle + in-band SW reset instead),
+  `tsp_io_ldo`/`tsp_avdd_ldo` = 1.8 V / 3.3 V. **Correction (was wrong
+  above):** the pinned mainline tree (v7.2) has **no**
+  `drivers/input/touchscreen/st/fts` at all. The only in-tree candidate is
+  `stmfts.c` (`compatible = "st,stmfts"`), which targets an older
+  Galaxy-S6/S7-era ST "FingerTip" chip with a disjoint opcode set from the
+  real `fts1ba90a` silicon (confirmed against the ~10k-line downstream
+  `fts_ts.c`/`fts_sec.c`/`fts_fwu.c`) — a compatible-string rename would
+  probe but very likely misbehave. This is **not** a DTS-only bring-up:
+  it needs either a from-scratch mainline driver for the fts1ba90a
+  protocol or a cleaned-up port of the downstream one, plus extracting
+  `tsp_stm/fts1ba90a_gts8p.bin` from the stock vendor image (not in
+  linux-firmware, but pulled from the real device's `/vendor/firmware` and
+  kept at `vendor-firmware-dump/`, gitignored/proprietary). **measured**
+  (DTS/GPIO/regulator facts), driver gap **measured**. A minimal from-scratch
+  driver now exists (`kernel/drivers/touchscreen-fts1ba90a-x716.c`) and is
+  compiled in, but its DTS node is deliberately `status = "disabled"` —
+  enabling it (specifically, defining an AVDD regulator node for it) caused
+  a real-hardware boot regression (silent hard reset, zero kernel console
+  output). Root cause suspected: PM8550-b **LDO14 may be
+  TrustZone-restricted** — a plain devicetree regulator node with
+  `min-uV == max-uV` triggers an unconditional RPMH voltage-set at PMIC
+  registration time regardless of any consumer (`set_machine_constraints()`,
+  `drivers/regulator/core.c`), unlike the panel's L11B/L12B/L13B (same
+  pattern, already proven safe). Removing the LDO14 node fixed the
+  regression on real hardware (**measured**, confirmed via `/proc/last_kmsg`
+  capture). Not yet resolved: how to actually power this chip's AVDD rail
+  safely. See `docs/porting-log.md`'s Session 6 entry for the full
+  investigation (three other hypotheses ruled out first: Kconfig side
+  effects, a stale build artifact, an incomplete flash).
 - Radio: this is the 5G SKU (unlike the Wi-Fi-only X910 reference) — has a
   `modem` partition (188 MiB, FAT16 container). Permanently out of scope; no
   mainline story exists for Samsung's Shannon modem IPC on this platform.

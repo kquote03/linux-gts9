@@ -218,8 +218,14 @@ CONFIG_PM_DEBUG=y
 CONFIG_PM_ADVANCED_DEBUG=y
 CONFIG_PM_TEST_SUSPEND=y
 
+# Touchscreen: fts1ba90a, from-scratch driver (no usable mainline driver
+# exists for this chip -- see docs/hardware-facts.md and
+# kernel/drivers/touchscreen-fts1ba90a-x716.c's own header for why).
+# CONFIG_INPUT_TOUCHSCREEN is already =y by mainline defconfig.
+CONFIG_TOUCHSCREEN_FTS1BA90A_X716=y
+
 # Explicitly NOT enabled here (deferred, see docs/hardware-facts.md
-# non-goals): touchscreen, WCN7850 wifi/bt, camera, audio DSP/APR,
-# sensors, cellular modem remoteproc, GPU acceleration (Mesa/Adreno
-# firmware -- the initial Weston bring-up target uses pixman/DRM dumb
-# buffers only, see docs/porting-log.md's Session 5 entry).
+# non-goals): WCN7850 wifi/bt, camera, audio DSP/APR, sensors, cellular
+# modem remoteproc, GPU acceleration (Mesa/Adreno firmware -- the initial
+# Weston bring-up target uses pixman/DRM dumb buffers only, see
+# docs/porting-log.md's Session 5 entry).

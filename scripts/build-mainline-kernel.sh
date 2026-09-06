@@ -134,6 +134,28 @@ grep -q 'panel-samsung-ana38407-x716.o' "$panel_dir/Makefile" || \
 	printf 'obj-$(CONFIG_DRM_PANEL_SAMSUNG_ANA38407_X716)\t+= panel-samsung-ana38407-x716.o\n' \
 		>> "$panel_dir/Makefile"
 
+echo "== installing touchscreen driver into the kernel tree =="
+# fts1ba90a touch controller (Session 6, 2026-09-06): no usable mainline
+# driver exists for this chip -- ported from Samsung's downstream
+# fts1ba90a source. Same idempotent install/Kconfig/Makefile staging
+# pattern as the other from-scratch drivers above.
+ts_dir=$kdir/drivers/input/touchscreen
+install -m 0644 "$drv/touchscreen-fts1ba90a-x716.c" \
+	"$ts_dir/fts1ba90a-x716.c"
+if ! grep -q 'TOUCHSCREEN_FTS1BA90A_X716' "$ts_dir/Kconfig"; then
+	sed -i '/^endif$/i \
+config TOUCHSCREEN_FTS1BA90A_X716\
+\ttristate "STMicroelectronics fts1ba90a touchscreen (gts9-5g)"\
+\tdepends on I2C\
+\thelp\
+\t  STMicroelectronics fts1ba90a touch controller as fitted to the\
+\t  Galaxy Tab S9 5G.\
+' "$ts_dir/Kconfig"
+fi
+grep -q 'fts1ba90a-x716.o' "$ts_dir/Makefile" || \
+	printf 'obj-$(CONFIG_TOUCHSCREEN_FTS1BA90A_X716)\t+= fts1ba90a-x716.o\n' \
+		>> "$ts_dir/Makefile"
+
 mkdir -p "$outdir"
 
 echo "== defconfig =="

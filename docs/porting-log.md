@@ -1138,3 +1138,160 @@ re-ran the script live over the serial shell instead of rebuilding.
 Rebuilding the Buildroot rootfs once more (picking up this fix) and
 reflashing is the next concrete step before trusting a cold boot to bring
 Weston up unattended.
+
+## Session 6 — 2026-09-06 — Touchscreen driver port, and a real-hardware regression saga
+
+Display + Weston were proven working (Session 5). Next up per the user's
+explicit direction: touchscreen, before Ubuntu.
+
+### The driver port
+
+An Explore pass initially trusted `docs/hardware-facts.md`'s claim that
+mainline ships a usable `drivers/input/touchscreen/st/fts` driver, needing
+only DTS wiring (like the sibling Ultra's Goodix touch). **That claim was
+wrong** — confirmed and corrected: no such path exists in the pinned v7.2
+tree. The only in-tree candidate, `stmfts.c` (`compatible = "st,stmfts"`),
+targets a much older, protocol-incompatible ST "FingerTip" chip. The real
+hardware is an ST **fts1ba90a** (I2C `0x49` on `qupv3_se4_i2c`/`&i2c4`, IRQ
+gpio 25, no reset-gpio), for which Samsung ships a ~10k-line downstream
+driver (`fts_ts.c`/`fts_sec.c`/`fts_fwu.c`) on their private `sec_input`
+framework. User's call: port it into a new, minimal mainline-style driver
+rather than defer.
+
+Two follow-up Explore passes scoped exactly what's load-bearing (probe
+sequence, opcodes, power-on ordering and delays, the in-band system-reset
+command, event-FIFO framing and bit-packing, chip-ID validation) vs. safely
+omittable (firmware flashing/`request_firmware()` — the downstream driver's
+own logic shows the IC ships with valid resident firmware and "skip fw
+update" is the normal outcome every boot; all of `fts_sec.c`'s
+factory/sysfs/production-test code; TCLM calibration; gesture/AOD/sponge;
+DeX mode; secure-touch). Resulted in
+`kernel/drivers/touchscreen-fts1ba90a-x716.c` (~500 lines, house style
+matching `ps5169.c`): mainline's own `touchscreen_parse_properties()` /
+`input_mt_init_slots(..., INPUT_MT_DIRECT | INPUT_MT_DROP_UNUSED)` /
+`input_mt_sync_frame()` idiom (same pattern the sibling Ultra's mainline
+Goodix driver uses) replaces Samsung's hand-rolled `sec_input_set_prop()`
+entirely — simpler and more idiomatic than a direct port.
+
+**Firmware side-quest**: with the device in TWRP, `/vendor` (dm-5, ext4,
+*not* erofs as the stock fstab's generic entry suggested) was mounted
+read-only and `/vendor/firmware/tsp_stm/{fts1ba90a_gts8p.bin,
+fts1ba90a_gts9.bin}` pulled via `adb pull` to `vendor-firmware-dump/`
+(gitignored — proprietary). This board's measured `board-id 04` uses
+`fts1ba90a_gts8p.bin` per the stock `_r04` DTS. Not wired into any build
+step, though, since firmware flashing is deliberately out of scope for v1
+(see above) — kept purely as a future option.
+
+DTS wiring: a new `&i2c4` node (SE4, `qupv3_se4_i2c`; its `&gpi_dma1`
+prerequisite was already satisfied by the earlier QUP-wrapper fix) with a
+`touchscreen@49` child, plus a new `vreg_l14b_3p3: ldo14` regulator
+(PM8550-b, 3.3V, for the touch AVDD rail — `tsp_avdd_ldo`/`pm_humu_l14` in
+the stock DTS). Built cleanly (kernel + DTB compiled and decompiled
+correctly, all phandles resolved) on the first attempt.
+
+### It broke the device — twice, identically
+
+First flash (debug ramdisk, same recipe that's been working since Session
+5): **no display, no USB gadget console at all** — a regression from
+already-proven-working functionality, not just "touch doesn't work yet."
+Vibration heartbeat (the kernel's own lockup-safety LED trigger) still
+pulsed, and TWRP still booted fine on top of it, ruling out a hard brick.
+
+Restored to the exact known-good commit (`51912f9`, pre-touchscreen) via
+`git stash push -u` + rebuild + reflash — fixed immediately, confirming the
+regression really was caused by the new change and not something
+environmental.
+
+**Isolation test**: rebuilt with the driver + Kconfig symbol still compiled
+in, but `&i2c4`'s `status` forced back to `"disabled"` — meaning the touch
+chip's device node (and therefore the driver's own `probe()`) could never
+be instantiated at all (`of_platform_populate()`/`fw_devlink` never even
+walk a disabled node's children or phandle references, confirmed by reading
+`drivers/base/core.c`/`drivers/of/property.c` directly). **Broke
+identically anyway.** This ruled out the touchscreen chip's own on-bus
+behavior and the driver's runtime I2C/IRQ logic as suspects — something
+else in the change was at fault.
+
+### Three static-analysis hypotheses, three misses
+
+1. **Kconfig dependency-graph side effect?** Ruled out with hard evidence:
+   built the known-good and isolation-test configs into two separate
+   directories (first attempt used a relative `BUILD_OUT`, which `make -C
+   $kdir O=$outdir` resolves against `$kdir`'s post-`-C` cwd rather than the
+   invoking shell's — a latent footgun in any script using `BUILD_OUT` this
+   way, worth remembering) and diffed the full, fully-resolved `.config`
+   files line by line: **exactly one line differs**, the touchscreen symbol
+   itself. Zero cascading changes to any unrelated symbol.
+2. **Stale/wrong build artifact flashed?** Ruled out: rebuilt the exact same
+   source state completely from scratch into a fresh output directory and
+   compared — the DTB sha256 hash **matched byte-for-byte** what was
+   actually flashed for the isolation test. (Image hash differs between
+   any two builds regardless of source changes — expected, kernel builds
+   embed non-deterministic build-id/timestamp data; raw Image *size* was
+   identical, 44,423,680 bytes, across every build this session, touchscreen
+   or not — an oddity probably explained by Image-format padding, not
+   evidence of anything.)
+3. **Incomplete flash / didn't sync before reboot?** The first break
+   happened after an immediate self-triggered `adb reboot` with no explicit
+   `sync`; both restores happened after asking the user to reboot manually
+   (natural delay). Reflashed the *same already-hash-verified* isolation
+   build with an explicit triple `sync` and a real 15s settle before
+   rebooting. **Broke identically again.** Ruled out.
+4. (A fourth, deeper hypothesis — the new `vreg_l14b_3p3` regulator node
+   itself, unconditionally registered regardless of `&i2c4`'s status, being
+   force-disabled by Linux's "disable unused regulators" `late_initcall`
+   mechanism and cutting power to something shared with display/USB — was
+   investigated via full source tracing of `drivers/regulator/core.c` and
+   `drivers/regulator/qcom-rpmh-regulator.c`. Refuted with code-level
+   certainty: in the isolation-test configuration, **no consumer ever calls
+   `regulator_enable`/`disable`/`is_enabled` on this regulator at all**, so
+   `_regulator_is_enabled(rdev) &lt;= 0` short-circuits `regulator_late_cleanup()`
+   before it ever issues a real disable command — Linux never touches this
+   rail's enable state either way in that configuration. Also cross-checked:
+   the stock GTS9 tree, the sibling Ultra port, and this port's own DTS all
+   independently agree PM8550-b LDO14 is touch-AVDD-only, no shared
+   consumer anywhere.)
+
+### The actual root cause: found via evidence, not more theory
+
+Rather than a fourth hypothesis, captured the real kernel log from the
+broken boot via `/proc/last_kmsg` (the same sec-log/TWRP-readback channel
+proven in Session 4) — with a tight 1-second poll loop reading it the
+instant TWRP reconnected, to beat TWRP's own boot log overwriting the 2 MiB
+ring buffer (a documented capacity problem from Session 4). The capture
+showed ABL genuinely loading our exact cmdline and kernel (`{ABL} Cmdline:
+earlycon loglevel=8 log_buf_len=4M panic=10 ...`, byte-identical to
+`scripts/build-android-v4-bundle.sh`'s cmdline) — and then **zero lines of
+our kernel's own console output anywhere in the buffer**, before TWRP's own
+stock 5.15.167 recovery kernel's boot banner appears. That's the signature
+of a silent hard reset before the kernel could log anything — and this
+project already root-caused this *exact* symptom once before, in Session 4
+(a TrustZone-locked GPIO range causing an identical silent reset).
+
+Checked `drivers/regulator/core.c`'s `machine_constraints_voltage()`
+directly: `apply_uV` (set by `drivers/regulator/of_regulator.c` whenever
+`regulator-min-microvolt == regulator-max-microvolt`, true for
+`vreg_l14b_3p3`'s `3300000`/`3300000`) makes `set_machine_constraints()`
+issue a voltage-set request on the regulator **unconditionally, at PMIC
+regulator registration time** — independent of whether any consumer/driver
+ever runs. The panel's `vreg_l12b_1p8`/`vreg_l11b_1p2`/`vreg_l13b_3p0` all
+have the identical `min==max` pattern and are already proven safe on real
+hardware, so this isn't a property of `apply_uV` in general — it points at
+something specific to PM8550-b **LDO14** (possibly TrustZone-restricted,
+unlike those three).
+
+**Fix, confirmed on real hardware**: removed the `vreg_l14b_3p3` node
+entirely (and the touchscreen's now-dangling `avdd-supply` reference),
+keeping the driver, Kconfig symbol, and `touchscreen@49` DTS node (still
+`status = "disabled"`) all in place. Rebuilt, reflashed — **display and USB
+both came back immediately**, confirmed by the user. This is now the
+checked-in state: touchscreen scaffolding (driver + DTS node) present but
+disabled, pending either a correct non-TZ-restricted regulator index for
+this rail or a different way to power it that doesn't route through a
+plain devicetree regulator node — not yet resolved. Root cause is strongly
+suspected, not 100% proven (haven't independently confirmed LDO14 is
+actually TZ-restricted via any source outside inference from this
+behavior), but the fix itself is confirmed and safe: three failed
+hypotheses were each ruled out with hard evidence before landing on this
+one, and removing the node measurably fixed the regression twice-reproduced
+on real hardware.

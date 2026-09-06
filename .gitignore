@@ -5,6 +5,13 @@
 /sm-x800-linux/
 /2026-09-04--*/
 
+# Proprietary Samsung/vendor firmware blobs pulled from the real device's
+# /vendor/firmware (2026-09-06, via `adb pull` while mounted read-only under
+# TWRP -- see docs/porting-log.md). Needed as build/runtime input (e.g. the
+# fts1ba90a touch controller's firmware, tsp_stm/fts1ba90a_gts8p.bin) but not
+# ours to redistribute -- never commit these.
+/vendor-firmware-dump/
+
 # Build scratch and output
 /work/
 /out/

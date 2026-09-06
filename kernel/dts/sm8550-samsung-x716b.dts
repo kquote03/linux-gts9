@@ -2,7 +2,12 @@
 /*
  * Minimal bring-up devicetree for the Samsung Galaxy Tab S9 5G (SM-X716B).
  *
- * UNTESTED / UNFLASHED. See docs/hardware-facts.md and docs/porting-log.md.
+ * Display (DSI panel) and USB were confirmed working on real hardware in
+ * Session 5. Touchscreen (Session 6) has a from-scratch driver ready but
+ * its DTS node is deliberately left `status = "disabled"` -- enabling its
+ * AVDD regulator caused a real-hardware boot regression (silent hard
+ * reset), root-caused but not yet resolved with a safe fix. See
+ * docs/hardware-facts.md and docs/porting-log.md.
  *
  * Structural template: arch/arm64/boot/dts/qcom/sm8550-samsung-q5q.dts
  * (mainline, Samsung Galaxy Z Fold5 -- a real accepted-upstream SM8550
@@ -15,9 +20,11 @@
  * inherited vs. assumed, and why.
  *
  * Deliberately minimal for the Phase 1-3 bring-up MVP: only what's needed
- * to reach a shell over a rootfs. Explicitly NOT wired up yet (see
- * docs/hardware-facts.md non-goals): DSI panel (AMSA10FA01, no mainline
- * driver exists), touchscreen (stm,fts_touch), cameras, WCN7850 WiFi/BT,
+ * to reach a shell over a rootfs, now extended with a working DSI panel
+ * (AMSA10FA01, from-scratch driver -- see kernel/drivers/panel-samsung-
+ * ana38407-x716.c) and touchscreen (fts1ba90a, from-scratch driver -- see
+ * kernel/drivers/touchscreen-fts1ba90a-x716.c). Still explicitly NOT wired
+ * up (see docs/hardware-facts.md non-goals): cameras, WCN7850 WiFi/BT,
  * audio, sensors, cellular modem (permanent non-goal), USB-PD beyond
  * whatever sm8550.dtsi/pm8550*.dtsi already enable by default.
  */
@@ -365,6 +372,27 @@
 			regulator-max-microvolt = <3000000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
+
+		/*
+		 * TEMPORARILY REMOVED for regression testing (2026-09-06):
+		 * defining this node alone -- regardless of whether anything
+		 * ever calls regulator_enable() on it -- broke display+USB on
+		 * real hardware, reproducing identically whether the
+		 * touchscreen's own i2c4 bus was enabled or disabled. Leading
+		 * theory: min-uV==max-uV here sets apply_uV (of_regulator.c),
+		 * which set_machine_constraints() (drivers/regulator/core.c)
+		 * acts on unconditionally at PMIC regulator *registration*
+		 * time, independent of any consumer -- if PM8550-b LDO14 is
+		 * TrustZone-restricted (unlike l11b/l12b/l13b, already proven
+		 * safe by the working panel), an RPMH voltage-set attempt on
+		 * it could cause exactly the kind of silent hard reset this
+		 * project already root-caused once before for a TZ-locked
+		 * GPIO range (see docs/porting-log.md). Testing that theory
+		 * now by removing the node entirely. See
+		 * kernel/drivers/touchscreen-fts1ba90a-x716.c -- its
+		 * avdd-supply reference is correspondingly commented out below
+		 * until this is resolved.
+		 */
 	};
 
 	regulators-2 {
@@ -698,6 +726,52 @@
 
 &i2c_master_hub_0 {
 	status = "okay";
+};
+
+/*
+ * Touchscreen: STMicroelectronics fts1ba90a at 0x49, decoded from X716's
+ * own stock DTS (gts9_eur_openx_w00_r04.dts, matching this tablet's
+ * measured board-id 04 -- docs/hardware-facts.md). GPI-DMA prerequisite
+ * (&gpi_dma1 above) is already satisfied by the earlier QUP-wrapper fix.
+ * See kernel/drivers/touchscreen-fts1ba90a-x716.c for the driver and its
+ * own citations, and docs/porting-log.md for why this needed a from-scratch
+ * driver port rather than just this DTS node.
+ *
+ * DELIBERATELY DISABLED (`status = "disabled"` below), and its AVDD
+ * regulator node removed entirely: defining a PM8550-b LDO14 node
+ * (`vreg_l14b_3p3`, the touch AVDD rail per the stock DTS's `tsp_avdd_ldo`)
+ * caused a real-hardware regression -- a silent hard reset with zero kernel
+ * console output, confirmed via `/proc/last_kmsg` capture (ABL loads our
+ * cmdline/kernel, then nothing -- straight to TWRP's own recovery kernel,
+ * matching this project's own earlier-diagnosed "TrustZone-restricted PMIC
+ * resource" crash signature for a reserved GPIO range). Root cause
+ * suspected but not yet proven: `regulator-min/max-microvolt` being equal
+ * sets `apply_uV` (`drivers/regulator/of_regulator.c`), which
+ * `set_machine_constraints()` (`drivers/regulator/core.c`) acts on
+ * unconditionally at PMIC regulator *registration* time -- independent of
+ * whether the touchscreen driver ever runs -- and if LDO14 is TZ-restricted
+ * (unlike l11b/l12b/l13b, already proven safe by the working panel), an
+ * RPMH voltage-set on it could cause exactly this. Removing the node fixed
+ * the regression on real hardware (confirmed). See docs/porting-log.md's
+ * Session 6 entry for the full investigation (three other hypotheses ruled
+ * out first: Kconfig side effects, a stale build artifact, and an
+ * incomplete flash). Re-enabling touch needs either a correct, non-TZ
+ * regulator index for this rail (not yet found), or a different way to
+ * power it that doesn't route through a plain devicetree regulator node.
+ */
+&i2c4 {
+	clock-frequency = <400000>;
+	status = "disabled";
+
+	touchscreen@49 {
+		compatible = "stm,fts_touch";
+		reg = <0x49>;
+		interrupts-extended = <&tlmm 25 IRQ_TYPE_LEVEL_LOW>;
+		vddio-supply = <&vreg_l12b_1p8>;
+		/* avdd-supply intentionally omitted -- see the node comment above. */
+		touchscreen-size-x = <1752>;
+		touchscreen-size-y = <2800>;
+	};
 };
 
 &i2c6 {

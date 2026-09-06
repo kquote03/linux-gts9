@@ -38,8 +38,24 @@ keyboard yet) was verified live over the serial shell but not yet baked
 into a freshly-flashed image — rebuilding once more to pick that up is a
 loose end, not a real unknown.
 
+**Touchscreen has a driver, but is disabled pending a safe power fix.**
+Mainline has no usable driver for the real chip (an ST fts1ba90a — the
+in-tree `stmfts.c` targets an unrelated, older ST part), so
+`kernel/drivers/touchscreen-fts1ba90a-x716.c` is a from-scratch port.
+Enabling its DTS node (specifically, a PM8550-b LDO14 regulator node for its
+AVDD rail) caused a real-hardware regression — a silent hard reset, no
+kernel console output at all, killing display and USB. Root-caused (not yet
+100% proven) to that regulator being TrustZone-restricted: a devicetree
+node with matching min/max microvolts triggers an unconditional RPMH
+voltage-set at PMIC registration time regardless of any consumer, unlike
+the panel's regulators (same pattern, already proven safe). Removing the
+node fixed the regression, confirmed on real hardware — see
+`docs/porting-log.md`'s Session 6 entry for the full investigation (three
+other hypotheses ruled out first). The driver and DTS node stay in the tree,
+disabled, until a safe way to power this rail is found.
+
 **What doesn't work yet:** a real root filesystem (still a debug-only ramdisk;
-see Phase 4 below), touchscreen, WiFi/BT, camera, audio, sensors,
+see Phase 4 below), touchscreen (see above), WiFi/BT, camera, audio, sensors,
 fingerprint, S-Pen, keyboard cover, cellular/modem, GPU acceleration, and
 full USB-C role negotiation (the gadget console works because `&usb_1`'s
 `dr_mode` is forced to `"peripheral"`, deliberately bypassing the Type-C
