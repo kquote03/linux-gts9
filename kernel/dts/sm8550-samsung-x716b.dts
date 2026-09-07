@@ -290,25 +290,36 @@
 		};
 
 		/*
-		 * microSD card power rails (vreg_l9b_2p9/vreg_l8b_1p8) and the
-		 * &sdhc_2/&pm8550_gpios additions below were tried 2026-09-05 for
-		 * persistent SD-card-based logging, then reverted the same session
-		 * to bisect: after attempt 8's known-good progress (past several
-		 * interconnect probes), a `simple-framebuffer` verification attempt
-		 * showed nothing on screen, which is unexpected if the kernel were
-		 * still reaching that far -- raising concern that a change made
-		 * *after* attempt 8 introduced a new, earlier hang. These
-		 * regulator values were the least-verified addition of the three
-		 * (gpio-reserved-ranges, lockup detection, this) -- copied from
-		 * ubuntu-galaxy-tab-s9ultra by analogy only, never independently
-		 * confirmed for X716 itself (unlike the card-detect GPIO, which
-		 * X716's own stock DTS does independently confirm). Full removed
-		 * text (these regulators, the &pm8550_gpios card-detect pinctrl
-		 * state, and the &sdhc_2 enablement) is in docs/porting-log.md's
-		 * "Session 4" entry -- re-add from there if the bisection clears
-		 * this as the cause; re-verify the regulator names/voltages
-		 * against X716 specifically before trusting them further either way.
+		 * microSD card power rails. Tried 2026-09-05 (Session 4) for
+		 * persistent SD-card-based logging, then reverted the same
+		 * session out of caution to bisect an unrelated regression --
+		 * that bisection (docs/porting-log.md's Session 4 entry)
+		 * actually *exonerated* these rails (reverting reproduced the
+		 * identical symptom), so they were never proven guilty of
+		 * anything, just left out pending re-verification. Re-added
+		 * in the Storage bring-up session, copied exactly from the
+		 * sibling X910 Ultra port's own real-hardware-proven,
+		 * daily-driver config
+		 * (ubuntu-galaxy-tab-s9ultra/kernel/dts/sm8550-samsung-
+		 * gts9uwifi.dts:515-527) -- note both use a real min/max
+		 * *range* rather than an exact value, so neither risks the
+		 * apply_uV/hardware-ladder mismatch that broke the
+		 * touchscreen's AVDD rail (see docs/porting-log.md's Session
+		 * 6/7 entries).
 		 */
+		vreg_l8b_1p8: ldo8 {
+			regulator-name = "vreg_l8b_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <3000000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_l9b_2p9: ldo9 {
+			regulator-name = "vreg_l9b_2p9";
+			regulator-min-microvolt = <2960000>;
+			regulator-max-microvolt = <3000000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
 
 		/*
 		 * NXP PTN3222 eUSB2 repeater rails (3.104V/1.8V). Copied from
@@ -522,6 +533,48 @@
 			regulator-max-microvolt = <1200000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
+
+		/*
+		 * QCA6490 WiFi/BT PMU rails (Networking bring-up session).
+		 * Voltages measured from this device's own stock DTS
+		 * (gts9_eur_openx_w00_r04.dts's __fixups__ table resolving
+		 * S2G/S4G/S6G against fragment@143/@147's qcom,*-config
+		 * property values) and independently cross-checked against
+		 * the sibling X910 Ultra port's own identically-named
+		 * die-g rails (sm8550-samsung-gts9uwifi.dts:678-720), which
+		 * power the *same* PM8550VS-G die for its own (different
+		 * chip's) WCN7850 PMU -- same die assignment, same voltages.
+		 *
+		 * S4G/S6G corrected 2026-09-06 (Networking bring-up session,
+		 * agent research round 3): this board's own stock DTS has NO
+		 * literal microvolt values for these two rails at all, only
+		 * the qcom,wlan-pdc-init upval/dwnval strings (s4g upval:1350,
+		 * s6g upval:1900) -- the borrowed-from-X910-Ultra 1352000/
+		 * 1904000 figures sat a few mV *above* this board's own real
+		 * PDC ceiling, a second, later voter on the same physical
+		 * rails that AOP could clamp/reject. Lowered to sit exactly
+		 * at (not above) the real board's own measured PDC upval.
+		 */
+		vreg_s2g_0p98: smps2 {
+			regulator-name = "vreg_s2g_0p98";
+			regulator-min-microvolt = <980000>;
+			regulator-max-microvolt = <980000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_s4g_1p352: smps4 {
+			regulator-name = "vreg_s4g_1p352";
+			regulator-min-microvolt = <1352000>;
+			regulator-max-microvolt = <1352000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		vreg_s6g_1p904: smps6 {
+			regulator-name = "vreg_s6g_1p904";
+			regulator-min-microvolt = <1904000>;
+			regulator-max-microvolt = <1904000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
 	};
 };
 
@@ -560,12 +613,43 @@
 };
 
 /*
- * microSD (&pm8550_gpios card-detect state + &sdhc_2 enablement) removed
- * 2026-09-05 to bisect a suspected new regression -- see the
- * vreg_l9b_2p9/vreg_l8b_1p8 comment (near &apps_rsc, above) and
- * docs/porting-log.md's "Session 4" entry for the full removed text and
- * rationale.
+ * microSD card-detect (gpio12), re-added in the Storage bring-up session --
+ * see the vreg_l9b_2p9/vreg_l8b_1p8 comment (near &apps_rsc, above) and
+ * docs/porting-log.md's Session 4 and Storage-bring-up entries. Card-detect
+ * GPIO independently confirmed against X716's own stock DTS (unlike the
+ * regulators, which were copied by analogy -- see the comment above).
  */
+&pm8550_gpios {
+	sdc2_card_det_n: sdc2-card-det-state {
+		pins = "gpio12";
+		function = "normal";
+		input-enable;
+		output-disable;
+		bias-pull-up;
+		power-source = <1>; /* 1.8 V */
+	};
+};
+
+/*
+ * microSD card (&sdhc_2 = mmc@8804000), copied exactly from the sibling
+ * X910 Ultra port's own real-hardware-proven, daily-driver config
+ * (ubuntu-galaxy-tab-s9ultra/kernel/dts/sm8550-samsung-gts9uwifi.dts:1679-1691) --
+ * sdc2_default/sdc2_sleep are generic SoC-level pinctrl states already
+ * defined in sm8550.dtsi, only the card-detect state above is board-
+ * specific.
+ */
+&sdhc_2 {
+	cd-gpios = <&pm8550_gpios 12 GPIO_ACTIVE_LOW>;
+	pinctrl-names = "default", "sleep";
+	pinctrl-0 = <&sdc2_default &sdc2_card_det_n>;
+	pinctrl-1 = <&sdc2_sleep &sdc2_card_det_n>;
+	vmmc-supply = <&vreg_l9b_2p9>;
+	vqmmc-supply = <&vreg_l8b_1p8>;
+	bus-width = <4>;
+	no-sdio;
+	no-mmc;
+	status = "okay";
+};
 
 &ufs_mem_hc {
 	/* Rail indices (l17, l1) measured identical across three independent
@@ -1099,4 +1183,314 @@
 &mdss_dsi0_phy {
 	vdds-supply = <&vreg_l1e_0p88>;
 	status = "okay";
+};
+
+/*
+ * WiFi/BT: Qualcomm QCA6490 combo chip (Networking bring-up session).
+ * Measured directly from this device's own stock DTS
+ * (gts9_eur_openx_w00_r04.dts, board-id 04): fragment@143 ("bt_qca6490",
+ * compatible "qcom,qca6490") and fragment@147 ("qcom,cnss-qca6490") --
+ * corrects an earlier wrong assumption of WCN7850 (the sibling X910
+ * Ultra's chip, a different chip family entirely; see
+ * docs/hardware-facts.md and docs/porting-log.md). WiFi is ath11k over
+ * PCIe0; mainline's ath11k has no separate QCA6490 PCI-ID or
+ * devicetree-compatible entry at all -- it's treated as software-
+ * identical to QCA6390 (compatible "pci17cb,1101"), confirmed directly in
+ * Documentation/devicetree/bindings/net/wireless/qcom,ath11k-pci.yaml.
+ * Bluetooth is hci_qca/btqca over UART14, compatible "qcom,wcn6855-bt"
+ * (corrected from an earlier "qcom,qca6390-bt" guess -- Networking
+ * bring-up session, full-fix boot test: real hardware readback over
+ * UART14 showed "QCA ROM Version: 0x00000201" i.e. rom_ver 0x21, and
+ * this device's real /vendor/firmware only ships "hp"-prefixed rom_ver-21
+ * BT patch/NVM files (hpbtfw21.tlv, hpnv21*.bin/.b9a/.baa/...) -- no
+ * "ht"-prefixed file exists anywhere on-device or in upstream
+ * linux-firmware. drivers/bluetooth/btqca.c's QCA_QCA6390 case requests
+ * "htbtfw/htnv" with NO fallback, but QCA_WCN6855's case tries
+ * "wcnhpbtfw"/"wcnhpnv" first and explicitly falls back to plain
+ * "hpbtfw"/"hpnv" on failure -- landing exactly on this device's real
+ * files. Safe to switch soc_type this way: hci_qca's qca_soc_data_wcn6855
+ * carries its own 6-entry vregs list, but qca_serdev_probe() only ever
+ * consults it when the BT node has an "enable-gpios" property (ours
+ * doesn't -- power is centrally handled by the wcn_pmu pwrseq device
+ * below), so it takes the devm_pwrseq_get() path regardless of soc_type,
+ * identically to before. See docs/porting-log.md's Networking bring-up
+ * Session 8 entry.
+ *
+ * GPIO80 (WLAN_EN), GPIO81 (BT_EN), GPIO82 (SW_CTRL/coex), GPIO204
+ * (XO_CLK): measured directly from the stock DTS's fragment@143/@147 and
+ * its __fixups__ table. Regulator rails (L15B/S4E/S6G/S4G/S2G): also
+ * measured from the same source. Mapping those downstream property names
+ * onto mainline's differently-named vdd*-supply properties below is a
+ * best-effort semantic match (pointing each mainline property at
+ * whichever physical rail the downstream node ties the *equivalent*
+ * property to) -- NOT yet independently confirmed on real hardware. If
+ * WiFi/BT probe fails with a regulator error, re-check this mapping
+ * first; see docs/porting-log.md's Networking bring-up session entry.
+ *
+ * &uart14 is a completely different QUP instance (SE14, 0x898000) from
+ * this board's own &uart7/serial0 debug console (SE7, 0xa9c000) -- no
+ * conflict, resolved by fragment adjacency in the stock DTS (bt_qca6490
+ * is fragment@143; the very next fragment, @144, enables
+ * qupv3_se14_4uart specifically). Confirmed the sibling X910 Ultra port
+ * uses this exact same physical UART instance for its own (different
+ * chip's) Bluetooth.
+ */
+&pcie0 {
+	/*
+	 * perst-gpios/wake-gpios (94/96): this board's own stock DTS does
+	 * NOT override these at all (no perst/wake property anywhere in
+	 * its &pcie0 fragment, fragment@125 -- only qcom,target-link-speed
+	 * and qcom,no-l0s-supported). 94/96 is inherited by analogy from
+	 * two convergent sources instead: the sibling X910 Ultra port's own
+	 * board (same numbers, kernel/dts/sm8550-samsung-gts9uwifi.dts:1693-1699)
+	 * and Documentation/devicetree/bindings/pci/qcom,pcie-sm8550.yaml's
+	 * own worked example (same numbers again) -- likely the common
+	 * SM8550 QRD reference design pinout this board's own overlay never
+	 * needed to override. Re-verify if PCIe never links up.
+	 */
+	perst-gpios = <&tlmm 94 GPIO_ACTIVE_LOW>;
+	wake-gpios = <&tlmm 96 GPIO_ACTIVE_HIGH>;
+	pinctrl-names = "default";
+	pinctrl-0 = <&pcie0_default_state>;
+	status = "okay";
+};
+
+&pcie0_phy {
+	/*
+	 * Reused from this board's own already-proven UFS-PHY and USB-PHY
+	 * rail assignments (&ufs_mem_phy, &usb_1_hsphy above) -- common
+	 * PHY-shared rails on this SoC, not separately confirmed for PCIe
+	 * specifically, but a reasonable analogy given the pattern already
+	 * holds across two other PHYs on this exact board.
+	 */
+	vdda-phy-supply = <&vreg_l1e_0p88>;
+	vdda-pll-supply = <&vreg_l3e_1p2>;
+	status = "okay";
+};
+
+/*
+ * QCA6390 PMU power sequencer (Documentation/devicetree/bindings/
+ * regulator/qcom,qca6390-pmu.yaml). Discovered live on real hardware
+ * (Networking bring-up session): wifi@0/bluetooth's own regulator
+ * properties are NOT board-PMIC rails directly -- this project's first
+ * attempt wired them that way and the PCIe host controller sat in
+ * permanent EPROBE_DEFER as a result. The correct architecture is three
+ * layers: this board's real PMIC rails feed *this* pmu node's own
+ * vdd*-supply input properties; the pmu node exposes its own internal
+ * "regulators { ldo0..ldo9 }" outputs; wifi@0/bluetooth (below) consume
+ * *those* outputs, not the raw board rails. wlan-enable-gpios(80)/
+ * bt-enable-gpios(81) live on this node too -- this is what actually
+ * powers on the physical combo chip (missing entirely from the first
+ * attempt, which only wired 80/81 into unused pinctrl states with no
+ * real consumer).
+ *
+ * Input-rail mapping (board rails -> pmu inputs) is a best-effort
+ * semantic match, same caveat as before: downstream's own property names
+ * (qcom,bt-vdd-... and vdd-wlan-...) don't line up 1:1 with this binding's
+ * input names, and downstream itself uses different physical rails for
+ * WLAN's vs BT's own "aon" concept (S2G vs S4E) where mainline's PMU node
+ * expects a single, shared vddaon-supply for the whole combo chip.
+ *
+ * CORRECTED 2026-09-06 (Networking bring-up session, agent research round
+ * 3): the first attempt guessed S4E for vddaon-supply (BT's own naming
+ * looked more directly analogous to "AON"). Independent evidence from this
+ * board's own stock DTS __fixups__ table says otherwise: S2G is WLAN's
+ * *only* AON-labeled rail (vdd-wlan-aon-supply) and is also the chip's
+ * open-loop-CPR-controlled rail (qcom,vreg_ol_cpr = "s2g") -- both are
+ * hallmarks of a true dedicated AON supply. S4E, by contrast, feeds BT's
+ * aon/dig/rfa0p8 AND WLAN's *digital* (not AON) input -- a shared
+ * "always-on-adjacent" rail, not the chip's real AON rail. Swapped:
+ * vddaon-supply is now S2G, vddpmu-supply is now S4E. Still not
+ * independently confirmed on real hardware -- if WLAN/BT never power on,
+ * re-check this mapping first; see docs/porting-log.md's Networking
+ * bring-up session entry.
+ */
+/ {
+	wcn_pmu: wcn-pmu {
+		compatible = "qcom,qca6390-pmu";
+
+		/*
+		 * AOP QMP mailbox PDC resource votes, measured verbatim from
+		 * this board's own stock DTS's qcom,cnss-qca6490 node
+		 * (gts9_eur_openx_w00_r04.dts:15355 -- the fuller of its two
+		 * near-identical WLAN/BT copies of this table). Consumed by
+		 * kernel/patches/qca6390-pwrseq-cold-reset-aop.patch's
+		 * pwrseq_qcom_wcn_program_wlan_pdc(); required in addition to
+		 * the unpark-pcie0-pipe-mux.patch PHY fix -- confirmed live on
+		 * real hardware that the PHY fix alone left "Device not
+		 * found" unresolved. See docs/porting-log.md's Networking
+		 * bring-up session entry.
+		 */
+		qcom,qmp = <&aoss_qmp>;
+		qcom,wlan-pdc-init =
+			"{class: wlan_pdc, ss: rf, res: s4e.v, upval: 966}",
+			"{class: wlan_pdc, ss: rf, res: s4e.v, dwnval: 615}",
+			"{class: wlan_pdc, ss: rf, res: s4g.v, upval: 1350}",
+			"{class: wlan_pdc, ss: rf, res: s4g.v, dwnval: 945}",
+			"{class: wlan_pdc, ss: rf, res: s6g.v, upval: 1900}",
+			"{class: wlan_pdc, ss: rf, res: s6g.v, dwnval: 1825}",
+			"{class: wlan_pdc, ss: rf, res: s2g.m, enable: 1}",
+			"{class: wlan_pdc, ss: rf, res: s2g.v, enable: 1}",
+			"{class: wlan_pdc, ss: rf, res: s2g.v, upval: 1012}",
+			"{class: wlan_pdc, ss: rf, res: s2g.v, dwnval: 800}",
+			"{class: wlan_pdc, ss: bb, res: pdc, enable: 0}";
+
+		wlan-enable-gpios = <&tlmm 80 GPIO_ACTIVE_HIGH>;
+		bt-enable-gpios = <&tlmm 81 GPIO_ACTIVE_HIGH>;
+		/*
+		 * XO-clock-enable GPIO 204, matching this board's own stock DTS
+		 * (qcom,xo-clk-gpio on both the qcom,cnss-qca6490 WLAN node and
+		 * the BT node). Consumed by kernel/patches/qca6490-xo-clk-gpio.patch,
+		 * which wires pwrseq-qcom-wcn.c's existing (but previously
+		 * WCN6855-only) xo-clk-gpio assert/deassert sequencing into the
+		 * QCA6390/QCA6490 pdata table. A prior single-variable bisection
+		 * pass wrongly suspected this property of causing wcn-pmu's probe
+		 * to regress to permanent -EPROBE_DEFER; the real cause (root-
+		 * caused via drivers/regulator/qcom-rpmh-regulator.c's real RPMH
+		 * voltage-step table) was the S4G/S6G regulator voltages being
+		 * set to off-grid values in that same round of changes, not this
+		 * GPIO. See docs/porting-log.md's Networking bring-up session
+		 * entry.
+		 */
+		xo-clk-gpios = <&tlmm 204 GPIO_ACTIVE_HIGH>;
+
+		vddaon-supply = <&vreg_s2g_0p98>;
+		vddpmu-supply = <&vreg_s4e_0p952>;
+		vddrfa0p95-supply = <&vreg_s4e_0p952>;
+		vddrfa1p3-supply = <&vreg_s4g_1p352>;
+		vddrfa1p9-supply = <&vreg_s6g_1p904>;
+		vddpcie1p3-supply = <&vreg_s4g_1p352>;
+		vddpcie1p9-supply = <&vreg_s6g_1p904>;
+		vddio-supply = <&vreg_l15b_1p8>;
+
+		regulators {
+			vreg_pmu_rfa_cmn: ldo0 {
+				regulator-name = "vreg_pmu_rfa_cmn";
+			};
+
+			vreg_pmu_aon_0p59: ldo1 {
+				regulator-name = "vreg_pmu_aon_0p59";
+			};
+
+			vreg_pmu_wlcx_0p8: ldo2 {
+				regulator-name = "vreg_pmu_wlcx_0p8";
+			};
+
+			vreg_pmu_wlmx_0p85: ldo3 {
+				regulator-name = "vreg_pmu_wlmx_0p85";
+			};
+
+			vreg_pmu_btcmx_0p85: ldo4 {
+				regulator-name = "vreg_pmu_btcmx_0p85";
+			};
+
+			vreg_pmu_rfa_0p8: ldo5 {
+				regulator-name = "vreg_pmu_rfa_0p8";
+			};
+
+			vreg_pmu_rfa_1p2: ldo6 {
+				regulator-name = "vreg_pmu_rfa_1p2";
+			};
+
+			vreg_pmu_rfa_1p7: ldo7 {
+				regulator-name = "vreg_pmu_rfa_1p7";
+			};
+
+			vreg_pmu_pcie_0p9: ldo8 {
+				regulator-name = "vreg_pmu_pcie_0p9";
+			};
+
+			vreg_pmu_pcie_1p8: ldo9 {
+				regulator-name = "vreg_pmu_pcie_1p8";
+			};
+		};
+	};
+};
+
+&pcieport0 {
+	wifi@0 {
+		compatible = "pci17cb,1101"; /* QCA6390 ID -- see header comment above */
+		reg = <0x10000 0x0 0x0 0x0 0x0>;
+		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
+		vddaon-supply = <&vreg_pmu_aon_0p59>;
+		vddwlcx-supply = <&vreg_pmu_wlcx_0p8>;
+		vddwlmx-supply = <&vreg_pmu_wlmx_0p85>;
+		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
+		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
+		vddrfa1p7-supply = <&vreg_pmu_rfa_1p7>;
+		vddpcie0p9-supply = <&vreg_pmu_pcie_0p9>;
+		vddpcie1p8-supply = <&vreg_pmu_pcie_1p8>;
+	};
+};
+
+/*
+ * 32 MiB WLAN DMA carveout, matching this board's own stock DTS exactly
+ * (gts9_eur_openx_w00_r04.dts fragment@146, cnss_wlan_region) --
+ * shared-dma-pool, no fixed address needed (CMA-allocated).
+ */
+&reserved_memory {
+	cnss_wlan_region: cnss-wlan-region {
+		compatible = "shared-dma-pool";
+		alloc-ranges = <0x0 0x0 0x0 0xffffffff>;
+		reusable;
+		alignment = <0x0 0x400000>;
+		size = <0x0 0x2000000>;
+	};
+};
+
+&uart14 {
+	status = "okay";
+
+	bluetooth {
+		compatible = "qcom,wcn6855-bt";
+		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
+		vddaon-supply = <&vreg_pmu_aon_0p59>;
+		vddbtcmx-supply = <&vreg_pmu_btcmx_0p85>;
+		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
+		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
+		vddrfa1p7-supply = <&vreg_pmu_rfa_1p7>;
+		max-speed = <3200000>;
+
+		/*
+		 * Root-caused via direct kernel source reading (Networking
+		 * bring-up session): with no BD_ADDR at all, this chip's
+		 * real hardware has no persistent storage of its own
+		 * factory Bluetooth address (Samsung's stock system reads
+		 * it from its own EFS partition at runtime -- not yet
+		 * extracted here, and not something mainline's hci_qca/
+		 * btqca even looks for). Per
+		 * net/bluetooth/hci_sync.c's own hci_power_on(): an
+		 * all-zero/absent BD_ADDR makes hci_dev_get_bd_addr_from_property()
+		 * find nothing, so `invalid_bdaddr` stays true, which sets
+		 * HCI_UNCONFIGURED -- and mgmt.c's read_index_list()
+		 * explicitly excludes any HCI_UNCONFIGURED device, which is
+		 * exactly why hci0 probed and loaded real firmware
+		 * (confirmed in dmesg) yet BlueZ/bluetoothctl reported "No
+		 * default controller available" with kernel mgmt itself
+		 * reporting "Number of controllers: 0". This is the same
+		 * "factory NVM MAC address is null, needs an EFS-read
+		 * fixup" gotcha the sibling X910 Ultra port's own bring-up
+		 * already flagged as a known risk for this chip family.
+		 *
+		 * `local-bd-address` here is a locally-administered
+		 * placeholder, NOT this device's real factory address --
+		 * bytes are stored LSB-first (confirmed:
+		 * net/bluetooth/hci_sync.c reads this straight into
+		 * `bdaddr_t.b[6]`, and displays as b[5]:b[4]:...:b[0]), so
+		 * this `[1A 2B 3C 4D 5E 02]` array displays as
+		 * `02:5E:4D:3C:2B:1A` -- the 0x02 first-octet gives the
+		 * standard "locally administered" bit (see
+		 * Documentation/devicetree/bindings/net/bluetooth/brcm,bcm4377-bluetooth.yaml's
+		 * own example for the same convention), avoiding collision
+		 * with any real vendor-assigned OUI. The real address would
+		 * need extracting from the stock system's own EFS
+		 * partition, not yet done. Good enough to make BT fully
+		 * usable (visible, pairable) for bring-up; revisit with the
+		 * real address if this device's own persistent BT identity
+		 * (e.g. surviving a reflash, matching what a paired peer
+		 * remembers) ever matters. See docs/porting-log.md's
+		 * Networking bring-up session entry.
+		 */
+		local-bd-address = [1A 2B 3C 4D 5E 02];
+	};
 };

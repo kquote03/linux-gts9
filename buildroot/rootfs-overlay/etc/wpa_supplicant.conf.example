@@ -1,0 +1,29 @@
+# Example wpa_supplicant config for this bring-up rootfs -- copy this file
+# to wpa_supplicant.conf (same directory) and fill in a real SSID/PSK
+# before building. The real, filled-in wpa_supplicant.conf is gitignored
+# (see .gitignore) and never committed -- only this placeholder is tracked,
+# so a fresh clone of this repo can see the required format without ever
+# seeing anyone's real WiFi credentials.
+#
+# Consumed by buildroot/rootfs-overlay/etc/init.d/S45wifi-connect.
+#
+# NOTE on `ctrl_interface=`: this directive is guarded by `#ifdef
+# CONFIG_CTRL_IFACE` in wpa_supplicant's own wpa_supplicant/config.c
+# (global_fields[]), which requires BR2_PACKAGE_WPA_SUPPLICANT_CTRL_IFACE
+# (or BR2_PACKAGE_WPA_SUPPLICANT_CLI, which selects it -- already enabled
+# in buildroot/configs/x716_defconfig). A real-hardware failure root-caused
+# via direct source reading (not a guess), documented in
+# docs/porting-log.md's Networking bring-up session: wpa_supplicant's own
+# config parser is all-or-nothing -- a single unrecognized top-level
+# directive silently increments an internal error count with NO per-line
+# diagnostic unless `show_details` is set, then rejects the ENTIRE file at
+# the end (`if (errors) config = NULL;` in wpa_config_read(),
+# wpa_supplicant/config_file.c). Keep this line only if CTRL_IFACE support
+# stays enabled.
+ctrl_interface=/var/run/wpa_supplicant
+update_config=1
+
+network={
+	ssid="PLACEHOLDER_SSID"
+	psk="PLACEHOLDER_PASSWORD"
+}

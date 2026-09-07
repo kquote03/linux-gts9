@@ -164,6 +164,18 @@ CONFIG_USB_G_SERIAL=y
 CONFIG_PHY_QCOM_QMP=y
 CONFIG_PHY_QCOM_QMP_COMBO=y
 CONFIG_PHY_SNPS_EUSB2=y
+
+# Fifth instance of this exact bug class (Storage bring-up session):
+# CONFIG_PHY_QCOM_QMP_UFS defaults to =m, so ufs_mem_phy's driver never
+# binds on this modprobe-less rootfs -- ufs_mem_hc's `phys = <&ufs_mem_phy>`
+# dependency then never resolves, and the UFS controller sits in permanent
+# EPROBE_DEFER forever ("deferred probe pending: ufshcd-qcom:
+# ufshcd_pltfrm_init() failed", confirmed live via the USB serial console
+# -- no "probe of 1d80000.phy returned ..." trace ever appears at all,
+# unlike ufshc's own repeated deferred-probe trace, because with no driver
+# bound the platform-driver-core probe() callback is never invoked in the
+# first place). Force it built-in.
+CONFIG_PHY_QCOM_QMP_UFS=y
 CONFIG_I2C_QCOM_GENI=y
 CONFIG_PHY_NXP_PTN3222=y
 CONFIG_TYPEC=y
@@ -236,8 +248,48 @@ CONFIG_TOUCHSCREEN_FTS1BA90A_X716=y
 # built-in instead of a module -- see docs/porting-log.md's Session 7 entry.
 CONFIG_QCOM_GPI_DMA=y
 
+# WiFi/BT (Networking bring-up session): this device's real combo chip is
+# Qualcomm QCA6490 per its own stock DTS (`qcom,cnss-qca6490`) -- earlier
+# docs wrongly assumed WCN7850, the sibling X910 Ultra's chip, a different
+# chip family entirely. Real-hardware probing later found the WLAN half
+# identifies to ath11k as "wcn6855 hw2.1" (MHI SoC-ID readback) while the
+# BT half identifies to hci_qca as "ROME/QCA6390" (HCI version readback)
+# -- two different mainline-driver identities for the same physical chip,
+# both real measurements; see docs/hardware-facts.md and
+# docs/porting-log.md's Session 8 entry. WiFi is ath11k over PCIe0;
+# Bluetooth is hci_qca/btqca over UART14. Same "no modprobe available" bug
+# class as CONFIG_QCOM_GPI_DMA above and CONFIG_PHY_QCOM_QMP_UFS (see the
+# UFS section) -- mainline defconfig defaults every symbol in this chain
+# to =m; force the whole chain =y.
+CONFIG_PHY_QCOM_QMP_PCIE=y
+# MAC80211 depends on CFG80211; BT's own menuconfig has "depends on
+# RFKILL || !RFKILL" -- looks like a tautology in plain boolean logic, but
+# Kconfig evaluates tristate deps with tristate logic, where
+# "RFKILL || !RFKILL" with RFKILL=m evaluates to "m || n" = "m", not "y" --
+# so forcing BT=y without also forcing RFKILL=y gets silently downgraded
+# back to =m by dependency resolution (confirmed live: the fragment's own
+# post-build verification step caught this exact mismatch).
+CONFIG_RFKILL=y
+CONFIG_CFG80211=y
+CONFIG_MAC80211=y
+CONFIG_QCOM_QMI_HELPERS=y
+CONFIG_ATH11K=y
+CONFIG_ATH11K_PCI=y
+CONFIG_MHI_BUS=y
+CONFIG_QRTR=y
+CONFIG_QRTR_MHI=y
+CONFIG_BT=y
+CONFIG_BT_QCA=y
+CONFIG_BT_HCIUART=y
+# Missed this one on the first pass -- confirmed live via dmesg:
+# "deferred probe pending: platform: wait for supplier /wcn-pmu/regulators/
+# ldoN" forever, because the wcn-pmu platform device (compatible
+# "qcom,qca6390-pmu") never had a driver to bind at all (=m, no modprobe
+# available here -- same bug class, again).
+CONFIG_POWER_SEQUENCING_QCOM_WCN=y
+
 # Explicitly NOT enabled here (deferred, see docs/hardware-facts.md
-# non-goals): WCN7850 wifi/bt, camera, audio DSP/APR, sensors, cellular
-# modem remoteproc, GPU acceleration (Mesa/Adreno firmware -- the initial
-# Weston bring-up target uses pixman/DRM dumb buffers only, see
-# docs/porting-log.md's Session 5 entry).
+# non-goals): camera, audio DSP/APR, sensors, cellular modem remoteproc,
+# GPU acceleration (Mesa/Adreno firmware -- the initial Weston bring-up
+# target uses pixman/DRM dumb buffers only, see docs/porting-log.md's
+# Session 5 entry).

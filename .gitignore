@@ -5,12 +5,33 @@
 /sm-x800-linux/
 /2026-09-04--*/
 
-# Proprietary Samsung/vendor firmware blobs pulled from the real device's
-# /vendor/firmware (2026-09-06, via `adb pull` while mounted read-only under
-# TWRP -- see docs/porting-log.md). Needed as build/runtime input (e.g. the
-# fts1ba90a touch controller's firmware, tsp_stm/fts1ba90a_gts8p.bin) but not
-# ours to redistribute -- never commit these.
-/vendor-firmware-dump/
+# vendor-firmware-dump/ and buildroot/firmware-overlay/ (below) used to be
+# gitignored here as proprietary/not-ours-to-redistribute. Per explicit user
+# decision (Networking bring-up session, 2026-09-07 -- see
+# docs/porting-log.md), both are now committed anyway so the whole build is
+# reproducible from this repo alone without a from-scratch device pull; the
+# redistribution-rights caveat still applies to vendor-firmware-dump/'s
+# contents (Samsung/Qualcomm's own binaries, not authored by this project)
+# and is documented there and in docs/hardware-facts.md, not re-litigated
+# here.
+#
+# Exception: several vendor-firmware-dump/firmware/<dir>/<dir>/ subpaths
+# (qca6490, abov, keyboard_stm, mfc, tsp_stm -- confirmed byte-identical to
+# their own parent directory's files via `cmp`) are duplicates caused by a
+# real `adb pull` directory-nesting bug in an earlier version of
+# scripts/extract-vendor-firmware.sh (fixed there; the already-doubled files
+# on disk were kept per explicit user instruction, "no need to remove it
+# just keep it") -- excluded here rather than committed twice for no reason.
+/vendor-firmware-dump/firmware/qca6490/qca6490/
+/vendor-firmware-dump/firmware/abov/abov/
+/vendor-firmware-dump/firmware/keyboard_stm/keyboard_stm/
+/vendor-firmware-dump/firmware/mfc/mfc/
+/vendor-firmware-dump/firmware/tsp_stm/tsp_stm/
+
+# buildroot/firmware-overlay/ (staged by scripts/fetch-ath11k-firmware.sh --
+# a mix of upstream linux-firmware.git content and, for BT, files copied
+# from this device's own vendor-firmware-dump/) is now committed too, see
+# the note above.
 
 # Build scratch and output
 /work/
@@ -50,3 +71,11 @@ __pycache__/
 
 # Claude Code session state
 /.claude/
+
+# Real WiFi credentials for the bring-up rootfs (Networking bring-up
+# session) — private, never committed; see
+# buildroot/rootfs-overlay/etc/wpa_supplicant.conf's own header comment.
+# The tracked file in git stays the PLACEHOLDER_SSID/PLACEHOLDER_PASSWORD
+# version; this ignore rule only takes effect once it's overwritten
+# in-place with real credentials for a local build.
+/buildroot/rootfs-overlay/etc/wpa_supplicant.conf

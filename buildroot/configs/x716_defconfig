@@ -35,5 +35,70 @@ BR2_PACKAGE_WESTON_DEFAULT_DRM=y
 BR2_PACKAGE_DEJAVU=y
 BR2_PACKAGE_DEJAVU_MONO=y
 
+
+# WiFi/BT bring-up (Networking bring-up Session 8): real userspace test
+# tools, now that ath11k/hci_qca both load real firmware on real hardware
+# -- see docs/porting-log.md. `iw` for a real WiFi scan
+# (`iw dev wlan0 scan`); `bluez-utils` (with its CLIENT sub-option, i.e.
+# `bluetoothctl`) for a real BT scan -- matching this project's own
+# standard of not accepting "the driver probes"/"firmware loads" as proof
+# without an actual signal.
+BR2_PACKAGE_IW=y
+BR2_PACKAGE_BLUEZ5_UTILS=y
+BR2_PACKAGE_BLUEZ5_UTILS_CLIENT=y
+
+# Real WiFi association (not just scanning) + SSH, to get off the slow
+# USB-serial console for day-to-day iteration. wpa_supplicant joins the
+# real network (config staged in the rootfs-overlay, see
+# buildroot/rootfs-overlay/etc/wpa_supplicant.conf); busybox's own
+# udhcpc (already enabled in the default busybox config, no change
+# needed there) gets a real IP once associated -- both driven by
+# buildroot/rootfs-overlay/etc/init.d/S45wifi-connect (new). dropbear is
+# a small SSH2 server, simpler than pulling in full OpenSSH for a
+# bring-up image; a static root password (set below) is enough for a
+# private LAN-only device like this.
+BR2_PACKAGE_WPA_SUPPLICANT=y
+BR2_PACKAGE_DROPBEAR=y
+BR2_TARGET_GENERIC_ROOT_PASSWD="tabs9root"
+
+# wpa_cli (real-time wpa_supplicant status/control, e.g. `wpa_cli status`)
+# needs CONFIG_CTRL_IFACE compiled in -- this sub-option selects it
+# automatically. Once this lands, the `ctrl_interface=` directive in
+# buildroot/rootfs-overlay/etc/wpa_supplicant.conf becomes valid again
+# (re-added there) -- see that file's own comment for why it was
+# removed in the first place (CONFIG_CTRL_IFACE wasn't compiled in yet).
+BR2_PACKAGE_WPA_SUPPLICANT_CLI=y
+
+# Diagnostic: real WiFi association works (real IP, real ping RTTs) but
+# inbound TCP (SSH) times out with no RST -- ICMP-fine/TCP-silently-dead
+# is a known symptom class for a checksum-offload bug in a new WiFi
+# driver's RX/TX path (ath11k here is genuinely new to this exact
+# hw_rev). ethtool -K is the only userspace tool that can even inspect/
+# toggle NIC checksum offload (no sysfs equivalent) -- added to test
+# this concretely rather than guess. See docs/porting-log.md's
+# Networking bring-up session for the result.
+BR2_PACKAGE_ETHTOOL=y
+
+# General debugging/dev goodies for this bring-up rootfs, now that a
+# real network path (SSH) makes it worth having them on hand:
+# - netcat: busybox's own `nc` applet is disabled in the default
+#   busybox config this project uses; the standalone GNU netcat package
+#   is simpler than forking a busybox config fragment just for one
+#   applet. netcat-openbsd (glibc-only) isn't compatible with this
+#   musl toolchain -- plain BR2_PACKAGE_NETCAT works with any libc.
+# - tcpdump: real packet capture on-device, directly useful for the
+#   networking bring-up work this whole session has been doing.
+# - pciutils (lspci): verify the WLAN PCIe endpoint from userspace,
+#   matching this project's own "prove the bus works" discipline.
+# - usbutils (lsusb): same idea for the USB gadget/host side.
+# - htop, strace: general process/syscall debugging.
+BR2_PACKAGE_BUSYBOX_SHOW_OTHERS=y
+BR2_PACKAGE_NETCAT=y
+BR2_PACKAGE_TCPDUMP=y
+BR2_PACKAGE_PCIUTILS=y
+BR2_PACKAGE_USBUTILS=y
+BR2_PACKAGE_HTOP=y
+BR2_PACKAGE_STRACE=y
+
 BR2_TARGET_ROOTFS_CPIO=y
 BR2_TARGET_ROOTFS_CPIO_GZIP=y

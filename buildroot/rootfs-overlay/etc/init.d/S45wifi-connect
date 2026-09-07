@@ -1,0 +1,74 @@
+#!/bin/sh
+# Join the real WiFi network (buildroot/rootfs-overlay/etc/wpa_supplicant.conf)
+# and get a real IP via DHCP -- the whole point being to get off the slow
+# USB-serial console for day-to-day iteration (Networking bring-up
+# session). Runs after S40network (ifupdown, which only manages
+# statically-configured interfaces via /etc/network/interfaces -- ours
+# isn't one of those) and S30dbus-daemon (wpa_supplicant's own D-Bus
+# interface, unused here but harmless either way).
+#
+# The real interface name is NOT hardcoded as "wlp1s0": eudev's
+# predictable-naming rules derive it from PCI bus topology, which is
+# expected to be stable on this exact board but isn't guaranteed to stay
+# "wlp1s0" forever (e.g. across a kernel/DTB change to the PCIe topology)
+# -- detected here instead by checking for a /sys/class/net/*/wireless
+# subdirectory, the standard kernel-exposed marker for a real wireless
+# interface, same technique `iw dev`/NetworkManager use internally.
+find_wifi_iface() {
+	for d in /sys/class/net/*/wireless; do
+		[ -d "$d" ] || continue
+		basename "$(dirname "$d")"
+		return 0
+	done
+	return 1
+}
+
+start() {
+	echo "Waiting for a wireless interface..."
+	iface=""
+	for i in $(seq 1 20); do
+		iface=$(find_wifi_iface)
+		[ -n "$iface" ] && break
+		sleep 1
+	done
+	if [ -z "$iface" ]; then
+		echo "S45wifi-connect: no wireless interface found after 20s, giving up"
+		return 1
+	fi
+	echo "Found wireless interface: $iface"
+
+	ip link set "$iface" up
+
+	echo "Starting wpa_supplicant on $iface"
+	wpa_supplicant -B -i "$iface" -c /etc/wpa_supplicant.conf \
+		-P /var/run/wpa_supplicant.$iface.pid
+
+	echo "Requesting DHCP lease on $iface"
+	# Backgrounded explicitly with `&` rather than relying on udhcpc's
+	# own -b (which only backgrounds if a lease *isn't* immediately
+	# obtained -- ambiguous whether rcS would block on the fast path).
+	udhcpc -i "$iface" -p /var/run/udhcpc.$iface.pid &
+}
+
+stop() {
+	for pf in /var/run/udhcpc.*.pid; do
+		[ -f "$pf" ] && kill "$(cat "$pf")" 2>/dev/null
+	done
+	for pf in /var/run/wpa_supplicant.*.pid; do
+		[ -f "$pf" ] && kill "$(cat "$pf")" 2>/dev/null
+	done
+}
+
+case "$1" in
+	start) start ;;
+	stop) stop ;;
+	restart)
+		stop
+		sleep 1
+		start
+		;;
+	*)
+		echo "Usage: $0 {start|stop|restart}"
+		exit 1
+		;;
+esac

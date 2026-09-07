@@ -16,6 +16,68 @@ if [ ! -d "$kdir/.git" ]; then
 	exit 1
 fi
 
+pat=$repo_root/kernel/patches
+
+# apply_unless <marker> <file> <patch>: idempotent out-of-tree kernel source
+# patch application, same pattern as the sibling ubuntu-galaxy-tab-s9ultra
+# port's own build script -- grep for a marker string unique to the patched
+# result before applying, so re-running this script against an
+# already-patched kernel/linux checkout is a no-op instead of a `patch`
+# failure.
+apply_unless() {
+	local marker=$1 file=$2 patch_file=$3
+	if ! grep -q "$marker" "$kdir/$file"; then
+		echo "== applying $patch_file =="
+		patch -d "$kdir" -p1 < "$pat/$patch_file"
+	fi
+}
+
+# SoC/PHY-IP-level boot-chain quirk, not board- or chip-specific: mainline's
+# PCIe0 QMP PHY driver never switches the GCC PIPE-clock mux off the XO
+# reference onto the PHY's own recovered clock, but Samsung's SM8550
+# (kalama) boot chain parks it there -- without this, the LTSSM can never
+# perform receiver detection and any PCIe endpoint on this controller
+# (WiFi/BT combo chip, regardless of exact model) is permanently invisible
+# ("Device not found" in dmesg, confirmed live on real hardware -- DT
+# wiring/regulators/GPIOs/power-sequencing all checked out fine, only the
+# link itself never trained). Imported from the sibling X910 Ultra port's
+# own out-of-tree patch (itself inherited from a physically-validated
+# postmarketOS kernel) -- see docs/porting-log.md's Networking bring-up
+# session entry and kernel/patches/unpark-pcie0-pipe-mux.patch's own header.
+apply_unless 'clk_set_rate(qmp->pipe_clks\[0\].clk, ULONG_MAX)' \
+	drivers/phy/qualcomm/phy-qcom-qmp-pcie.c unpark-pcie0-pipe-mux.patch
+
+# Confirmed live on real hardware (Networking bring-up session): the PHY
+# fix above alone was NOT sufficient -- "Device not found" persisted.
+# Samsung's downstream cnss2 also programs AOP WLAN PDC resources over the
+# QMP mailbox before first WCN power-on (this board's own stock DTS
+# carries a qcom,pdc_init_table for its QCA6490 chip); mainline's
+# pwrseq-qcom-wcn.c only ever gained this support for the WCN7850 config
+# table entry (a patch the sibling X910 Ultra port already carries for its
+# own, different chip) -- adapted here for qca6390. See
+# docs/porting-log.md's Networking bring-up session entry.
+apply_unless 'pwrseq_qcom_wcn_program_wlan_pdc' \
+	drivers/power/sequencing/pwrseq-qcom-wcn.c \
+	qca6390-pwrseq-cold-reset-aop.patch
+
+# Confirmed live on real hardware (Networking bring-up session): both
+# patches above together were STILL not sufficient -- "Device not found"
+# persisted (LTSSM stuck in Detect.Quiet -- the chip's receiver termination
+# was never even seen, i.e. the chip itself never powered up). Agent
+# research (round 3) found this board's own stock DTS drives an XO-clock-
+# enable GPIO (GPIO 204) as part of BOTH the WLAN and BT halves of this
+# chip's power-up sequence; mainline's pwrseq-qcom-wcn.c already implements
+# this exact xo-clk-assert/deassert mechanism generically but only ever
+# wires it into the WCN6855 pdata table, never QCA6390/QCA6490's. This
+# patch also reorders the AOP PDC vote to fire before any regulator/GPIO
+# acquisition, matching downstream cnss2's own cnss_probe() ordering
+# byte-for-byte (previously it fired after WLAN GPIO/clock acquisition --
+# an approximation, not a bug ruled out, but worth being exact about). See
+# docs/porting-log.md's Networking bring-up session entry.
+apply_unless 'Send the AOP WLAN PDC votes first, before any regulator' \
+	drivers/power/sequencing/pwrseq-qcom-wcn.c \
+	qca6490-xo-clk-gpio.patch
+
 # Kbuild's LLVM=1 points HOSTCC/HOSTCXX at bare clang-unwrapped even when an
 # environment-exported override is present -- only a command-line-supplied
 # HOSTCC/HOSTCXX takes effect. Same is true of KCFLAGS (needed for

@@ -21,6 +21,32 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 brdir=${BUILDROOT_SRC:-$repo_root/buildroot/upstream}
 outdir=${BUILD_OUT:-$repo_root/out/buildroot}
 overlay_dir=$repo_root/buildroot/rootfs-overlay
+# Second overlay tree for WiFi/BT firmware blobs (Networking bring-up
+# session) -- populated by scripts/fetch-ath11k-firmware.sh, committed to
+# git alongside the rest of buildroot/rootfs-overlay/ (see .gitignore and
+# docs/porting-log.md's Networking bring-up session for the decision to
+# commit firmware rather than exclude it). BR2_ROOTFS_OVERLAY accepts a
+# space-separated list natively.
+fw_overlay_dir=$repo_root/buildroot/firmware-overlay
+if [ -d "$fw_overlay_dir" ]; then
+	overlay_dir="$overlay_dir $fw_overlay_dir"
+fi
+
+# Real WiFi credentials (buildroot/rootfs-overlay/etc/wpa_supplicant.conf)
+# are gitignored on purpose -- unlike the firmware above, a personal
+# SSID/PSK genuinely shouldn't be committed. A fresh clone only has the
+# tracked wpa_supplicant.conf.example placeholder; fall back to it (with a
+# loud warning, not a silent no-WiFi image) so this script still produces
+# a bootable rootfs rather than erroring on a missing file.
+wpa_conf=$repo_root/buildroot/rootfs-overlay/etc/wpa_supplicant.conf
+wpa_example=$repo_root/buildroot/rootfs-overlay/etc/wpa_supplicant.conf.example
+if [ ! -f "$wpa_conf" ]; then
+	echo "warning: $wpa_conf not found -- copying the placeholder from" >&2
+	echo "  $wpa_example" >&2
+	echo "  Edit it with a real SSID/PSK before relying on this image's WiFi" >&2
+	echo "  (see buildroot/rootfs-overlay/etc/init.d/S45wifi-connect)." >&2
+	cp "$wpa_example" "$wpa_conf"
+fi
 
 # nixpkgs' compiler wrapper enables a "format" hardening flag by default
 # (NIX_HARDENING_ENABLE, part of its standard security-hardening flag set)

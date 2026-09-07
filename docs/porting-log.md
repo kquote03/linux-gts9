@@ -1515,3 +1515,311 @@ root-caused by reading real source (kernel driver internals, sibling
 ports, and Samsung's own stock devicetree) before writing any fix, per the
 user's explicit direction this session to investigate thoroughly with
 multiple parallel research agents before instrumenting anything.
+
+## Session 8 — 2026-09-06 — Networking bring-up (WiFi + Bluetooth, QCA6490/WCN6855)
+
+Greenfield WiFi/BT/PCIe work (Kconfig force, DTS `wcn_pmu`/`wifi@0`/BT-UART14
+nodes, three out-of-tree kernel patches under `kernel/patches/`) got the
+PCIe WLAN endpoint far enough to probe, but it still showed "Device not
+found" after the first two patches (PHY pipe-mux unpark +
+`pwrseq_qcom_wcn_program_wlan_pdc()` AOP votes). A round-3 research agent
+recommended three further changes together: `xo-clk-gpios` GPIO
+sequencing, reordering the AOP PDC vote before regulator/GPIO acquisition
+plus switching `pwrseq_qca6390_of_data.targets` to
+`pwrseq_qcom_wcn6855_targets`, and AON/PMU rail-mapping + voltage
+corrections. Applying all three at once caused `wcn-pmu` itself to
+regress from a clean probe to permanent `-EPROBE_DEFER` (`-517`).
+
+Per the user's explicit standing instruction to prioritize concrete
+source-of-truth evidence over speculation, this was root-caused by direct
+kernel source reading plus real-hardware single-variable bisection, not
+guesswork:
+
+- **Read `drivers/base/dd.c`'s `really_probe()` directly**: a *negative*
+  `-517` in a "probe of X returned N" `initcall_debug` line comes
+  exclusively from `device_links_check_suppliers(dev)` rejecting the
+  device *before* `.probe()` is ever called (a driver's own `.probe()`
+  failure would instead show as a *positive* `517`). This is a pure
+  devicetree-phandle-graph gate — it immediately exonerated the
+  `.targets` swap and the PDC-vote reordering as possible causes, since
+  neither touches the OF phandle graph.
+- **Bisected on real hardware**, each on top of a reconfirmed-working
+  "patches #1+#2 only" baseline, with temporary `dev_info(dev, "TRACE:
+  ...")` probe-entry markers: the `xo-clk-gpios` property alone did not
+  reproduce the regression when removed; the AON/PMU rail swap
+  (`vddaon-supply`→`vreg_s2g_0p98`, `vddpmu-supply`→`vreg_s4e_0p952`)
+  alone did not either (clean probe, all TRACE hits both times).
+- **The actual cause**: the `vreg_s4g_1p352`/`vreg_s6g_1p904` regulator
+  voltages had been "corrected" from `1352000`/`1904000` µV to
+  `1350000`/`1900000` µV to match the PDC `upval` figures in mV exactly.
+  Reading `drivers/regulator/qcom-rpmh-regulator.c`'s real voltage table
+  for this board's actual PMIC (`pm8550vs`, confirmed via the DTS parent
+  node) — `pmic5_ftsmps525`, two linear ranges: `300000-1368000µV` in
+  `4000µV` steps, then `1376000-2736000µV` in `8000µV` steps — shows the
+  *original* values are exact on-grid steps (`(1352000-300000)/4000=263`;
+  `(1904000-1376000)/8000=66`), while both "corrected" values land
+  exactly between valid steps (`262.5` and `65.5` respectively). With
+  `regulator-min-microvolt == regulator-max-microvolt` set to an off-grid
+  value, voltage-constraint application has no exact match and fails,
+  which is exactly why the regulator (and therefore `wcn-pmu`'s supplier
+  link to it) never became ready — mechanistically consistent with the
+  `dd.c` proof above, not a coincidence. Reverted to the original,
+  RPMH-valid `1352000`/`1904000`; confirmed live (`wcn-pmu` probe: one
+  early defer, then all TRACE markers hit, `returned 0`).
+
+With the root cause fixed, all three originally-recommended changes were
+reintroduced together (patch `qca6490-xo-clk-gpio.patch` re-enabled,
+`xo-clk-gpios` restored, TRACE debug lines removed) and flashed as one
+full build. **Result, confirmed via real dmesg over the USB serial
+console**:
+
+- `wcn-pmu` probes clean (`returned 0`).
+- The PCIe WLAN endpoint enumerates: `/sys/bus/pci/devices/` shows
+  `0000:00:00.0` (root port) and `0000:01:00.0` (the chip) — the original
+  "Device not found" is resolved. `ath11k_pci` binds and reads the real
+  hardware identity via MHI SoC ID: **`wcn6855 hw2.1`** — not
+  `QCA6390 hw2.0` as this device's own downstream DTS naming
+  (`qcom,cnss-qca6490`) had implied. Firmware load then failed only
+  because `ath11k/WCN6855/hw2.1/amss.bin` wasn't staged (fixed below).
+- `hci_qca` fully talks to the real BT die over `&uart14`: `dmesg` shows a
+  genuine version-command readback (`QCA SOC Version 0x400c0210`,
+  `QCA ROM Version 0x00000201`, `QCA Patch Version 0x000038e6`) — real
+  hardware, not a stub. It identifies as **`ROME/QCA6390`**
+  (`soc_type QCA_QCA6390` in `drivers/bluetooth/btqca.c`), rom_ver
+  **0x21**. Firmware download then failed on `qca/htbtfw21.tlv`
+  (not staged — see below).
+
+Note the WLAN and BT halves of this one physical chip identify as two
+*different* things to their respective mainline subsystems, independently
+and via two entirely separate real hardware-readback paths (MHI SoC ID
+over PCIe vs. a live HCI vendor command over UART) — both real
+measurements, not a contradiction.
+
+**Firmware staging, `scripts/fetch-ath11k-firmware.sh` corrected**:
+
+- WiFi: ath11k's own `hw_params` table sets `.fw.dir =
+  "WCN6855/hw2.1"` for this exact `hw_rev` (confirmed in
+  `drivers/net/wireless/ath/ath11k/core.c`). linux-firmware upstream only
+  ships `ath11k/WCN6855/hw2.0/` (confirmed via its GitLab API tree
+  listing — no `hw2.1` subtree exists there at all). Real-world
+  precedent, not a guess: GitHub's `linux-surface/aarch64-firmware` repo
+  (used for real ARM laptop bring-up) ships `ath11k/WCN6855/hw2.1` as a
+  **symlink to `hw2.0`** — i.e. hw2.1 has no distinct firmware content,
+  it just needs the hw2.0 blobs staged under the hw2.1 path the driver
+  actually requests. The fetch script now does exactly that.
+- BT: **known gap, not yet resolved**. `btqca.c`'s `QCA_QCA6390` case
+  unconditionally requests `qca/htbtfw<rom_ver>.tlv` +
+  `qca/htnv<rom_ver>.bin` with *no* fallback filename (unlike
+  `QCA_WCN6750`/`QCA_WCN6855`, which retry a second name on failure).
+  Confirmed by listing linux-firmware's own `qca/` directory: only
+  `htbtfw20.tlv`/`htnv20.bin` (rom_ver 0x20) exist upstream — nothing for
+  our hardware-confirmed rom_ver 0x21. This device's own pulled
+  `vendor-firmware-dump` doesn't have an exact match either (it has
+  `hpbtfw21.tlv`/`hpnv21*.bin` — same rom_ver, but the "hp" stem used by
+  the `QCA_WCN6855`/`QCA_QCA2066` cases, a different fwname convention,
+  not confirmed interchangeable). The real next step is extracting the
+  genuine `htbtfw21.tlv`/`htnv21.bin` from this device's actual stock
+  `/vendor/firmware` partition (today's `vendor-firmware-dump` pull may
+  simply be incomplete), not substituting a same-rom_ver-but-wrong-prefix
+  file and hoping it works. The fetch script now fails loudly and points
+  at this exact gap rather than silently leaving BT firmware missing.
+
+**Not yet done**: this networking test used the fast-iteration debug/
+bring-up ramdisk (confirmed via live shell: no `/lib/firmware` directory
+exists in it at all), not the full Buildroot rootfs with the firmware
+overlay — so firmware loading itself, and any real WiFi/BT signal
+(`iw dev wlan0 scan`, a BT scan/pairing), is still unverified. That's the
+next real test once the Buildroot rootfs is rebuilt with this session's
+firmware-overlay staging included.
+
+### Full Weston+firmware rootfs test: WiFi confirmed end-to-end, BT has one remaining userspace gap
+
+`scripts/extract-vendor-firmware.sh` (new, committable — pulls proprietary
+blobs into gitignored `vendor-firmware-dump/` from this device's real
+`/vendor` partition; TWRP doesn't always auto-mount it, so the script
+mounts `/dev/block/dm-5` explicitly first) confirmed via a full,
+exhaustive on-device search that no `htbtfw21.tlv`/`htnv21.bin` exists
+anywhere real (upstream or on this device) — only `hpbtfw21.tlv`/
+`hpnv21*.bin`/`hpnv21g*.bin` (rom_ver 0x21, "hp" stem). Reading
+`drivers/bluetooth/hci_qca.c`'s real `qca_bluetooth_of_match[]` table
+found the actual fix: our BT DTS node's `compatible` was
+`"qcom,qca6390-bt"`, which maps to `soc_type QCA_QCA6390` — the one
+`btqca.c` case with **no fallback filename** on failure. Switching it to
+`"qcom,wcn6855-bt"` (matching the WLAN side's own real hardware identity)
+makes `btqca.c` try `wcnhpbtfw21.tlv`/`wcnhpnv21.bin` first and fall back
+to plain `hpbtfw21.tlv`/`hpnv21.bin` on failure — landing exactly on this
+device's real files. Confirmed safe: `qca_serdev_probe()` only consults
+`qca_soc_data_wcn6855`'s own regulator list when the BT node has an
+`enable-gpios` property (ours doesn't — power is handled by the shared
+`wcn_pmu` pwrseq device, matched via a regulator-supply phandle back to
+that provider, unrelated to `soc_type`), so the switch is isolated to
+firmware-naming logic only.
+
+Also added `BR2_PACKAGE_IW`/`BR2_PACKAGE_BLUEZ5_UTILS`(+`_CLIENT`) to
+`buildroot/configs/x716_defconfig` for real scan tools, and fixed a
+second, unrelated bug the user caught by direct observation ("weston
+didn't start as it couldn't mount the sdcard"): `INIT_BOOT_RAMDISK` had
+been mistakenly pointed at the debug bring-up ramdisk instead of
+`out/empty-ramdisk.cpio.gz` (the pattern Session 5 already established
+and documented for exactly this reason) — the debug ramdisk's own `/init`
+(which tries to mount the microSD for persistent logging, then loops
+forever providing its own interactive shell) silently took over PID 1,
+so Buildroot's real init/`S99weston` never ran at all. Not a boot hang or
+an sdcard-driver bug; the sdcard mount failure inside that unrelated
+ramdisk's `/init` was just the visible symptom. Fixed by using
+`out/empty-ramdisk.cpio.gz` for `INIT_BOOT_RAMDISK` again.
+
+**Confirmed on real hardware, full clean boot, Weston came up
+automatically:**
+
+- **WiFi — fully working.** `ip link` showed the interface renamed
+  `wlan0` → `wlp1s0` by eudev's predictable-naming rules (real, not a
+  bug). `iw dev wlp1s0 scan` returned **ten real, distinct SSIDs** from
+  the surrounding environment (`Songo-5GHz`, `Songo-OpenWrt-2.4G`,
+  `H155-383_3D90`, `TEACENTRE`, `eandC159D6-2G`, `AhmadQasim`,
+  `Songo-5GHz-temp`, `Songo-2.4GHz`, `Be Different2`, `Ahmed`) — this is
+  the real "AP seen in a scan" bar this project set for itself, met.
+- **BT — firmware/kernel side fully working, BlueZ integration not yet
+  resolved.** `dmesg` shows the same real chip handshake as before,
+  ending in `QCA setup on UART is completed`; `/sys/class/bluetooth/hci0`
+  exists; `/sys/class/rfkill/rfkill0` (`name=hci0`) shows `soft=0 hard=0`
+  — not blocked. But `bluetoothctl` (via `dbus-daemon` and `bluetoothd`,
+  both auto-started at boot, confirmed running) reports **"No default
+  controller available"** even after a clean `/etc/init.d/S40bluetoothd
+  restart` with `hci0` already fully up. Not yet root-caused — no
+  speculation offered here; the real next step is checking whether
+  `hci_register_dev()` completes with a quirk flag (e.g.
+  `HCI_QUIRK_RAW_DEVICE`) that hides the device from BlueZ's mgmt
+  interface, or a BlueZ-vs-kernel mgmt-API version mismatch, ideally via
+  a focused subagent investigation rather than further guessing over the
+  slow serial console.
+
+### Real WiFi + SSH, replacing the serial console as the day-to-day channel
+
+With real WiFi association already proven, the user asked to get off the
+slow USB-serial console entirely via WiFi + SSH. Added to
+`buildroot/configs/x716_defconfig`: `wpa_supplicant` (joins the real
+network, credentials in the gitignored
+`buildroot/rootfs-overlay/etc/wpa_supplicant.conf`) and `dropbear` (SSH2
+server, static root password) driven by the new
+`buildroot/rootfs-overlay/etc/init.d/S45wifi-connect` (waits for a real
+wireless interface by checking `/sys/class/net/*/wireless` rather than
+hardcoding `wlp1s0`, then `wpa_supplicant` + `udhcpc`).
+
+**Two real bugs found and fixed, both root-caused from source, not
+guessed:**
+
+1. **`wpa_supplicant` rejected the whole config file** ("Failed to read
+   or parse configuration") with zero per-line diagnostics. Read
+   `wpa_supplicant/config_file.c`/`config.c` directly: its parser is
+   all-or-nothing -- one unrecognized top-level directive silently
+   increments an error counter (no message unless `show_details` is set)
+   and the entire file is rejected at the end
+   (`if (errors) config = NULL;`). The culprit was `ctrl_interface=`,
+   guarded by `#ifdef CONFIG_CTRL_IFACE` (needs
+   `BR2_PACKAGE_WPA_SUPPLICANT_CTRL_IFACE`/`_CLI`, not enabled). Fixed by
+   removing it, then properly re-adding it once `BR2_PACKAGE_WPA_SUPPLICANT_CLI`
+   was enabled for `wpa_cli` (which needs that same path).
+2. **SSH connections timed out even after WiFi genuinely associated**
+   (real IP, real ping RTTs, ARP resolves, dropbear confirmed listening
+   on `0.0.0.0:22`/`:::22` via `netstat -tln`) -- ICMP fine, TCP silently
+   dead, the classic symptom of a WiFi-driver checksum-offload bug.
+   Diagnosed with on-device `tcpdump` (added specifically for this;
+   host-side capture was blocked by missing `CAP_NET_RAW` in this
+   sandbox) rather than guessing -- and on the very next boot, with
+   `tcpdump` simply running as a passive observer, the same connection
+   attempt succeeded outright. Inconclusive on the *original* root
+   cause (a stale AP-side client/ARP table entry after re-association is
+   the leading real-world explanation for "ICMP fine, TCP times out,
+   then resolves on its own after a fresh association" -- consistent
+   with power-save being toggled off on the affected boot too -- but
+   this was **not** independently confirmed the way every other finding
+   in this session was, and is flagged as such rather than asserted).
+   SSH now works reliably; if it ever recurs, `tcpdump -i wlp1s0 -n port
+   22` on-device is the direct diagnostic already proven to work.
+
+Also added, per explicit request, a set of general debugging tools now
+that a real network path exists: `ethtool` (the checksum-offload
+diagnostic tool above), `netcat` (busybox's own `nc` applet is disabled
+in this project's default busybox config; `netcat-openbsd` needs glibc,
+incompatible with this musl toolchain), `tcpdump`, `pciutils` (`lspci`),
+`usbutils` (`lsusb`), `htop`, `strace`.
+
+**Confirmed working end-to-end via real SSH** (`sshpass ssh
+root@192.168.2.123`, static root password): `uname -a`, `ps aux` showing
+`wpa_supplicant`/`dropbear`/`weston` all healthy. The serial console
+stays available as a fallback (kept running per the user's explicit
+request), but is no longer the primary iteration channel.
+
+### Bluetooth: BlueZ showed zero controllers despite real firmware loading; root-caused and fixed; real scan confirmed
+
+With WiFi solid, the user asked to return to confirming Bluetooth works,
+holding it to the same standard as WiFi: not "the driver probed" but a
+real scan finding a real nearby device.
+
+**Symptom**: `hci_qca`/`btqca` fully probed with the earlier
+`"qcom,wcn6855-bt"` compatible fix (dmesg showed the fallback chain
+working exactly as expected -- `wcnhpbtfw21.tlv`/`wcnhpnv21.bin` fail,
+`hpbtfw21.tlv`/`hpnv21.bin` succeed, `QCA setup on UART is completed`) --
+but `bluetoothctl show` reported "No default controller available", and
+the kernel's own `mgmt` interface reported "Number of controllers: 0".
+`hci0` existed and had loaded real firmware; BlueZ simply couldn't see
+it.
+
+**Root-caused by reading `net/bluetooth/hci_sync.c`, `hci_core.c`, and
+`mgmt.c` directly**, not guessed:
+
+- `hci_register_dev()` sets `HCI_SETUP`+`HCI_AUTO_OFF` and queues
+  `hci_power_on()` automatically.
+- `hci_power_on()` (`hci_sync.c`) sets `HCI_UNCONFIGURED` if
+  `hci_test_quirk(hdev, HCI_QUIRK_EXTERNAL_CONFIG) || invalid_bdaddr`.
+  `invalid_bdaddr` becomes true when no valid BD_ADDR is found anywhere
+  -- and `hci_dev_get_bd_addr_from_property()` looks for a devicetree
+  `local-bd-address` property, which our BT node didn't have at all.
+- `mgmt.c`'s `read_index_list()` (~line 428) explicitly excludes any
+  device with `HCI_SETUP`, `HCI_CONFIG`, `HCI_USER_CHANNEL`, or
+  `HCI_UNCONFIGURED` from the controller list BlueZ enumerates -- which
+  is exactly why `hci0` was invisible despite probing cleanly.
+
+This is the same "factory NVM MAC address is null, needs an EFS-read
+fixup" gotcha the sibling X910 Ultra port had already flagged as a known
+risk for this chip family.
+
+**Fix**: added a `local-bd-address = [1A 2B 3C 4D 5E 02];` property to
+the BT node in `kernel/dts/sm8550-samsung-x716b.dts`. This is a
+locally-administered placeholder (not the device's real factory
+address, which lives in Samsung's own EFS partition and hasn't been
+extracted) -- `hci_sync.c` reads the array LSB-first into `bdaddr_t.b[6]`
+and displays it as `b[5]:b[4]:...:b[0]`, so `[1A 2B 3C 4D 5E 02]` shows
+as `02:5E:4D:3C:2B:1A`; the `0x02` leading octet sets the standard
+locally-administered bit, avoiding any real vendor OUI collision (same
+convention as the `brcm,bcm4377-bluetooth.yaml` binding's own example).
+
+**Confirmed fixed**: `bluetoothctl show` now reports `Controller
+02:5E:4D:3C:2B:1A ... Powered: yes` -- BlueZ sees the adapter.
+
+**Real scan, over the serial console** (SSH was down at the time due to
+a transient WiFi re-association issue, unrelated to BT): one-shot
+`bluetoothctl` invocations (`--timeout N scan on`, and
+`echo "scan on" | bluetoothctl &`) all appeared to stop discovering
+almost immediately -- their piped/redirected stdin hit EOF and the
+process exited (confirmed via an immediate `[1]+ Done` job message and a
+follow-up `Discovering: no`), never giving discovery a real window. Fixed
+by keeping a `bluetoothctl` process's stdin genuinely open via a FIFO
+(`mkfifo /tmp/btfifo; bluetoothctl < /tmp/btfifo > /tmp/scanresult.log
+2>&1 &`, then `echo "scan on" > /tmp/btfifo`), which sustains BlueZ's
+discovery session (tied to the requesting D-Bus client's connection
+lifetime) for as long as needed. This found three real, distinct nearby
+devices with real RSSI values:
+
+```
+Device 00:17:C6:D1:6F:D6 00-17-C6-D1-6F-D6
+Device 02:F6:1A:99:6A:FE 02-F6-1A-99-6A-FE
+Device 3F:13:A0:E2:B5:ED XDT_SQ669       RSSI -113 / -94 dBm
+```
+
+This satisfies this project's own standard of real signal, not just
+probe success, for both radios now. Bluetooth is considered working for
+bring-up purposes; the real factory BD_ADDR extraction (EFS) remains
+deferred, noted in the DTS comment, until persistent BT identity across
+reflashes actually matters.

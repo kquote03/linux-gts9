@@ -128,7 +128,36 @@ check_fits "$vendor_lz4_ramdisk" "$vendor_boot_size" "vendor_boot"
 # &usb_1's role-switch registration that needs an -EPROBE_DEFER retry --
 # with fw_devlink off and only a 10s deferred_probe_timeout, the driver
 # core gave up permanently instead of retrying once usb_1 was ready.
-cmdline="earlycon loglevel=8 log_buf_len=4M panic=10 clk_ignore_unused pd_ignore_unused regulator_ignore_unused initcall_debug"
+# console=tty0 + console=ttyGS0: neither was ever explicitly set before
+# this (Storage bring-up session) -- earlycon only covers the very-early
+# pre-console-init phase, and with no real "console=" naming an actual
+# live target, kernel messages after that point only ever landed in the
+# ring buffer (retrievable via `dmesg`), never streamed live anywhere.
+# This is why the panel has only ever shown the static per-CPU-core boot
+# logo (CONFIG_LOGO + CONFIG_FRAMEBUFFER_CONSOLE, both already enabled --
+# confirmed in out/kernel/.config) with nothing drawn after it, and why
+# the serial console has only ever echoed back typed commands, never
+# genuinely live kernel dmesg. tty0 (fbcon, painted via
+# CONFIG_DRM_FBDEV_EMULATION on top of the real DRM/panel driver) gets
+# boot text onto the panel itself; ttyGS0 keeps live streaming on the USB
+# serial console too, in addition to earlycon's early-only coverage.
+# Multiple console= entries are cumulative in the kernel's own parsing,
+# not last-one-wins, so both are active at once.
+cmdline="earlycon console=tty0 console=ttyGS0,115200 loglevel=8 log_buf_len=4M panic=10 clk_ignore_unused pd_ignore_unused regulator_ignore_unused initcall_debug"
+
+# Storage bring-up session: root=/rootfstype= for the real Alpine rootfs on
+# the microSD card. Not actually consumed by the kernel's own root-mount
+# code -- scripts/build-real-root-initramfs.sh's /init does the real
+# mount+switch_root itself (see that script for why: waiting for
+# /dev/mmcblk1p1 to enumerate needs a retry loop either way, so a small
+# initramfs doing it explicitly is more robust than bare root=/rootwait).
+# Added here anyway for documentation/tooling consistency -- some tools
+# read the cmdline to infer the root device even when unused by the
+# kernel itself. Only appended when USE_REAL_ROOT=1, so the debug-ramdisk
+# boot path (this script's default) is unaffected.
+if [ "${USE_REAL_ROOT:-0}" = "1" ]; then
+	cmdline="$cmdline root=/dev/mmcblk1p1 rootfstype=ext4 rw"
+fi
 
 echo "== boot.img (kernel = gzip'd mainline Image with board DTB appended, no ramdisk -- GKI-style split, ramdisk lives in init_boot) =="
 # ABL's own log unconditionally shows a "Decompressing kernel image" step

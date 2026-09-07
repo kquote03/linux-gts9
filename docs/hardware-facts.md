@@ -685,6 +685,88 @@ has `id=0, rev=0` though, which is at least suggestive that 0/0 is an
 accepted default/always-match entry, not something ABL requires to be
 board-specific.
 
+## WiFi/BT combo chip (Networking bring-up session)
+
+- **Stock DTS identity**: `compatible = "qcom,qca6490"` (BT node,
+  `fragment@143`) / `"qcom,cnss-qca6490"` (WLAN node, `fragment@147`) in
+  this device's own stock `gts9_eur_openx_w00_r04.dts`. **measured**
+  (earlier docs wrongly named this chip WCN7850, the sibling X910 Ultra
+  port's different chip — corrected).
+- **Shared GPIOs** (both WLAN and BT nodes agree): `wlan-en`/`bt-en` =
+  `&tlmm 80`/`81`, `sw-ctrl` = `&tlmm 82`, `xo-clk` = `&tlmm 204`.
+  **measured**.
+- **Shared regulator rails**: `vddaon`→S2G, `vddpmu`/`vddrfa0p95`→S4E,
+  `vddio`→L15B, `vddrfa1p3`/`vddpcie1p3`→S4G, `vddrfa1p9`/`vddpcie1p9`→S6G.
+  **measured** (from stock DTS).
+- **BT UART is QUP SE14** (`&uart14`, `serial@898000`) — resolved by
+  stock-DTS fragment adjacency (`bt_qca6490` at `fragment@143` is
+  immediately followed by `fragment@144` enabling `&qupv3_se14_4uart`).
+  This is a **different QUP instance** from `&uart7`/`serial0` (our own
+  debug console) — no conflict. **measured**.
+- **Real-hardware chip identity is subsystem-specific, not one label**
+  (2026-09-06, full-fix boot test, `dmesg` over USB serial console — see
+  `docs/porting-log.md`'s Session 8 for full citations):
+  - WLAN, via `ath11k_pci`'s MHI SoC-ID readback over PCIe: identifies as
+    **`wcn6855 hw2.1`**, PCI ID `[17cb:1103]` at `0000:01:00.0`.
+    **measured**.
+  - BT, via `hci_qca`'s live HCI vendor-command version readback over
+    UART14: identifies as **`ROME/QCA6390`** (`QCA SOC Version
+    0x400c0210`, `QCA ROM Version 0x00000201` i.e. rom_ver `0x21`,
+    `QCA Patch Version 0x000038e6`). **measured**.
+  - These are two independent, real hardware reads from two different
+    subsystems on the same physical chip package — not a contradiction,
+    and not derived from the stock DTS `compatible` string above.
+- **Firmware paths** (see `scripts/fetch-ath11k-firmware.sh` and
+  `docs/porting-log.md`'s Session 8 for full detail): WiFi needs
+  `ath11k/WCN6855/hw2.1/{amss.bin,board-2.bin,m3.bin}` — linux-firmware
+  upstream only ships the content under `hw2.0`; real-world practice
+  (confirmed via GitHub's `linux-surface/aarch64-firmware`) is to stage
+  the same files under the `hw2.1` path since it's a symlink there.
+  BT: `hci_qca.c`'s `QCA_QCA6390` firmware-naming path
+  (`qca/htbtfw21.tlv`+`qca/htnv21.bin`, no fallback) has no match
+  anywhere — neither upstream linux-firmware nor this device's own
+  pulled `vendor-firmware-dump`. **Fixed**, not by finding those exact
+  files, but by changing the BT DTS node's `compatible` from
+  `"qcom,qca6390-bt"` to `"qcom,wcn6855-bt"`, which makes `hci_qca.c` use
+  `QCA_WCN6855`'s naming path instead: it tries
+  `qca/wcnhpbtfw21.tlv`+`qca/wcnhpnv21.bin` first, then falls back to
+  plain `qca/hpbtfw21.tlv`+`qca/hpnv21.bin` — landing exactly on real
+  files this device's own `/vendor/firmware` has (extracted via
+  `scripts/extract-vendor-firmware.sh`, staged by
+  `scripts/fetch-ath11k-firmware.sh`). Confirmed safe because
+  `qca_serdev_probe()` only consults `qca_soc_data_wcn6855`'s own
+  regulator list when the BT node has an `enable-gpios` property (ours
+  doesn't — power comes from the shared `wcn_pmu` pwrseq device
+  instead). **measured** (dmesg shows the exact fallback chain
+  succeeding, `QCA setup on UART is completed`).
+- **BT has no persistent factory BD_ADDR visible to mainline**: this
+  chip stores no BD_ADDR mainline's `hci_qca`/`btqca` can read (Samsung's
+  stock system reads it from its own EFS partition at runtime, not yet
+  extracted here). Per `net/bluetooth/hci_sync.c`'s `hci_power_on()`: no
+  BD_ADDR → `invalid_bdaddr` stays true → `HCI_UNCONFIGURED` gets set →
+  `mgmt.c`'s `read_index_list()` excludes the device from BlueZ's
+  visible controller list entirely — `hci0` probed and loaded real
+  firmware, but `bluetoothctl`/kernel `mgmt` reported zero controllers.
+  **Fixed** with a locally-administered placeholder,
+  `local-bd-address = [1A 2B 3C 4D 5E 02];` (displays as
+  `02:5E:4D:3C:2B:1A`, LSB-first storage confirmed via
+  `hci_sync.c`/`bdaddr_t.b[6]`), added to the BT DTS node — **not** the
+  device's real factory address. Same gotcha the sibling X910 Ultra
+  port's own bring-up already flagged as a known risk for this chip
+  family. **measured** (`bluetoothctl show` now reports `Controller
+  02:5E:4D:3C:2B:1A ... Powered: yes`; a real scan over this adapter
+  found three real nearby devices with real RSSI — see
+  `docs/porting-log.md`'s Session 8).
+- **`wcn-pmu` regulator voltage gotcha**: this board's `pm8550vs` PMIC's
+  `smps4`/`smps6` (S4G/S6G) only accept voltages landing exactly on
+  `drivers/regulator/qcom-rpmh-regulator.c`'s real RPMH step table
+  (`pmic5_ftsmps525`: `300000-1368000µV`/`4000µV` steps, then
+  `1376000-2736000µV`/`8000µV` steps) — `1352000`/`1904000` are valid
+  on-grid steps, `1350000`/`1900000` (matching the AOP PDC `upval` mV
+  figures exactly) are not, and setting a fixed (`min==max`) regulator to
+  an off-grid value fails outright. **measured** (see
+  `docs/porting-log.md`'s Session 8 bisection).
+
 ## Open risks / unverified assumptions (carried into later phases)
 
 1. ~~Whether X716's ABL has the same DTB-append-to-kernel /
