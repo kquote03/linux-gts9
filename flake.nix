@@ -80,6 +80,26 @@
         # PATH ambiguity entirely -- scripts/build-fedora-rootfs.sh reads
         # this instead of doing its own `nix-build -E '...'` lookup.
         QEMU_AARCH64_STATIC = "${pkgs.pkgsStatic.qemu-user}/bin/qemu-aarch64";
+
+        # Confirmed live (this flake, `nix run .#build-kernel`): HOSTCC
+        # ("cc", falls through PATH to the host system's own compiler --
+        # nothing in devPackages provides a plain "cc") compiles fine for
+        # most host tools (fixdep, conf/mconf, ...) but fails specifically
+        # on scripts/Makefile.host's certs/extract-cert.c with `fatal
+        # error: 'openssl/bio.h' file not found`. Root cause: `nix develop`
+        # normally gets openssl's dev-output include/pkgconfig paths wired
+        # up automatically by mkShell's own setup-hooks (buildInputs
+        # propagation), but `apps.*` here (mkApp, below) is a raw
+        # writeShellScript that only sets PATH -- it never goes through
+        # mkShell, so none of those hooks fire. Same class of bug as
+        # QEMU_AARCH64_STATIC above (a package being *listed* isn't the
+        # same as its environment actually being wired up); fixed the same
+        # way, with explicit env vars so both `nix develop` and every
+        # `apps.*` entry get identical, correct behavior instead of only
+        # the former working by accident of mkShell's hooks.
+        PKG_CONFIG_PATH = "${pkgs.openssl.dev}/lib/pkgconfig";
+        C_INCLUDE_PATH = "${pkgs.openssl.dev}/include";
+        LIBRARY_PATH = "${pkgs.openssl.out}/lib";
       };
 
       devPackages = with pkgs; [
