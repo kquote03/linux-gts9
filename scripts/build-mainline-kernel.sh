@@ -373,13 +373,29 @@ echo "== merging config fragments =="
 
 make -C "$kdir" "${make_args[@]}" olddefconfig
 
-echo "== verifying no fragment-requested symbol was silently dropped =="
+echo "== verifying no board-fragment-requested symbol was silently dropped =="
+# Only config-x716.fragment is checked strictly: those are this project's
+# own deliberate, board-specific asks, and dependency resolution silently
+# dropping one of them is a real regression. config-mainline.aarch64 is
+# now a vendored 12,700-line generic base (gts9wifi-fedora's own
+# comprehensive config, see that file's header) -- resolving some of its
+# symbols differently against this project's specific patched tree/
+# from-scratch board drivers is expected, not a build-breaking
+# regression, so it's deliberately not held to the same airtight
+# standard.
 fail=0
-for frag in "$repo_root/kernel/config/config-mainline.aarch64" "$repo_root/kernel/config/config-x716.fragment"; do
+for frag in "$repo_root/kernel/config/config-x716.fragment"; do
 	while IFS='=' read -r key val; do
 		[ -z "$key" ] && continue
 		case "$key" in \#*) continue ;; esac
 		actual=$(grep -m1 "^$key=" "$outdir/.config" || true)
+		# Kconfig never writes "KEY=n" -- an explicitly-off boolean/tristate
+		# is represented as "# KEY is not set" instead. Recognize that form
+		# too, or every "=n" fragment request (e.g. CONFIG_SECURITY_SELINUX=n)
+		# falsely reports as dropped even when it landed correctly.
+		if [ "$val" = "n" ] && grep -qx "# $key is not set" "$outdir/.config"; then
+			continue
+		fi
 		if [ "$actual" != "$key=$val" ]; then
 			echo "MISMATCH: $key wanted $val, .config has: ${actual:-<unset>}" >&2
 			fail=1
@@ -387,10 +403,10 @@ for frag in "$repo_root/kernel/config/config-mainline.aarch64" "$repo_root/kerne
 	done < <(grep -E '^CONFIG_[A-Z0-9_]+=' "$frag")
 done
 if [ "$fail" -ne 0 ]; then
-	echo "one or more fragment symbols were dropped/changed by dependency resolution -- see above" >&2
+	echo "one or more board-fragment symbols were dropped/changed by dependency resolution -- see above" >&2
 	exit 1
 fi
-echo "all fragment symbols present as requested"
+echo "all board-fragment symbols present as requested"
 
 echo "== building Image (uncompressed -- uniLoader embeds a raw Image, not Image.gz) =="
 make -C "$kdir" "${make_args[@]}" -j"${BUILD_JOBS:-4}" Image
@@ -398,12 +414,46 @@ make -C "$kdir" "${make_args[@]}" -j"${BUILD_JOBS:-4}" Image
 echo "== building board DTB =="
 make -C "$kdir" "${make_args[@]}" -j"$(nproc)" "qcom/$board_dtb"
 
+kernel_release=$(cat "$outdir/include/config/kernel.release" 2>/dev/null || echo unknown)
+
+# This project's first real use of loadable kernel modules -- the new,
+# much larger config-mainline.aarch64 base (vendored from gts9wifi-fedora)
+# enables ~1800 modules for generic desktop hardware (HID vendor quirks,
+# extra filesystems, more USB/sound device classes) that config-x716.fragment
+# never had to force =y itself, since they're not needed to boot this
+# board. gts9wifi-fedora gets modules_install for free from RPM kernel
+# packaging (kernel.spec); this project's own pipeline deliberately skips
+# RPM (Phase 4), so do it directly here instead. depmod runs once here,
+# self-contained, against this fresh INSTALL_MOD_PATH -- so
+# scripts/build-fedora-rootfs.sh only needs to copy the resulting tree
+# in, no chroot/re-run needed.
+echo "== building kernel modules =="
+make -C "$kdir" "${make_args[@]}" -j"${BUILD_JOBS:-4}" modules
+
+echo "== installing kernel modules =="
+modules_out=$outdir/modules-out
+rm -rf "$modules_out"
+make -C "$kdir" "${make_args[@]}" INSTALL_MOD_PATH="$modules_out" modules_install
+
+echo "== running depmod =="
+depmod -b "$modules_out" "$kernel_release"
+
 image=$outdir/arch/arm64/boot/Image
 dtb=$outdir/arch/arm64/boot/dts/qcom/$board_dtb
+moddir=$modules_out/lib/modules/$kernel_release
 
 echo
 echo "== build artifacts =="
 ls -la "$image" "$dtb"
 echo "Image sha256:  $(sha256sum "$image" | cut -d' ' -f1)"
 echo "dtb sha256:    $(sha256sum "$dtb" | cut -d' ' -f1)"
-echo "kernel release: $(cat "$outdir/include/config/kernel.release" 2>/dev/null || echo unknown)"
+echo "kernel release: $kernel_release"
+if [ -d "$moddir" ]; then
+	# CONFIG_MODULE_COMPRESS_ZSTD (from the new vendored base config)
+	# means installed modules are *.ko.zst, not bare *.ko -- match both.
+	mod_count=$(find "$moddir" -name '*.ko' -o -name '*.ko.zst' | wc -l)
+	mod_size=$(du -sh "$moddir" | cut -f1)
+	echo "modules:        $mod_count module files, $mod_size, at $moddir"
+else
+	echo "modules:        WARNING -- $moddir not found after modules_install" >&2
+fi

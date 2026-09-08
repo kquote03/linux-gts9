@@ -31,7 +31,7 @@ device.
 | Touchscreen (ST fts1ba90a) | ✅ |
 | S Pen digitizer (Wacom wez01) | ✅ confirmed on hardware, tracks correctly across display rotations (see `docs/s-pen-orientation.md`) |
 | Wi-Fi (QCA6490 / ath11k) | ✅ real AP association confirmed |
-| Bluetooth | ✅ firmware loaded, HCI up |
+| Bluetooth | ✅ HCI up, real BT keyboard + touchpad HID input confirmed working on hardware |
 | Speakers (4× CS35L45 on PRIMARY MI2S) | ✅ both stereo channels confirmed audible by ear |
 | DMIC capture (LPASS VA macro) | ⚠️ wired in DTS, not yet tested with a real recording |
 | Battery / charging incl. PPS (SM5714 + SM5440) | ⚠️ real PD/PPS contract confirmed negotiating (`docs/porting-log.md`), needs more extended real-world testing before calling it fully proven |
@@ -48,6 +48,24 @@ device.
 | Hardware video decode (iris) | ❌ not sourced |
 | `/vendor` super partition (erofs) | ❌ needs a `make-dynpart-mappings` port neither project has done |
 | Cellular / 5G modem | ❌ permanent non-goal — no mainline story for Samsung's Shannon modem IPC on this SoC |
+
+### Kernel config: broad hardware support, SELinux currently disabled
+
+`kernel/config/config-mainline.aarch64` is now vendored wholesale from
+gts9wifi-fedora's own comprehensive base config (not a minimal
+`defconfig`-derived one), giving broad, distro-like hardware/driver
+support (USB HID vendor quirks, extra filesystems, more USB/sound
+device classes, loadable kernel modules) well beyond just this board's
+own critical path. **SELinux is force-disabled**
+(`CONFIG_SECURITY_SELINUX=n` in `config-x716.fragment`): the previous,
+minimal kernel never had SELinux compiled in at all despite
+`/etc/selinux/config` claiming "permissive," and turning it on for real
+against Fedora 44's shipped `selinux-policy` broke every socket-activated
+core systemd unit (`journald`, `dbus`, `udevd`, `logind`, GDM — no
+desktop at all) with SELinux policy/class ABI errors, confirmed live on
+real hardware. Getting a genuinely working, policy-compatible SELinux
+setup on this bleeding-edge kernel is real, undone future work — see
+`docs/porting-log.md` for the full debugging story.
 
 ## Connecting to the tablet (once flashed and booted)
 

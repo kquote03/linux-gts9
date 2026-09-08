@@ -479,6 +479,28 @@ else
 	echo "    WARN: $hexfw empty -- sensors/audio DSP userspace libs missing (re-run scripts/extract-vendor-firmware.sh)" >&2
 fi
 
+echo "== installing kernel modules =="
+# scripts/build-mainline-kernel.sh now runs `make modules_install` +
+# depmod into out/kernel/modules-out (this project's first real use of
+# loadable kernel modules -- see that script and
+# kernel/config/config-mainline.aarch64's own header for why). depmod
+# already ran there, self-contained, against that exact output tree, so
+# this is a plain file copy -- no chroot/re-run needed here. `kmod` is
+# already dnf_install'ed transitively via @core, so systemd-udevd's normal
+# module-alias auto-loading works with no further overlay changes.
+moddir="$repo_root/out/kernel/modules-out/lib/modules"
+if [ -d "$moddir" ] && [ -n "$(ls -A "$moddir" 2>/dev/null)" ]; then
+	mkdir -p "$rootdir/lib/modules"
+	cp -a "$moddir/." "$rootdir/lib/modules/"
+	# modules_install also drops a `build` symlink back into this build
+	# host's own out/kernel tree (for DKMS-style external module builds,
+	# not applicable here) -- dangling on-device, strip it rather than
+	# ship a broken symlink.
+	find "$rootdir/lib/modules" -maxdepth 2 -name build -type l -delete
+else
+	echo "WARNING: $moddir empty/missing -- run scripts/build-mainline-kernel.sh first; no loadable modules will be available (CONFIG_UHID/CONFIG_HIDRAW/CONFIG_BT_HIDP are still built-in via config-x716.fragment regardless)" >&2
+fi
+
 echo "== applying device overlay =="
 # Split distro-agnostic/distro-specific per docs/distro-porting.md: apply
 # both the shared data layer (ALSA UCM configs, udev rules, the dbus
@@ -499,8 +521,16 @@ cat > "$rootdir/etc/fstab" <<'EOF'
 LABEL=x716b-root	/	ext4	defaults,noatime,errors=remount-ro	0 1
 EOF
 echo "x716b-fedora" > "$rootdir/etc/hostname"
+# SELINUX=disabled, not "permissive": kernel/config/config-x716.fragment
+# forces CONFIG_SECURITY_SELINUX=n (see that fragment's own comment for
+# the full story -- Fedora 44's shipped selinux-policy isn't compatible
+# with this project's bleeding-edge pinned kernel's SELinux policy/class
+# ABI, confirmed live on real hardware to break every socket-activated
+# core systemd unit). "permissive" would be aspirational/inert either
+# way once userspace detects the kernel has no SELinux support at all --
+# "disabled" says what's actually true.
 if [ -f "$rootdir/etc/selinux/config" ]; then
-	sed -i 's/^SELINUX=.*/SELINUX=permissive/' "$rootdir/etc/selinux/config"
+	sed -i 's/^SELINUX=.*/SELINUX=disabled/' "$rootdir/etc/selinux/config"
 fi
 
 # Pre-seed everything systemd-firstboot would otherwise ask for

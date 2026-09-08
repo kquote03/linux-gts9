@@ -306,6 +306,26 @@ CONFIG_BT_HCIUART=y
 # available here -- same bug class, again).
 CONFIG_POWER_SEQUENCING_QCOM_WCN=y
 
+# BT HID input (real hardware report: a paired Bluetooth keyboard and
+# touchpad produced no keystrokes/pointer movement, even though the radio
+# itself was fine). Root cause: CONFIG_UHID was entirely absent -- BlueZ's
+# `input` plugin creates a virtual HID device via /dev/uhid for any paired
+# keyboard/mouse/touchpad, which the kernel's generic HID core then turns
+# into a real evdev device; without it, pairing can succeed but no input
+# ever reaches the kernel. kernel/config/config-mainline.aarch64 (now
+# vendored from gts9wifi-fedora's own comprehensive base) already sets
+# these, but force them here too, belt-and-suspenders, in case dependency
+# resolution against this project's specific patched tree disturbs them --
+# matches gts9wifi-fedora's own board fragment, which asserts the same
+# symbols explicitly on top of its base for the same reason. See
+# docs/porting-log.md.
+CONFIG_UHID=y
+CONFIG_HIDRAW=y
+# Legacy BR/EDR-only HIDP kernel-side profile; not what modern BlueZ
+# actually uses (uhid above is), but built-in for completeness/robustness
+# rather than left at defconfig's =m with no modprobe path available here.
+CONFIG_BT_HIDP=y
+
 # Internal audio + sensors, step 1: the ADSP (audio DSP / SSC) remoteproc
 # (gts9wifi-fedora pivot, matching their config-gts9wifi.fragment's own
 # reasoning verbatim -- same "no modprobe available" bug class as every
@@ -381,6 +401,29 @@ CONFIG_DRM_DISPLAY_DSC_HELPER=y
 # defconfig at the pinned tag -- only this one needs overriding.
 CONFIG_POWER_RESET_QCOM_PON=y
 
+# Force SELinux back OFF. The old defconfig-based base (before
+# config-mainline.aarch64 was replaced with gts9wifi-fedora's vendored
+# base, see that file's header) never had CONFIG_SECURITY_SELINUX
+# compiled in at all (CONFIG_DEFAULT_SECURITY_DAC=y, no "selinux" in
+# CONFIG_LSM=) -- so despite /etc/selinux/config claiming "permissive"
+# the whole time, SELinux was actually a complete no-op on every prior
+# boot of this project. The new base turns it on for real. Confirmed
+# live on real hardware: with it on, every socket-activated core unit
+# (systemd-journald, dbus, systemd-udevd, systemd-logind, systemd-oomd,
+# systemd-resolved, systemd-coredump, systemd-userdbd, and more) fails
+# at boot with "Failed to determine SELinux label: Invalid argument" /
+# "Failed with result 'resources'" -- Fedora 44's shipped selinux-policy
+# isn't compatible with this bleeding-edge v7.2 pinned kernel's SELinux
+# policy/class ABI. No working desktop, no D-Bus, nothing socket-based
+# at all. Setting /etc/selinux/config to SELINUX=disabled and rebooting
+# (live diagnostic test, not this fix) confirmed the diagnosis cleanly:
+# every one of those failures disappeared. Getting a real, working
+# SELinux policy on this kernel is its own future task, not something
+# this session's hardware-support work needs -- force back off here,
+# restoring exactly what was actually running (successfully) in every
+# prior session. See docs/porting-log.md for the full debugging story.
+CONFIG_SECURITY_SELINUX=n
+
 # Explicitly NOT enabled here (see docs/hardware-facts.md non-goals):
 # camera, cellular modem remoteproc, hardware video decode (iris) --
 # gts9wifi-fedora's own reference doesn't ship these either (camera/
@@ -390,3 +433,14 @@ CONFIG_POWER_RESET_QCOM_PON=y
 # sensors, previously listed here as deferred, are no longer -- see the
 # Display/DRM block above and the ADSP/audio/sensors block above this
 # comment, both landed as part of the gts9wifi-fedora pivot.
+
+# kernel/config/config-mainline.aarch64's new comprehensive base (vendored
+# from gts9wifi-fedora) defaults to full CONFIG_DEBUG_INFO=y (DWARF),
+# which reintroduces the exact final-link-step OOM this project's old,
+# smaller config-mainline.aarch64 used to prevent on this dev machine (a
+# shared 14GB desktop, not a dedicated build box -- confirmed by
+# reproducing the failure previously: every object file compiled cleanly
+# at -j4, only the single, unparallelizable final `LD vmlinux.o` step got
+# killed). No debugger session is planned for this bring-up; re-assert
+# the fix here so it survives the base-config swap.
+CONFIG_DEBUG_INFO_NONE=y

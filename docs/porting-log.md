@@ -3161,3 +3161,180 @@ only -- nothing under `rootfs/overlay-common/` or `rootfs/overlay-
 systemd/` was touched or needed. USB role switching, TCPM, and charging
 current are all kernel/driver-level behavior; no userspace daemon or
 init-system-specific glue is involved.
+
+### Bluetooth HID input, and a much bigger story underneath it: broad kernel hardware support, a real deployment bug, and a real SELinux regression -- all found and fixed on real hardware
+
+Real-hardware report: a wireless Bluetooth keyboard and touchpad, once
+paired, produced no keystrokes or pointer movement, even though the
+radio itself was fine (dmesg showed `"QCA setup on UART is completed"`).
+The `wcnhpbtfw21.tlv`/`wcnhpnv21.bin` "failed with -2" lines the user
+saw first were a red herring -- confirmed by reading
+`kernel/linux/drivers/bluetooth/btqca.c` directly: WCN6855 always tries
+the `wcn`-prefixed firmware name first, and the driver has its own
+built-in fallback to the non-prefixed name for exactly this case
+(`"Due to historical reasons, WCN685x chip has been using firmware
+without the 'wcn' prefix"`), which then succeeds. Not a bug.
+
+**Root cause of the real bug**: `CONFIG_UHID` and `CONFIG_HIDRAW` were
+completely absent from this project's kernel. BlueZ's `input` plugin
+creates a virtual HID device via `/dev/uhid` for any paired keyboard/
+mouse/touchpad, which the kernel's HID core then turns into a real evdev
+device -- without `/dev/uhid`, pairing can succeed but no input ever
+reaches the kernel.
+
+**Widened, per explicit user decision, into something much bigger.**
+Digging into *why* one Kconfig symbol was missing revealed this
+project's kernel config had always started from plain
+`make ARCH=arm64 defconfig` (intentionally minimal upstream defaults)
+plus a 31-line "quality of life" fragment and this board's own 392-line
+fragment -- nothing beyond what's needed to boot this specific board.
+The sibling reference project `gts9wifi-fedora` does something
+structurally different: its own `kernel/files/config-mainline.aarch64`
+is a full, already-generated 12,664-line kernel `.config` (version
+header confirms `Linux/arm64 7.2.0-rc3`, the same generation as this
+project's pinned v7.2 tag), `cp`'d in wholesale as the starting
+`.config` before their own board fragment is layered on top -- giving
+them ~500 more enabled symbols (mostly loadable modules: HID vendor
+quirks, extra filesystems, more USB/sound device classes) "for free."
+Asked directly ("Can we just enable as much hardware support as
+possible... standard fedora kernel-level of hardware support"), the
+user chose to go broad rather than patch the one missing symbol.
+
+**Fix, part A -- kernel config**: replaced this project's own
+`kernel/config/config-mainline.aarch64` wholesale with gts9wifi-fedora's
+vendored base (see that file's own header for full provenance/
+rationale), kept the same merge order in
+`scripts/build-mainline-kernel.sh` (board fragment layered on top via
+`merge_config.sh`, unchanged), and added `CONFIG_UHID=y`/
+`CONFIG_HIDRAW=y`/`CONFIG_BT_HIDP=y` to `config-x716.fragment` as a
+belt-and-suspenders explicit ask (the vendored base already sets them,
+but this project's own curated fragment is what's held strictly
+accountable by the build's verification loop). Split that verification
+loop to check only `config-x716.fragment` strictly -- the vendored base
+is a generic, non-board-specific file, and some of its ~12,700 lines
+legitimately resolve differently against this project's own patched
+tree; that's expected, not a regression.
+
+Using gts9wifi-fedora's base meant real loadable kernel modules for the
+first time in this project (previously everything hardware-critical was
+forced `=y`, built-in, with no `modprobe` path). Added a real
+`modules_install`/`depmod` pipeline: `scripts/build-mainline-kernel.sh`
+now runs `make modules` + `make INSTALL_MOD_PATH=... modules_install` +
+`depmod -b ...` after building Image/DTB (gts9wifi-fedora gets this for
+free from RPM kernel packaging, which this project's own pipeline
+deliberately doesn't use -- Phase 4), and
+`scripts/build-fedora-rootfs.sh` copies the resulting `/lib/modules/`
+tree into the rootfs (stripping the dangling `build` symlink
+`modules_install` leaves pointing at this build host's own tree, not
+useful on-device).
+
+**A real bug found in this project's own verification loop, mid-build**:
+Kconfig never writes `KEY=n` to a `.config` -- an explicitly-off
+boolean is represented as `# KEY is not set`. The strict-verification
+loop's string comparison didn't know this, so `CONFIG_SECURITY_SELINUX=n`
+(added later, see below) always "failed" verification even when it had
+landed correctly, aborting the build before it ever reached the `Image`
+step. Fixed by recognizing that form too.
+
+**A real process mistake, not a kernel bug**: after the first successful
+kernel+modules build, only the boot-chain images (boot/init_boot/
+vendor_boot/dtbo) were flashed -- the freshly-built rootfs tarball (with
+`/lib/modules/` finally populated) was never actually deployed to the
+microSD. The device booted the brand-new kernel against its *old*
+persistent rootfs. `modprobe tun` failed with `"Module tun not found in
+directory /lib/modules/7.2.0-dirty"` even though the module file
+provably existed in the freshly-built rootfs tree -- because that tree
+was never written to the device. Confirmed and fixed by redeploying:
+TWRP, fresh `mke2fs -t ext4 -L x716b-root` on the SD card's root
+partition, `adb push` the tarball, `tar --numeric-owner -xzf` in place
+-- the same "fresh `mke2fs`, `adb push` + `tar --numeric-owner -xzf`"
+mechanism this project's own docs already recorded as the established
+deploy procedure (Phase 6/7 entry above), just never re-run this
+session. (Also surfaced, separately: `scripts/build-fedora-rootfs.sh`
+defaults to `GTS9_DESKTOP=core`, a minimal no-GNOME variant -- the *old*
+rootfs on the device had GDM installed, so it was actually a `gnome`
+build from an earlier session. Redeployed with `GTS9_DESKTOP=gnome`
+explicitly for the real, final deploy.)
+
+**The real regression, found via real hardware, not guessing**: even
+after the rootfs redeploy fixed the missing-modules symptom (confirmed:
+`insmod tun.ko.zst` now worked, `/dev/uhid` existed), the *exact same*
+catastrophic failure remained on a fully fresh, matched kernel+rootfs
+boot: `systemd-journald.socket`, `dbus.socket`, `systemd-udevd-kernel/
+-control.socket`, `systemd-logind.service`, `systemd-oomd.socket`, and
+over a dozen more core sockets all failed at boot with
+`Result: resources`, taking down GDM (no desktop at all) and D-Bus
+(nothing socket-based worked) with them. A pre-existing watchdog unit
+(`gts9wifi-x11-dir-fix.path`/`.service`, meant to keep `/tmp/.X11-unix`
+root-owned for XWayland) got caught in this and re-triggered
+~150+ times/second continuously from boot -- almost certainly the
+"screen full of spammed logs" the user first reported -- masked live
+via `systemctl mask` as an immediate stabilization step (load average
+dropped from 3.6 to under 2 within seconds) while root-causing the real
+issue underneath it.
+
+`dmesg` (captured before the x11-dir-fix flood evicted it from the ring
+buffer, then again cleanly on a later boot once that unit was masked)
+showed the real signature, identical for every failing socket:
+```
+systemd[1]: <unit>: Failed to determine SELinux label: Invalid argument
+systemd[1]: <unit>: Failed to listen on sockets: Invalid argument
+systemd[1]: <unit>: Failed with result 'resources'.
+```
+Live diagnostic test (explicit user confirmation first, since it's a
+system-config edit): setting `/etc/selinux/config`'s `SELINUX=disabled`
+and rebooting made every one of those ~20 failures disappear completely
+-- only one unrelated, pre-existing failure (`pd-mapper.service`,
+ADSP/sensors, a separate subsystem) remained. Confirmed the diagnosis
+cleanly.
+
+**Root cause, confirmed by reconstructing the old `.config` from git
+history and diffing it against the new one**: the *old*, minimal
+defconfig-based kernel never had `CONFIG_SECURITY_SELINUX` compiled in
+at all (`CONFIG_DEFAULT_SECURITY_DAC=y`, no `selinux` in the `CONFIG_LSM=`
+ordering string) -- so despite `/etc/selinux/config` claiming
+"permissive" the whole time, SELinux was actually a complete no-op on
+every single prior boot of this project; userspace's
+`is_selinux_enabled()` correctly detected no kernel support and silently
+skipped all labeling. gts9wifi-fedora's vendored base turns
+`CONFIG_SECURITY_SELINUX=y` on for real (a genuine Fedora-style base
+config naturally does, being close to a full-distro kernel). With a
+*real* SELinux subsystem now active and a real policy loaded (`SELinux:
+policy capability cgroup_seclabel=1` in dmesg), Fedora 44's shipped
+`selinux-policy` package turned out to be incompatible with this
+project's bleeding-edge pinned v7.2 kernel's SELinux policy/class ABI --
+label computation for brand-new kernel objects (sockets) fails with
+`EINVAL` regardless of enforcing vs. permissive mode, since permissive
+only skips the *enforcement* decision, not label computation itself.
+
+**Fix**: force `CONFIG_SECURITY_SELINUX=n` in `config-x716.fragment`
+(with the full story in a comment there), restoring exactly what was
+actually running successfully in every prior session. Updated
+`scripts/build-fedora-rootfs.sh`'s `/etc/selinux/config` write from
+`SELINUX=permissive` to `SELINUX=disabled` to say what's actually true,
+rather than leave an aspirational, inert setting in place. Getting a
+real, policy-compatible SELinux stack running on this kernel is real,
+undone future work, out of scope for this session.
+
+**Full verification on real hardware, start to finish**: rebuilt the
+kernel (verification loop now passes cleanly with the `=n` fix),
+rebuilt the GNOME rootfs (`GTS9_DESKTOP=gnome`, 2.39 GB tarball,
+`SELINUX=disabled` confirmed baked in, `tun.ko.zst` confirmed present),
+flashed all 4 boot-chain partitions, redeployed the rootfs via the
+established `mke2fs`+`adb push`+`tar` procedure, and rebooted clean:
+`systemctl --failed` showed only the pre-existing, unrelated
+`pd-mapper.service`; `dbus-broker`/`systemd-journald`/`systemd-udevd`/
+`bluetooth` all `active`; `gdm.service` came up and started a real
+session; the system clock, previously stuck weeks in the past (no
+working NTP without a functioning network stack), self-corrected once
+networking/D-Bus were healthy. **The user directly confirmed on
+hardware: "Everything's working, keyboard and touchpad both connected
+fine."**
+
+Distro-agnostic where it can be: the BT HID fix itself
+(`CONFIG_UHID`/`CONFIG_HIDRAW`/`CONFIG_BT_HIDP`) and the modules
+pipeline are pure kernel/build-system changes, no rootfs overlay
+touched. The SELinux fix is Fedora-rootfs-specific by nature (only
+Fedora ships `selinux-policy` and expects it enforced/permissive) --
+`SELINUX=disabled` is written only by `scripts/build-fedora-rootfs.sh`,
+not any distro-agnostic overlay path.
