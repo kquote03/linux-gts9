@@ -1,0 +1,16 @@
+[Unit]
+Description=Static USB gadget network for gts9wifi debug access
+# NetworkManager ships a matching keyfile for usb0, but it has not applied it
+# reliably on this board (interface comes up configured by the initramfs and
+# NM leaves the initramfs address in place, or none at all).  Force the debug
+# address deterministically after NM has had its chance.
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/gts9wifi-usb-gadget
+
+[Install]
+WantedBy=multi-user.target
