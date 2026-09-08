@@ -1,0 +1,23 @@
+#!/bin/sh
+# Configure the debug address on the USB gadget network interface.
+#
+# X716B pivot: this project's kernel builds the gadget in directly
+# (CONFIG_USB_ETH=y, g_ether -- legacy CDC-ECM/subset, auto-creates
+# "usb0" at boot with no userspace setup) rather than gts9wifi-fedora's
+# own configfs+RNDIS approach (CONFIG_USB_CONFIGFS/USB_F_RNDIS), so the
+# configfs gadget-creation half of this script (originally lines 7-27)
+# is gone -- "usb0" already exists once the kernel probes the UDC, this
+# script's only real job left is the wait-for-it + force-the-address
+# part below, which is unchanged and still needed (NetworkManager's own
+# usb0 keyfile has not applied it reliably on this board).
+set -u
+
+# wait for usb0 to appear, then force the debug address deterministically
+i=0
+while [ $i -lt 30 ] && ! ip link show usb0 >/dev/null 2>&1; do
+    sleep 1
+    i=$((i + 1))
+done
+ip link set usb0 up 2>/dev/null
+ip addr replace 172.16.42.1/24 dev usb0 2>/dev/null || true
+exit 0

@@ -78,6 +78,99 @@ apply_unless 'Send the AOP WLAN PDC votes first, before any regulator' \
 	drivers/power/sequencing/pwrseq-qcom-wcn.c \
 	qca6490-xo-clk-gpio.patch
 
+# The following 9 patches are adopted verbatim from gts9wifi-fedora (the
+# real, mature Fedora port for the Wi-Fi-only sibling tablet, gts9wifi-
+# fedora pivot -- see docs/porting-log.md's Session 9 entry) rather than
+# independently re-derived: each fixes a genuine mainline-tree/SoC-IP-level
+# gap (not board-specific behavior) that this port's own new DTS content
+# (kernel/dts/sm8550-samsung-x716b.dts's speaker/DP-altmode/PPS/USB-PD
+# nodes) now depends on to actually do anything. Applied in the same
+# relative order gts9wifi-fedora's own prepare.sh uses (plain alphabetical
+# `patch -p1` over patches/*.patch) since two of these have real
+# apply-order dependencies on each other (the tcpm pair; the three msm-dp
+# ones share overlapping context in dp_drm.c/dp_display.c).
+#
+# Deliberately NOT ported from their fuller patch set: add-gts9wifi-dtb.patch
+# (their kernel.spec's own Makefile dtb-y registration -- this project builds
+# the board DTB directly via its own pipeline, see below, not via an
+# upstream Makefile dtb-y list); add-samsung-sec-log-console.patch and
+# keep-sec-log-previous-index-current.patch (this project already carries
+# its own from-scratch sec-log driver, kernel/drivers/x716-sec-log.c --
+# see docs/porting-log.md, "keep our own sec-log driver rather than
+# duplicating theirs" per the gts9wifi-fedora pivot plan);
+# build-wcn-pcie-providers-in.patch (WiFi already confirmed working on
+# real hardware without it -- Networking bring-up session -- and this
+# project's own config-x716.fragment already sets CONFIG_QCOM_QMI_HELPERS=y
+# explicitly); expose-separate-gpu-kms-resources.patch (fixes an Xorg
+# modesetting-DDX-specific `msm.separate_gpu_kms=1` edge case; this port's
+# desktop stack is Wayland/GNOME-mutter talking to KMS directly, and
+# nothing here sets that module param, so the fix has nothing to attach to).
+
+# phy: nxp: ptn3222 -- without this, the mainline driver silently ignores
+# our DTS's `qcom,param-override-seq` property entirely (it isn't even
+# read). Confirmed: this is the one specific patch that gives that
+# property any effect at all.
+apply_unless 'PTN3222_MAX_INIT_CELLS' \
+	drivers/phy/phy-nxp-ptn3222.c configure-nxp-ptn3222-from-dt.patch
+
+# printk: Samsung's ABL appends `console=null` after the vendor command
+# line, which would otherwise silently kill the framebuffer console on
+# any Tab S9 model sharing this bootloader behavior -- opt-in, harmless
+# unless `ignore_console_null` is passed.
+apply_unless 'ignore_console_null_setup' \
+	kernel/printk/printk.c ignore-console-null.patch
+
+# phy: snps-eusb2 -- matches Samsung's downstream SM8550 PLL/POR sequencing
+# (a post-POR delay + CPBIAS=1 instead of 0); without it the eUSB2 PHY
+# reaches DWC3 gadget mode fine but a real USB host cannot read the
+# device's descriptor -- exactly the class of bug blocking real host mode.
+apply_unless 'Match Samsung SM8550 sequencing before enabling the PHY' \
+	drivers/phy/phy-snps-eusb2.c match-samsung-sm8550-eusb2-phy-init.patch
+
+# drm/msm/dp (1 of 3, apply first): our &mdss_dp0 routes DisplayPort
+# through a usb-c-connector node, not a DRM bridge, so the transparent
+# bridge chain ends in -EPROBE_DEFER -- which otherwise also blocks the
+# shared MSM DRM component master (and therefore the unrelated internal
+# DSI panel) from binding at all, not just external DP.
+apply_unless 'ret != -EPROBE_DEFER' \
+	drivers/gpu/drm/msm/dp/dp_display.c msm-dp-allow-unresolved-usbc-bridge.patch
+
+# drm/msm/dp (2 of 3): keeps the DP controller's own fwnode on the
+# terminal bridge, so out-of-band Type-C HPD notifications (carried only
+# over USB-PD on this hardware, no physical HPD pin) can find it.
+apply_unless 'firmware node on the terminal bridge' \
+	drivers/gpu/drm/msm/dp/dp_drm.c msm-dp-associate-bridge-of-node.patch
+
+# drm/msm/dp (3 of 3): implements our DTS's `qcom,defer-hpd-until-first-
+# resume` property -- without this patch that property is inert, same
+# class of gap as the ptn3222 one above. Works around a real cold-boot
+# ordering issue where activating the external DPU encoder before the
+# ANA38407 panel's first platform suspend/resume cycle resets the board.
+apply_unless 'defer_hpd_until_resume' \
+	drivers/gpu/drm/msm/dp/dp_drm.h msm-dp-defer-oob-hpd-until-resume.patch
+
+# ASoC: qcom: sc8280xp -- AudioReach programs the LPASS side of MI2S but
+# never tells the codec side its bit-clock rate or format; without this,
+# an MI2S codec (our CS35L45 amplifiers) keeps its reset-default format
+# and produces no audio at all, not even an error.
+apply_unless 'MI2S_BCLK_RATE' \
+	sound/soc/qcom/sc8280xp.c set-mi2s-codec-dai-format.patch
+
+# usb: typec: tcpm (1 of 2, apply first): lets TCPM recover when a
+# still-powered charge-through dock retains its Source/UFP role across a
+# host reboot (both ends otherwise claim UFP and TCPM loops in error
+# recovery). Opt-in (`adopt_retained_source_ufp`); normal Source/DFP
+# partners are unaffected.
+apply_unless 'adopt_retained_source_ufp' \
+	include/linux/usb/tcpm.h tcpm-adopt-retained-source-ufp-role.patch
+
+# usb: typec: tcpm (2 of 2): the matching Sink/DFP-side half of the fix
+# above -- restores the retained data role before a still-powered
+# Source/UFP dock sends any PD message, instead of only reacting after
+# the fact.
+apply_unless 'consume_retained_sink_dfp' \
+	include/linux/usb/tcpm.h tcpm-use-retained-sink-data-role.patch
+
 # Kbuild's LLVM=1 points HOSTCC/HOSTCXX at bare clang-unwrapped even when an
 # environment-exported override is present -- only a command-line-supplied
 # HOSTCC/HOSTCXX takes effect. Same is true of KCFLAGS (needed for
@@ -172,6 +265,36 @@ fi
 grep -q 'ps5169.o' "$mux_dir/Makefile" || \
 	printf 'obj-$(CONFIG_TYPEC_MUX_PS5169)\t+= ps5169.o\n' >> "$mux_dir/Makefile"
 
+echo "== installing PPS direct-charge pump driver into the kernel tree =="
+# sm5440_direct.c (gts9wifi-fedora pivot): adopted verbatim from
+# gts9wifi-fedora's own from-scratch driver (kernel/drivers/sm5440_direct.c
+# here, gts9wifi-fedora's kernel/files/sm5440_direct.c there) -- a small,
+# mainline-framework-only driver (TCPM/power_supply, no Samsung private
+# notifiers) that requests a conservative PPS operating point and hands the
+# battery path over from sm5714_battery, which already exports the exact
+# hook (`sm5714_battery_set_direct_charge`) and power_supply name
+# ("sm5714-battery") this driver expects -- confirmed directly against our
+# own kernel/drivers/sm5714_battery.c before porting this. Same idempotent
+# install/Kconfig/Makefile staging pattern as the USB Type-C stack above.
+sm5440_supply_dir=$kdir/drivers/power/supply
+install -m 0644 "$drv/sm5440_direct.c" "$sm5440_supply_dir/sm5440_direct.c"
+if ! grep -q 'CHARGER_SM5440_DIRECT' "$sm5440_supply_dir/Kconfig"; then
+	sed -i '/^endif # POWER_SUPPLY$/i \
+config CHARGER_SM5440_DIRECT\
+\ttristate "Silicon Mitus SM5440 2:1 direct charge pump"\
+\tdepends on I2C\
+\tdepends on TYPEC_TCPM\
+\tdepends on BATTERY_SM5714\
+\thelp\
+\t  PPS direct-charge pump on boards that pair the SM5714 switching\
+\t  charger with a separate SM5440 charge pump, such as the Galaxy\
+\t  Tab S9 5G.\
+' "$sm5440_supply_dir/Kconfig"
+fi
+grep -q 'sm5440_direct.o' "$sm5440_supply_dir/Makefile" || \
+	printf 'obj-$(CONFIG_CHARGER_SM5440_DIRECT)\t+= sm5440_direct.o\n' \
+		>> "$sm5440_supply_dir/Makefile"
+
 echo "== installing display panel driver into the kernel tree =="
 # Display panel driver (Session 5, 2026-09-05): Samsung/Anapass ANA38407
 # DDIC, part AMSA10FA01, no mainline driver exists. Forked from
@@ -216,6 +339,26 @@ config TOUCHSCREEN_FTS1BA90A_X716\
 fi
 grep -q 'fts1ba90a-x716.o' "$ts_dir/Makefile" || \
 	printf 'obj-$(CONFIG_TOUCHSCREEN_FTS1BA90A_X716)\t+= fts1ba90a-x716.o\n' \
+		>> "$ts_dir/Makefile"
+
+echo "== installing S Pen (Wacom WEZ01) driver into the kernel tree =="
+# Ported verbatim from gts9wifi-fedora (gts9wifi-fedora pivot); digitizer
+# presence on this exact X716B unit confirmed via a real on-device
+# wez01_gts9.bin firmware blob -- see kernel/dts/sm8550-samsung-x716b.dts's
+# i2c3 node comment. Same idempotent install/Kconfig/Makefile pattern.
+install -m 0644 "$drv/touchscreen-wacom-wez01-x716.c" \
+	"$ts_dir/wacom-wez01-x716.c"
+if ! grep -q 'TOUCHSCREEN_WACOM_WEZ01_X716' "$ts_dir/Kconfig"; then
+	sed -i '/^endif$/i \
+config TOUCHSCREEN_WACOM_WEZ01_X716\
+\ttristate "Wacom WEZ01 EMR digitizer (gts9-5g)"\
+\tdepends on I2C\
+\thelp\
+\t  Wacom WEZ01 EMR S Pen digitizer as fitted to the Galaxy Tab S9 5G.\
+' "$ts_dir/Kconfig"
+fi
+grep -q 'wacom-wez01-x716.o' "$ts_dir/Makefile" || \
+	printf 'obj-$(CONFIG_TOUCHSCREEN_WACOM_WEZ01_X716)\t+= wacom-wez01-x716.o\n' \
 		>> "$ts_dir/Makefile"
 
 mkdir -p "$outdir"

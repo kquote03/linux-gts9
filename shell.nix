@@ -44,6 +44,13 @@ pkgs.mkShell {
     # Rootfs / image pipeline
     debootstrap # mmdebstrap is not packaged in this nixpkgs snapshot; debootstrap
                 # is the documented fallback (see docs/hardware-facts.md)
+    dnf5 # for scripts/build-fedora-rootfs.sh (gts9wifi-fedora pivot, Session 9)
+         # -- --forcearch=aarch64 --installroot=... run directly via unshare,
+         # NOT inside podman (confirmed live: podman's own container/mount-
+         # namespace setup doesn't resolve this host's binfmt_misc handler for
+         # execs inside a container, and registering a new, container-visible
+         # handler needs real root, unavailable in the original dev sandbox --
+         # see that script's own header comment for the full story)
     qemu-user # qemu-aarch64 user-mode emulation, for binfmt-based cross-arch
               # chroot work during rootfs builds (qemu_full pulls in a huge
               # unrelated dependency tree — ceph/arrow/glusterfs/azure-sdk —

@@ -1823,3 +1823,1150 @@ probe success, for both radios now. Bluetooth is considered working for
 bring-up purposes; the real factory BD_ADDR extraction (EFS) remains
 deferred, noted in the DTS comment, until persistent BT identity across
 reflashes actually matters.
+
+## Session 9 — 2026-09-07 — Pivot: adopting gts9wifi-fedora as a reference/base
+
+Mid-way through building a from-scratch Ubuntu rootfs (debootstrap +
+custom initramfs, real progress: microSD confirmed enumerating under our
+own kernel for the first time, real partition/filesystem work done), the
+user found and cloned `gts9wifi-fedora/` -- a real, mature,
+real-hardware-validated mainline Linux port for the Wi-Fi-only sibling
+tablet (SM-X710, "gts9wifi"), packaged as Fedora 44. It's a Fedora
+repackaging of an existing postmarketOS device port
+(`linux-samsung-gts9wifi-mainline`), itself cross-checked against
+Samsung's own GPL/open-source drops for this device family. It has real
+GPU acceleration (Adreno 740, Samsung-signed zap/GMU firmware), a full
+GNOME desktop, battery/charging with PPS, USB-C PD + DisplayPort altmode,
+speakers, and sensors over D-Bus -- none of which this project has
+attempted yet. Decision: adopt and adapt it for the X716B (5G variant),
+superseding the in-progress Ubuntu/Alpine rootfs work (both left in place,
+unused, matching this project's existing convention for superseded work
+like uniLoader).
+
+### Independent cross-validation
+
+Two Explore agents read the whole `gts9wifi-fedora` repo against this
+project's own `docs/hardware-facts.md`/`docs/porting-log.md`. Extensive
+agreement between the two independently-developed projects, real
+confidence-building evidence our own X716B work is correct:
+
+- BT `compatible = "qcom,wcn6855-bt"` -- the exact same compatible-string
+  rename we independently root-caused (Session 8) to route `hci_qca.c`
+  onto the WCN6855 firmware-naming fallback chain.
+- WiFi PCI ID `[17cb:1103]` (`pci17cb,1103`) -- matches our own Session 8
+  `dmesg` measurement exactly.
+- `pwrseq-qcom-wcn.c`'s AOP-PDC-vote patch (`wcn7850-pwrseq-cold-reset-
+  aop.patch` there) and `unpark-pcie0-pipe-mux.patch` (identical
+  filename, identical fix) -- functionally the same two patches already
+  in `kernel/patches/` here.
+- `&sdhc_2` regulators (`vreg_l9b_2p9`/`vreg_l8b_1p8`) -- real-hardware
+  confirmation these are correct; our own Session 3 attempt using these
+  same (then-unverified, copied-by-analogy) values had come back
+  inconclusive for unrelated reasons (a since-fixed kernel hang).
+- `gpio-reserved-ranges = <36 4>` (fingerprint-SPI TrustZone lockout),
+  the all-zero `dtbo.img` trick, the panel ID `80 00 04`, and the
+  touchscreen's I2C address (`0x49`)/IRQ GPIO (25)/
+  `inverted-x`+`swapped-x-y` orientation -- all identical.
+
+### Two concrete corrections applied to `kernel/dts/sm8550-samsung-x716b.dts`
+
+1. **`qcom,board-id`**: changed `<0x10008 0x00>` (r00, an untested guess)
+   to `<0x10008 0x04>` (r04) -- matches both this tablet's own
+   live-measured `/proc/device-tree/model` value (already noted, never
+   acted on) and gts9wifi-fedora's own real-hardware-booting value.
+2. **Panel AVDD GPIO -- investigated, deliberately NOT changed**: the
+   agent's first-pass summary suggested our `display_avdd` node's GPIO
+   187 should become PM8550 GPIO11. Reading gts9wifi-fedora's actual DTS
+   directly (not just the summary) showed the real picture is more
+   nuanced: GPIO 187 there is real hardware's *`panel_ldo_en`* -- a
+   **separate 1.8V** DDIC logic rail, enabled ~11ms before the DSI-on
+   sequence -- while the true ~5.5V ELVDD/AVDD switch is on a
+   *different* pin, PM8550 GPIO11. Our own single node's label (5.5V)
+   and actual pin (187) don't match this more accurate model -- but
+   since a `regulator-fixed`/GPIO consumer only ever toggles the pin
+   (voltage properties are informational, not hardware-enforced), this
+   has been functionally harmless: our panel already works, confirmed
+   on real hardware (Session 5, first-attempt success). Changing this
+   now, on the untested assumption X716B's physical wiring matches the
+   WiFi-only sibling exactly, would be a plausible-but-unverified change
+   with real regression risk to a currently-working subsystem --
+   deliberately deferred to its own isolated follow-up experiment
+   instead of a drive-by edit. Full reasoning is in the DTS comment
+   itself.
+
+### Plan going forward
+
+See the plan file for the full phased breakdown (DTS merge, kernel
+patches/drivers/config/GPU firmware, Fedora rootfs via Nix-wrapped
+`podman`+`dnf`, kernel build via our own existing pipeline instead of
+their RPM packaging, boot bundle/dracut initramfs, flashing via our own
+already-audited tooling, real-hardware verification). Confirmed live on
+this dev machine before committing to this plan: `podman` is already
+present natively (not even needing `nix-shell -p`), and `dnf5`/`rpm`+
+`rpmbuild`/`dracut` are all available via `nix-shell -p` -- the "port
+their tooling to Nix" instruction turned out to mostly mean *wrapping*
+already-compatible tooling, not reimplementing it. User decision: target
+a full GPU-accelerated GNOME desktop (reversing this session's earlier
+"lightweight Weston, no GPU" call from before this pivot) now that real
+GPU acceleration is demonstrated working on this exact chip/panel by a
+real sibling port.
+
+### GPU enablement + a real Fedora 44 rootfs, built end-to-end via Nix
+
+**GPU**: `kernel/dts/sm8550-samsung-x716b.dts` gained a `&gpu { status =
+"okay"; zap-shader { firmware-name = "qcom/a740_zap.mdt"; }; }` block --
+confirmed against gts9wifi-fedora's own DTS that this is the *entire*
+override mainline's already-complete GPU wiring (gpucc/GMU/adreno-SMMU
+all enabled by default in `sm8550.dtsi`) needs. Confirmed this project's
+existing Kconfig (`CONFIG_DRM_MSM=y`, `CONFIG_SM_GPUCC_8550=y`, both
+already forced on for display in Session 5) already auto-selects
+everything else (`QCOM_MDT_LOADER` via `DRM_MSM`'s own `select ... if
+ARCH_QCOM`) -- no config changes needed. The zap-shader firmware
+(`a740_zap.mdt`+`.b00-b02`) and GMU firmware (`gmu_gen70200.bin`) were
+already sitting in `vendor-firmware-dump/` from the Networking bring-up
+session's blanket extraction. Kernel build (Image + DTB) confirmed clean,
+zero warnings, board-id fix (`0x00`->`0x04`) included in the same build.
+
+**Fedora rootfs (`scripts/build-fedora-rootfs.sh`, new)**: gts9wifi-
+fedora's own `rootfs/build-rootfs.sh` assumes either a real ARM64 CI
+runner or `podman run --platform=linux/arm64 quay.io/fedora/fedora:44
+...`. Neither works unmodified here -- podman's own container/mount-
+namespace setup doesn't resolve this host's `binfmt_misc` handler for
+execs inside a container at all (confirmed: "Exec format error" even
+with the interpreter staged at the exact registered path inside the
+image), and registering a new, container-visible handler (`podman run
+--privileged multiarch/qemu-user-static --reset`) needs real root, which
+this sandbox doesn't have.
+
+What works instead, found by direct investigation rather than giving up
+on Nix: `dnf5 --forcearch=aarch64 --installroot=...` run directly (no
+container at all) via `nix-shell -p dnf5`, wrapped in `unshare --user
+--mount`. Three real, separately root-caused problems along the way, all
+now documented in the script's own comments:
+
+1. **Wide UID mapping needed, not just `--map-root-user`**: that flag's
+   single 0->caller mapping isn't enough for RPM's own `chown()` calls to
+   real system UIDs (e.g. "mail") during package unpacking -- anything
+   outside the single mapped ID lands on the kernel's overflow UID on the
+   real host view, which manifested as an inexplicable "chown failed -
+   Device or resource busy" mid-transaction until traced to this. Fixed
+   with explicit `--map-users`/`--map-groups` ranges (0->caller for 1 ID,
+   1->this host's own real `/etc/subuid`/`/etc/subgid` range for 65536
+   more) -- the same convention rootless podman/buildah use internally.
+2. **The actual cause of near-total RPM `%post` scriptlet failure**: not
+   a fundamental qemu-user limitation (the first-pass conclusion) --
+   traced via `strace` to NixOS's registered `aarch64-linux` binfmt
+   interpreter being a thin wrapper (`...-binfmt-P`) that, despite `ldd`
+   reporting it as fully static, internally `execve()`s a *different*,
+   specific `/nix/store/.../qemu-user-.../qemu-aarch64` path at runtime
+   (NixOS's own mechanism for the binfmt "P"-flag argv semantics) --
+   invisible inside a bare chroot with no `/nix` bind-mounted, so every
+   scriptlet that spawned a subprocess failed with a silent ENOENT deep
+   in the exec chain, misreported by dnf5 as generic "Non-critical
+   error"/exit-255 scriptlet noise. Fixed by staging
+   `pkgsStatic.qemu-user`'s own genuinely standalone static build at the
+   registered path instead -- package installs went from ~200+
+   scriptlet failures and an overall "Transaction failed" to a clean
+   `Complete!` with only 2 unrelated, genuinely non-critical warnings.
+3. **`chroot()` doesn't reset environment variables**: this script's own
+   direct `chroot` calls (user creation, `systemctl enable`) were
+   resolving bare command names against this *outer* nix-shell
+   environment's PATH (a giant x86_64 Nix store list that doesn't exist
+   inside the aarch64 installroot), failing with a misleading "No such
+   file or directory" that had nothing to do with the emulation itself --
+   confirmed via the same command working fine with an absolute path.
+   Fixed with absolute paths plus an explicit clean `PATH=/usr/sbin:
+   /usr/bin` for every chroot invocation (`run_chroot` helper).
+
+Also found and fixed: a re-run against an already-*failed* dnf5
+transaction's rootfs made things measurably worse (a partial "chown
+busy" run's rpmdb state caused a second run's transaction to cascade into
+many more real "install failed" errors, not just the original
+non-critical noise) -- the fix is always a full clean rebuild after any
+failed run, never a resume; a re-run against an already-*successful*
+("Complete!") rootfs, by contrast, is safe and fast (dnf5 correctly sees
+everything already installed and reports "Nothing to do").
+
+**Result**: `scripts/build-fedora-rootfs.sh` builds a real, complete
+Fedora 44 aarch64 rootfs end-to-end via this host's own Nix environment,
+no container needed. `GTS9_DESKTOP=core` (the `@core` package group,
+~173 MiB compressed) built and packed cleanly first, as a fast checkpoint
+before committing to the much larger, much slower (thousands of packages
+under emulation) `GTS9_DESKTOP=gnome` (full GNOME Workstation)
+variant -- kicked off in parallel with the hardware-side work below.
+WiFi/BT/GPU firmware confirmed actually present in the packed archive
+(`tar -tzf`, not just assumed). Not yet flashed or boot-tested on real
+hardware as of this entry -- the device was disconnected at the time.
+
+### Pivot within the pivot: full-port scope, Nix flake, correcting a research error
+
+The reduced-scope Fedora rootfs above did boot to a real login prompt with
+GPU/WiFi/BT/touch confirmed via `dmesg`, but kept hitting a cascade of
+real bugs (missing `dbus-run-session`, then `systemd --user` itself
+exiting with status 1 under GNOME) traceable to one root cause: it
+reimplemented a trimmed subset of gts9wifi-fedora's own rootfs config
+instead of using their real, working `rootfs/overlay/` tree (~30 files --
+systemd units/drop-ins/udev rules/sleep hooks/a preset/ALSA UCM configs --
+that exist specifically to paper over hardware quirks already found and
+fixed on real hardware). Direction from here: stop reimplementing, port
+gts9wifi-fedora **wholesale** -- DTS, kernel patches/config/drivers, the
+real rootfs build script + full overlay, boot chain -- to the same
+quality bar as their own README feature table, sensors included (not
+deferred, as an earlier plan draft had proposed).
+
+**A real research error, caught and corrected before it did damage**:
+early planning for this pivot asked about fingerprint/camera packaging
+(`packaging/libfprint`, `scripts/build-camera-packages.sh`) believing
+these were part of `gts9wifi-fedora`. Direct `find`/`grep` against the
+actual checkout (cross-confirmed by two independent Explore agents)
+showed neither exists there at all -- those paths belong to a different
+sibling project, `ubuntu-galaxy-tab-s9ultra` (the Tab S9 **Ultra**,
+SM-X910, not the Wi-Fi SM-X710 this port is based on). gts9wifi-fedora's
+own README lists camera as `❌ no drivers` and has no fingerprint work of
+any kind. So "full feature parity with the X710 port" already excludes
+both -- this shrinks true scope rather than expanding it, confirmed with
+the user before proceeding.
+
+**Nix flake** (`flake.nix`, replacing `shell.nix` as the primary entry
+point): a `devShell` plus `apps.{build-kernel,build-rootfs,build-bundle,
+flash}` wrapping the real scripts in this checkout. Deliberately scoped
+honestly in its own header comment -- `flake.lock` pins *tool* versions
+reproducibly (clang, the aarch64 cross toolchain, dnf5, dracut, the
+static qemu-aarch64 interpreter, ...), but the Fedora rootfs build itself
+is not bit-for-bit hermetic (`dnf5` resolves package content against
+Fedora's live repos, exactly like gts9wifi-fedora's own CI does over real
+network access -- neither project achieves full hermeticity there, and
+claiming otherwise would be worse than being explicit about it). Two
+real bugs found and fixed getting this working:
+
+1. **An arbitrary `nixos-unstable` HEAD pin broke `dnf5`**: pinning
+   `nixpkgs.url` to nixos-unstable's then-current HEAD commit
+   (`c043004d1c...`) made `dnf5` rebuild from source and fail outright
+   (`make: *** [Makefile:146: all] Error 2`) -- that exact commit's `dnf5`
+   derivation had no cached binary substitute anywhere. Fixed by pinning
+   instead to the exact commit this dev machine's own running NixOS
+   system is built from (found via the system derivation's own name
+   suffix, `nixos-system-*-26.05.20260817.0dd31db` ->
+   `0dd31db7e6dbf9ce05697c4545f6fe01accec994`), guaranteeing every
+   package resolves to an already-built, cached derivation.
+2. **`pkgsStatic.qemu-user` silently shadowed on PATH**: merely listing
+   it in the devShell's package list was not enough -- `which
+   qemu-aarch64` still resolved to the plain, dynamically-linked
+   `qemu-user` package (confirmed via `ldd` showing real glibc/x86_64
+   linking, not a static build), some other transitively-pulled-in
+   package apparently winning the PATH race. Fixed by removing it from
+   the generic package list entirely and exporting an explicit
+   `QEMU_AARCH64_STATIC` env var pointing directly at the static
+   derivation's own binary (same pattern as the pre-existing
+   `BUSYBOX_AARCH64_STATIC`), with `scripts/build-fedora-rootfs.sh`
+   updated to read it (falling back to the old `nix-build -E` lookup for
+   anyone still on plain `nix-shell`).
+3. **(Found slightly later, verifying Phase 1's first kernel build via
+   the flake) `HOSTCC` couldn't find `openssl/bio.h`**: `nix develop`
+   gets `openssl`'s dev-output include/pkgconfig paths wired up for free
+   via `mkShell`'s own setup-hooks, but `apps.*` (a raw `writeShellScript`
+   that only sets `PATH`, deliberately, to avoid copying scripts into the
+   Nix store) never goes through `mkShell` at all, so none of those hooks
+   fire -- `certs/extract-cert.c`'s host-side compile failed outright the
+   first time a kernel build was run via `nix run .#build-kernel` instead
+   of inside `nix develop`. Same class of bug as the qemu one above (a
+   package being *listed* isn't the same as its environment actually
+   being wired up); fixed the same way, with explicit `PKG_CONFIG_PATH`/
+   `C_INCLUDE_PATH`/`LIBRARY_PATH` env vars pointing at `openssl.dev`/
+   `openssl.out` so both `nix develop` and every `apps.*` entry behave
+   identically instead of one working only by accident of `mkShell`'s
+   hooks.
+
+`nix flake check` passes; every `apps.*` entry and `nix develop` verified
+by real invocation, not just evaluation.
+
+**Phase 1 DTS port** (`kernel/dts/sm8550-samsung-x716b.dts`), adapted
+from gts9wifi-fedora's real, hardware-derived DTS rather than reimplemented:
+
+- **ADSP/sensors**: `adspslpi_mem` carveout resize (`/delete-node/` +
+  redefine at Samsung's larger size), the `&remoteproc_adsp` override
+  (dual `firmware-name` for `adsp.mdt`/`adsp_dtb.mdt`, `pinctrl-0 =
+  <&hub_i2c4_data_clk>`, `/delete-property/ interconnects`), two
+  always-on sensor regulators (`vreg_l1b_1p8`, `vreg_l16b_3p0`). The
+  `interconnects` deletion and `hub_i2c4_data_clk` pinctrl state were
+  independently confirmed against our own pinned `sm8550.dtsi` to be
+  genuine mainline-tree/SoC-level facts, not board-specific guesses: the
+  default LPASS interconnect path never resolves in this tree's
+  registered icc graph regardless of board (permanently `EPROBE_DEFER`s
+  the ADSP; `qcom_q6v5_init()` treats a NULL path as a no-op), and
+  `hub_i2c4_data_clk` is defined in `sm8550.dtsi` itself, not board DTS.
+- **Speakers**: `speaker_vdd` fixed regulator (GPIO19), `cs35l45_gpio_
+  default` pinctrl + four TDM pinctrl states, `&i2c_hub_6` with all four
+  CS35L45 amplifiers, `&hub_i2c6_data_clk` drive-strength fix (their real
+  port traced "Timeout waiting for OTP boot" to mainline's generic
+  drive-strength=2 not meeting FM+ timing against four amplifier loads --
+  Samsung's own value is 8), a small two-DAI-link sound card
+  (PRIMARY_MI2S_RX speaker playback + VA-macro DMIC capture), the
+  `vreg_l10b_1p8` DMIC bias regulator, `&lpass_vamacro`'s dmic-sample-rate
+  fix (without it the driver falls back to a dummy regulator and capture
+  is silent), and the three `&lpass_{ag,lpiaon,lpicx}_noc { status =
+  "disabled"; }` overrides their real DTS still carries in production
+  today despite its own comment reading as a stale "audio out of scope"
+  note -- ported verbatim since the override is what their actually-
+  shipping, speakers-working config depends on regardless of the
+  comment's own claim.
+- **DisplayPort altmode + PPS charging**: `displayport = <&mdss_dp0>;`
+  plus an `altmodes { displayport {...}; };` block on `sm5714_connector`,
+  and `&mdss_dp0 { qcom,defer-hpd-until-first-resume; status = "okay"; };`
+  (works around a real cold-boot ordering issue with the same ANA38407
+  panel this file already drives). Re-enabled `CONFIG_TYPEC_DP_ALTMODE`
+  in `kernel/config/config-x716.fragment` -- the Session 4 exclusion
+  reasoning (`CONFIG_DRM` was `=m` then) is stale; `CONFIG_DRM=y` now.
+  `&i2c_hub_3` (GPI-DMA, matching Samsung's topology -- their real port
+  found the upstream FIFO/PIO default resets the SE and makes the entire
+  SSC sensor registry disappear) with the `sm5440_direct` PPS charge
+  pump, and a battery-thermistor ADC channel (`pmk8550_vadc`) wired into
+  `sm5714_charger`.
+- **A real, direct value fix along the way**: our own `ptn3222`
+  `qcom,param-override-seq` was missing a pair (`0x03 0x09`) present in
+  gts9wifi-fedora's real, working sequence for the identical chip at the
+  same i2c address -- not a board-wiring guess (the register/value
+  pairing is the chip's own init sequence, not physical wiring), so
+  corrected directly rather than flagged as a cross-SKU caveat.
+- Battery capacity figures updated from X910's borrowed values to
+  gts9wifi-fedora's real, Samsung-sec-battery-node-derived ones for the
+  X710 (EB-BX916ABY, 8160 mAh design capacity, not the marketing "11200
+  mAh" figure) -- flagged UNVERIFIED for X716B specifically pending a
+  teardown/label check, same cross-SKU discipline as the sensor
+  regulators and `adspslpi_mem`.
+- **USB real host mode deliberately NOT flipped yet**: gts9wifi-fedora's
+  real DTS has no `dr_mode` override on `&usb_1` at all. Removing our
+  own `dr_mode = "peripheral"` override now, before Phase 2's eUSB2-PHY-
+  init and TCPM role-retention patches land, risks reproducing the exact
+  regression that override was added to fix (the only working debug
+  console failing outright) rather than fixing anything -- documented
+  in-place as a dependency, to be flipped as its own isolated,
+  independently-tested change once those patches are in.
+
+Two real DTC/DTS bugs found and fixed while getting this to build clean
+(`nix run .#build-kernel`, verifying against the real pinned mainline
+tree -- not just eyeballing the diff):
+
+1. **"Properties must precede subnodes"**: the new `altmodes {...};`
+   subnode was placed before `sm5714_connector`'s remaining PDO
+   properties -- DTC requires all of a node's properties before any of
+   its subnodes. Fixed by reordering (subnode last, immediately before
+   `ports {...};`).
+2. **A genuinely missing regulator**: `&lpass_vamacro`'s `vdd-micb-supply
+   = <&vreg_l10b_1p8>;` referenced a label never defined in our own
+   `regulators-0` block (only added to `apps_rsc` here, not yet part of
+   this project's regulator tree) -- DTC caught this as an undefined-
+   label phandle reference. Fixed by porting the real `vreg_l10b_1p8`
+   node (PM8550B LDO10, 1.8V, always-on) from gts9wifi-fedora's own
+   `regulators-0` block.
+
+Final rebuild: clean `Image` + `sm8550-samsung-x716b.dtb`, no DTC
+warnings or errors. Not yet flashed/boot-tested against real hardware as
+of this entry -- Phase 2 (kernel patches/drivers/config for everything
+this DTS now describes -- CS35L45, SM5440, ADSP/Q6 audio, none of which
+have a driver/config symbol yet) has to land first before any of it is
+live on-device.
+
+### Phase 2: kernel patches, config, and the PPS charger driver
+
+Nine of gts9wifi-fedora's real out-of-tree patches ported verbatim into
+`kernel/patches/` and wired into `scripts/build-mainline-kernel.sh`'s
+existing idempotent `apply_unless` mechanism, applied in the same
+relative order their own `prepare.sh` uses (plain alphabetical
+`patch -p1`, which matters here -- the tcpm pair and the three msm-dp
+patches share overlapping context):
+
+- `configure-nxp-ptn3222-from-dt.patch` -- without this, the mainline
+  `phy-nxp-ptn3222.c` driver silently ignores our DTS's `qcom,param-
+  override-seq` property entirely (never even reads it). This is the one
+  patch that gives that property any effect at all -- a real, previously
+  invisible gap in what Phase 1's DTS work already had wired up.
+- `match-samsung-sm8550-eusb2-phy-init.patch` -- matches Samsung's
+  downstream SM8550 PLL/POR sequencing; without it the eUSB2 PHY reaches
+  DWC3 gadget mode but a real host can't read the device descriptor --
+  exactly the failure mode blocking real host mode.
+- The three `msm-dp-*` patches -- our `&mdss_dp0`/`sm5714_connector`
+  DisplayPort-altmode DTS work (this session, above) routes DP through a
+  `usb-c-connector` node rather than a DRM bridge, which otherwise ends
+  in `-EPROBE_DEFER` for the whole MSM DRM component master (not just
+  external DP -- the internal panel too); `msm-dp-defer-oob-hpd-until-
+  resume.patch` is what actually implements our DTS's `qcom,defer-hpd-
+  until-first-resume` property (same "DTS property, no patch, silently
+  inert" gap as ptn3222 above).
+- `set-mi2s-codec-dai-format.patch` -- AudioReach programs the LPASS side
+  of MI2S but never tells the codec side its format/bit-clock rate;
+  without this the CS35L45 amplifiers keep their reset-default format
+  and produce no audio at all, not even an error.
+- The `tcpm-*-retained-*` pair -- lets TCPM recover a still-powered
+  charge-through dock's retained Source/UFP role across a host reboot
+  (opt-in, normal Source/DFP partners unaffected).
+- `ignore-console-null.patch` -- generic printk fix for Samsung ABL
+  appending `console=null`, applicable to this whole device family's
+  shared bootloader behavior, not X710-specific.
+
+Deliberately **not** ported: `add-gts9wifi-dtb.patch` (their kernel.spec's
+own upstream Makefile `dtb-y` registration -- irrelevant, this project
+builds the board DTB directly via its own pipeline, see Phase 4);
+`add-samsung-sec-log-console.patch`/`keep-sec-log-previous-index-
+current.patch` (this project already carries its own sec-log driver, by
+design -- see the Phase 1 plan); `build-wcn-pcie-providers-in.patch`
+(WiFi already proven working on real hardware without it, and
+`CONFIG_QCOM_QMI_HELPERS=y` is already explicit in our own fragment);
+`expose-separate-gpu-kms-resources.patch` (fixes an Xorg modesetting-DDX-
+specific `msm.separate_gpu_kms=1` edge case -- this port's desktop stack
+is Wayland/GNOME-mutter talking to KMS directly, and nothing here sets
+that module param).
+
+All 9 applied cleanly against our pinned tree (checked with `patch
+--dry-run` first, then applied for real in the dependency-correct order;
+a couple needed a small context offset, none needed fuzz once ordered
+correctly) and verified by a real `nix run .#build-kernel`.
+
+**Config fragment**: merged the ADSP/Q6/audio/FastRPC/sensors/PPS block
+from gts9wifi-fedora's `config-gts9wifi.fragment` into our own
+`config-x716.fragment` (`REMOTEPROC`, `QCOM_Q6V5_PAS`, `QCOM_FASTRPC`,
+`SND_SOC_{QCOM,QDSP6,SC8280XP,CS35L45_I2C,LPASS_VA_MACRO}`,
+`GPIO_SHARED_PROXY` for the CS35L45s' shared reset line,
+`CHARGER_SM5440_DIRECT`, `QCOM_SPMI_ADC5_GEN3`, the three
+`DRM_DISPLAY_*_HELPER` symbols for DP altmode) -- all forced built-in
+(`=y`), matching this fragment's existing "no modprobe available at this
+bring-up stage" discipline throughout. Left `CONFIG_QCOM_OCMEM=y` as our
+own fragment already has it (Session 5's own empirically-`merge_config.sh`
+-verified choice), rather than reconciling against the reference's
+differing `# is not set` -- not in this pass's scope, and ours was
+already independently proven correct against a real MISMATCH check.
+
+**Driver**: `sm5440_direct.c` (the PPS 2:1 direct-charge pump) ported
+verbatim from gts9wifi-fedora's own from-scratch driver -- confirmed
+before porting that it only depends on mainline TCPM/power_supply
+framework calls plus one hook our own already-carried `sm5714_battery.c`
+(ubuntu-galaxy-tab-s9ultra original) already exports exactly as expected
+(`sm5714_battery_set_direct_charge`, power_supply name `"sm5714-
+battery"`) -- no surprises. Installed via the same idempotent install/
+Kconfig/Makefile staging pattern as the existing USB Type-C stack.
+
+Full rebuild (`nix run .#build-kernel`) confirmed clean: no MISMATCH from
+the build script's own strict "no fragment symbol silently dropped"
+check, and `sm5440_direct.o`, `cs35l45.o`/`cs35l45-i2c.o`,
+`qcom_q6v5_pas.o`, `fastrpc.o`, `qcom-spmi-adc5-gen3.o` all confirmed
+actually compiled (not just config-enabled) via the build log. `Image`
+grew from ~46.8 MiB to ~48.2 MiB reflecting the new ADSP/audio/PPS code;
+DTB unchanged (this round touched only patches/config/drivers, not the
+DTS). Not yet flashed/boot-tested on real hardware.
+
+### Phase 2 completion: S Pen digitizer + real firmware extraction (live device)
+
+The user confirmed X716B is "exactly the same as the X710 except for
+having 5G as well and different addresses for some components" and
+connected the tablet in TWRP, enabling the remaining device-dependent
+Phase 2/3 work.
+
+**Firmware extraction** (`scripts/extract-vendor-firmware.sh`, extended):
+mounted `apnhlos` (this device's `/dev/block/sda17`) and found it's
+**FAT16** (`MSDOS5.0` boot sector), not ext4 like every other partition
+this script already mounts -- holds `adsp.mdt` + `adsp.b00..b50` (real
+Samsung-signed QUALCOMM DSP6 ELF, confirmed via `file`) + `adsp_dtb.mdt`
++ segments, dated 2025-04-15. Mounted `dsp` (`sda16`, ext4) and found
+`adsp/` (Hexagon FastRPC skel libraries -- audio codec modules plus
+`libsns_*` sensor skel libs, confirmed via `ls`) and `cdsp/` (not pulled,
+out of scope). Both pulled into `vendor-firmware-dump/firmware/qcom-
+sm8550/` and `vendor-firmware-dump/hexagonfs/dsp/adsp/` respectively.
+
+**S Pen (Wacom WEZ01) confirmed present on this exact unit**: the same
+extraction run pulled a real `wez01_gts9.bin` firmware blob from
+`/vendor/firmware/keyboard_stm` -- the "gts9" (not model-specific)
+naming suggests this IC/firmware is shared across the whole Tab S9
+family. Ported `wacom-wez01.c` verbatim (as `touchscreen-wacom-wez01-
+x716.c`, matching this project's file-naming convention -- internal
+`compatible`/driver name strings left unchanged, only the file itself is
+suffixed, same pattern as fts1ba90a/panel). Added the `&i2c3` digitizer
+DTS node + `epen_int_default`/`epen_pdct_default` pinctrl states (GPIO
+154/137/179 -- no conflicts found against the rest of the file) and the
+`TOUCHSCREEN_WACOM_WEZ01_X716` config symbol.
+
+**Real DTC bug caught along the way**: the new `altmodes {...};` subnode
+inside `sm5714_connector` had been placed before that node's remaining
+PDO properties -- DTC requires all of a node's properties before its
+subnodes. Fixed by reordering. Also caught: `&lpass_vamacro`'s
+`vdd-micb-supply = <&vreg_l10b_1p8>;` referenced a label never actually
+defined in this project's own `regulators-0` block -- ported the real
+`vreg_l10b_1p8` node (PM8550B LDO10) from gts9wifi-fedora.
+
+Also fixed along the way: our own `ptn3222` `qcom,param-override-seq`
+was missing a real pair (`0x03 0x09`) present in gts9wifi-fedora's
+working sequence for the identical chip -- a direct value correction,
+not a cross-SKU guess (the register/value pairing is the chip's own
+init sequence, not board wiring). Re-enabled `CONFIG_TYPEC_DP_ALTMODE`
+in the config fragment (the Session 4 exclusion reasoning, `CONFIG_DRM`
+being `=m`, is stale -- confirmed `=y` now).
+
+Final kernel rebuild confirmed clean: `wacom-wez01-x716.o` compiled,
+`Image`/DTB grew slightly (130274 bytes DTB, reflecting the new i2c3
+node), no DTC warnings.
+
+### Phase 3: rootfs -- real live-mount architecture discovered, full overlay ported
+
+Reading gts9wifi-fedora's own `docs/PORT-KIT.md` (their internal
+extraction notes) revealed a materially better rootfs design than this
+project's prior bake-everything-in convention: their working system
+**mounts stock Android partitions live at runtime** rather than baking a
+firmware snapshot into the image --
+`vendor-dsp.mount`/`vendor-firmware_mnt.mount`/`mnt-vendor-persist.mount`
+map `dsp`/`apnhlos`/`persist` (all direct-by-partlabel, no dynamic-
+partition mapping needed) to `/vendor/dsp`, `/vendor/firmware_mnt`,
+`/mnt/vendor/persist` respectively. The one exception -- the full
+`/vendor` erofs super-partition mount (`vendor.mount` +
+`gts9wifi-android-parts.service`, needing a `make-dynpart-mappings`-style
+dynamic-partition dm tool) -- is an explicit, undone TODO in their own
+`docs/PORT-KIT.md`, not something either project's actual feature set
+needs (nothing here uses camera/fingerprint, the only consumers of a
+full `/vendor` mount).
+
+Adopted this live-mount design directly (`rootfs/overlay/usr/lib/systemd/
+system/{vendor-dsp,vendor-firmware_mnt,mnt-vendor-persist}.mount`, ported
+unchanged) alongside this project's own existing bake-in convention for
+WiFi/BT/GPU firmware (kept, since those blobs don't live on a mountable
+partition the way ADSP/HexagonFS content does) and the newly-added ADSP
+PIL firmware/HexagonFS payload staging (baked in at build time from
+`vendor-firmware-dump/`, matching gts9wifi-fedora's own `firmware.tar.gz`
+asset -- just sourced from this project's own live TWRP extraction
+instead of a prebuilt CI asset).
+
+**Full `rootfs/overlay/` tree copied wholesale** (46 files) from
+gts9wifi-fedora, then verified file-by-file for genuine X710-specific
+content rather than assumed safe:
+
+- **Confirmed needing no change** (SoC-level or otherwise device-
+  generic facts, checked directly rather than assumed): `gts9wifi-bt-
+  provision`'s hardcoded DT node path (`/soc@0/geniqup@8c0000/
+  serial@898000/bluetooth`) -- confirmed byte-identical in this
+  project's own built DTB via `dtc -I dtb -O dts`, since both boards
+  share the same pinned `sm8550.dtsi`. `gts9wifi-usb-host-resume`'s
+  `a600000.usb-role-switch` path -- confirmed against `usb_1: usb@a600000`
+  in the same shared dtsi. `gts9wifi-bt-revive`'s GPIO 204 (xo-clk)/81
+  (BT_EN) -- confirmed against this project's own, independently-measured
+  `docs/hardware-facts.md` entry (not copied from the reference), which
+  already recorded the identical values. `gts9wifi-wifi-recover`'s PCIe
+  BDF numbers -- determined by the shared SoC's PCIe0 controller
+  topology, not board wiring.
+- **Content edited**: the hexagonrpcd-adsp-sensorspd drop-in's HexagonFS
+  `-R` root path, from gts9wifi-fedora's own `/usr/share/qcom/sm8550/
+  Samsung/gts9wifi` to this project's own extraction's install path,
+  `/usr/share/qcom/sm8550/Samsung/gts9-5g`. `etc/machine-info`'s
+  PRETTY_HOSTNAME/HARDWARE_MODEL strings, for the 5G model name.
+- **Kept unchanged despite being a real physical-mounting fact**: the
+  61-gts9wifi-sensor-mount-matrix.rules accelerometer rotation
+  (`0,1,0;-1,0,0;0,0,1`) -- an earlier plan draft had proposed landing
+  with an identity matrix pending X716B-specific measurement, but the
+  user's direct statement that X716B is the same chassis as X710 "except
+  for having 5G as well and different addresses for some components"
+  is new information that resolves that uncertainty in favor of porting
+  the real value: physical accelerometer-to-panel mounting orientation
+  is a mechanical PCB-layout fact, not something that plausibly differs
+  between a WiFi and a 5G SKU of the same chassis.
+- **Removed entirely, not ported**: `gts9wifi-mem-reclaim` (script +
+  service). Its hardcoded reserved-memory region names (`mpss-
+  region@8a800000`, `sec-qcom-rdx@880c00000`, `trust-ui-vm-*`, ...) are
+  Samsung-downstream-kernel-specific carveouts patched into the *stock*
+  Android `boot`/`vendor_boot` DTB -- but per this project's own
+  `docs/boot-strategy.md`, this port's actual boot chain flashes its
+  *own* mainline board DTB into those exact partition slots, which never
+  carried those downstream carveouts to begin with (mainline
+  `sm8550.dtsi` + this project's own board file only). The script is
+  written defensively (a real no-op when none of its target regions are
+  present), so it would have been harmless to include, but functionally
+  dead weight -- there is nothing on this project's own boot images for
+  it to reclaim.
+- **A real, upstream inconsistency found and deliberately NOT
+  replicated**: gts9wifi-fedora's own `build-rootfs.sh` unit-enable loop
+  and its own `85-gts9wifi.preset` both literally `enable`
+  `gts9wifi-adsp-boot.service`, directly contradicting their own stated
+  safety reasoning immediately above each list ("the ADSP start can hang
+  or reset the SoC... deliberately NOT enabled") and the unit file's own
+  "Not enabled by default" comment. Left out of both this project's
+  `scripts/build-fedora-rootfs.sh` enable loop and its own copy of the
+  preset file, honoring the stated intent rather than the apparently-
+  buggy literal enable list.
+
+**Rootfs build script** (`scripts/build-fedora-rootfs.sh`, extended
+significantly, keeping this project's own proven dnf5 + wide-UID
+`unshare` + static-qemu-interpreter mechanism throughout -- not
+gts9wifi-fedora's podman/native-arm64-runner assumption, confirmed
+earlier this session not to work on this host): expanded the base
+package list to match gts9wifi-fedora's own (qrtr/libqmi/libqrtr-glib/
+protobuf-c/libmbim/systemd-pam/dtc), added native build dependencies
+(meson/ninja/gcc/git/curl/pkgconf-pkg-config/*-devel packages) installed
+into the target root itself (there is no separate native-arm64 build-
+container stage in this project's mechanism, unlike gts9wifi-fedora's
+CI), and built libssc 0.4.4, pd-mapper 1.1, and hexagonrpcd 0.4.0 (+ the
+three real patches from `specs/hexagonrpcd-samsung/`, copied from
+gts9wifi-fedora's identical directory) from source via `run_chroot` --
+i.e. real C/meson/ninja compiles running under the same qemu-user
+emulation as everything else in this mechanism, not on native arm64
+hardware like the reference project's own CI. iio-sensor-proxy 3.9 with
+`-Dssc-support=enabled` built the same way for the GNOME variant, after
+dropping just Fedora's own non-libssc rpmdb entry (not a full removal,
+which would cascade mutter/gnome-shell out of the image).
+
+**A real bash bug found and fixed while writing this**: a comment
+*inside* one of the `run_chroot /usr/bin/bash -c '...'` heredoc bodies
+contained an apostrophe (`gts9wifi-fedora's own`) -- single-quoted shell
+strings have no escape mechanism at all, so that apostrophe silently
+closed the string early mid-heredoc, corrupting everything after it
+until the block's real closing quote was reached. Caught via `bash -n`
+and bisection (`head -n <N> | bash -n`, narrowing until the exact
+apostrophe was found), not by inspection -- fixed by rewording the
+comment to avoid the apostrophe. `bash -n` now passes clean.
+
+A `GTS9_DESKTOP=core` build (this project's own established "fast
+checkpoint before the slow GNOME build" discipline) run against the
+real device's freshly-extracted firmware hit one more real bug:
+`curl`/`git` inside `run_chroot` (a genuine `chroot`, not just the outer
+`dnf5` invocation) resolved DNS against the target root's own
+`/etc/resolv.conf` -- a fresh Fedora install's copy is a symlink to
+`../run/systemd/resolve/stub-resolv.conf`, which does not exist inside
+this offline installroot (no systemd-resolved running there), so every
+source build failed immediately with "Could not resolve host". Fixed by
+replacing that symlink with a real file containing the *host's* own
+resolver line (`nameserver 127.0.0.53`, systemd-resolved's stub
+listener) -- works because `run_in_ns` only unshares user+mount
+namespaces, not network, so the chroot shares the host's loopback
+interface. Verified directly (a manual `curl` inside the same
+unshare+chroot wrapper, real 155 KB download) before re-running the full
+build.
+
+**One more real bug, same re-run**: the hexagonrpcd `run_chroot` call
+consumed `/tmp/hexagonrpcd-patches/*.patch` before the step that actually
+staged those files into `$rootdir/tmp/hexagonrpcd-patches/` had run --
+simple ordering bug (the staging `cp` was written directly below the
+`run_chroot` call instead of above it). Fixed by moving the staging
+lines before the call. `bash -n` cannot catch this class of bug (it's a
+runtime ordering issue, not a syntax error) -- caught by the real build
+log instead ("No such file or directory").
+
+### Phase 5 decision: keep the existing bespoke initramfs, don't adopt dracut
+
+The plan's Phase 5 called for adopting gts9wifi-fedora's real dracut-
+based initramfs (`boot/dracut/dracut.conf.d/gts9wifi.conf`) and
+converting `ath11k`/`hci_qca` from this project's existing forced-`=y`
+built-in convention to loadable modules, matching their design -- the
+stated reason being that this is what avoids a real firmware boot-order
+race (the Adreno/WiFi drivers probing, and requesting firmware, before
+the real root filesystem carrying that firmware is even mounted).
+
+Re-examining `scripts/build-real-root-initramfs.sh` (this project's own
+existing bespoke busybox initramfs, already proven booting to a real
+Fedora login on this exact hardware before this pivot) shows it already
+solves that *exact* race, just via a different mechanism: it embeds the
+GPU/WiFi/BT firmware directly into the initramfs itself, available
+immediately, rather than deferring the drivers' own probing (via
+loadable modules) until after switch_root the way dracut's design does.
+Both are real, working fixes for the same root cause; neither is
+incomplete relative to the other.
+
+Given that, adopting dracut + the built-in-to-module conversion here
+would be a substantial, non-trivial architecture change (real module
+dependency ordering, udev coldplug/autoload correctness, the two-
+partition microSD scheme) for no functional gain over what already
+works -- and an unforced one, since nothing about ADSP/audio/sensors
+(this pivot's actual new content) depends on it: hexagonrpcd/pd-mapper/
+iio-sensor-proxy are ordinary systemd services started well after
+switch_root, and the ADSP itself is deliberately not auto-started at
+boot at all (see the Phase 3 entry above), so there is no equivalent
+early-boot firmware race for any of this pivot's new content either.
+
+**Decision**: keep this project's own bespoke initramfs unchanged for
+this pivot. Real dracut adoption is not being ruled out permanently --
+if a future need genuinely requires loadable-module flexibility (e.g.
+size/boot-time pressure from forcing everything built-in), it stays a
+valid option -- but doing it now, unforced, trades a real, working boot
+chain for a large, unverified change with no corresponding capability
+this pivot actually needs. Phase 4 (kernel build via this project's own
+pipeline) already needed no changes for the same reason -- nothing in
+Phase 1-3's work depends on how the kernel is packaged/built, only on
+what's in the DTS/config/rootfs.
+
+### Phase 3 result: full core rootfs built, real sensor/audio stack confirmed present
+
+`GTS9_DESKTOP=core` build succeeded end to end after the two bugs above
+(DNS, patch-staging order) -- `libssc`/`pd-mapper`/`hexagonrpcd` all
+compiled and linked cleanly under qemu-user emulation (no `set -eu`
+aborts, no meson/ninja failures). Verified via `tar -tzf` against the
+packed archive itself, not just the build log, that the real artifacts
+landed at their real final paths: `usr/bin/{hexagonrpcd,pd-mapper,
+ssccli}`, `usr/lib64/libssc.so(.2)`, `usr/lib/firmware/qcom/sm8550/
+adsp.mdt`, `usr/share/qcom/sm8550/Samsung/gts9-5g/dsp/adsp/libsns_*`, the
+relocated `usr/lib/systemd/system/hexagonrpcd-*.service` units.
+
+**One more real bug found via that same verification**: the archive also
+carried every one of the source builds' own `mktemp -d` scratch
+directories (created under `$rootdir/tmp`, i.e. inside the chroot's own
+`/tmp`) completely intact -- full source trees, `.o` files, duplicate
+`libssc.so` copies from both the failed and successful runs -- since none
+of the four `run_chroot` build blocks ever cleaned up after themselves.
+Fixed in the script (a `find .../tmp -name 'tmp.*' -exec rm -rf` sweep in
+the cleaning stage, rather than patching each block individually) and
+applied to the already-built rootfs directly (no need to re-run the
+expensive compiles) -- repacked archive: 304 MiB compressed, down from
+312 MiB, `sha256 02ddbe23...`. Not yet flashed or boot-tested on real
+hardware.
+
+Noted, not fixed: the packed rootfs still ships the full native build
+toolchain (gcc/meson/ninja/binutils/*-devel packages) used to build
+libssc/pd-mapper/hexagonrpcd, unlike gts9wifi-fedora's own CI (which
+builds in a separate, throwaway native-arm64 container that never
+becomes the shipped image). This project's own mechanism has no such
+separate build stage, so removing these post-build would need its own
+verification pass (confirming nothing else in the image needs them at
+runtime) -- deferred as a real, known size inefficiency, not a
+functional problem.
+
+The GNOME Workstation variant (`GTS9_DESKTOP=gnome`) was not rebuilt this
+pass -- the existing `x716b-fedora-44-gnome-rootfs.tar.gz` in `out/fedora/`
+predates this whole pivot (built before Phase 1-3's DTS/kernel/rootfs
+work) and needs its own from-scratch build once the core variant is
+confirmed working on real hardware, matching this project's own
+established "fast checkpoint before the slow GNOME build" discipline.
+
+### Phase 6/7: flashed, booted, and verified on real hardware -- extraordinary result
+
+Wrote the core rootfs to the microSD (fresh `mke2fs`, `adb push` +
+`tar --numeric-owner -xzf`, same proven mechanism as always), rebuilt the
+boot bundle with the real-root initramfs (not the debug bring-up one),
+and flashed boot/init_boot/vendor_boot/dtbo via `scripts/flash-boot-
+set.sh` -- all four partitions written and readback-verified. A real,
+recent nandroid backup (same day) covering exactly these four partitions
+was confirmed present before flashing, per this project's own standing
+safety protocol.
+
+**Two real bugs found and fixed via genuine on-device debugging, not
+guessing:**
+
+1. **A serious false alarm, self-corrected**: after reboot, the custom
+   USB gadget serial console (`/dev/ttyACM0` on the host) produced zero
+   output for several minutes despite multiple read attempts (raw
+   termios, explicit DTR/RTS assertion, up to 40s windows). Checked
+   `drivers/remoteproc/qcom_q6v5_pas.c` directly and found
+   `sm8550_adsp_resource.auto_boot = true` -- meaning enabling
+   `&remoteproc_adsp` makes the ADSP auto-boot at kernel init
+   unconditionally, contradicting the assumption (mine and, it seems,
+   gts9wifi-fedora's own) that leaving their systemd unit disabled keeps
+   it inert. Combined with fresh, never-tested firmware, this looked
+   like a serious real risk of a boot-time hang. **It was not one**: the
+   user confirmed the physical panel showed a genuine, healthy `Fedora
+   Linux 44` login prompt the whole time -- the "hang" was entirely an
+   artifact of the serial console not working, not a real device
+   problem. A real lesson in not over-trusting a single missing signal
+   over a directly-observed one.
+2. **The real bug**: the custom `x716b-serial-getty.service`'s
+   `ExecStart` had agetty's positional arguments in the wrong order
+   (`agetty --keep-baud 115200 - ttyGS0 $TERM`). Verified against
+   systemd's own real upstream `serial-getty@.service.in` template
+   (`agetty ... %I $TERM`, port name first, no leading `-`) -- our `-`
+   put `ttyGS0` in the baud-rate positional slot, which isn't a valid
+   baud rate, so agetty exited immediately every time in a silent
+   `Restart=always`/`RestartSec=1` loop, producing zero output ever on
+   the real line. Fixed in the script; patched the one file directly on
+   the already-flashed SD card via a TWRP round-trip rather than a full
+   rootfs rebuild. **Even after this genuine fix, the serial console
+   still produced no output on a second real-hardware test** -- not
+   fully root-caused, and abandoned in favor of a more direct path
+   (below) per explicit user direction rather than continuing to debug
+   it blind.
+
+**Pivoted to USB networking for real interactive access**, per explicit
+user direction ("work on getting a usb network connection setup to ssh
+into the tablet"): found `CONFIG_USB_G_SERIAL=y` (the legacy single-
+function gadget driver) claims the UDC exclusively at boot, permanently
+blocking `rootfs/overlay`'s own configfs-based RNDIS gadget approach
+(gts9wifi-fedora's own design) from ever getting a chance to bind.
+Switched to `CONFIG_USB_ETH=y` (g_ether, also a legacy no-configfs-
+needed driver, creates a "usb0" network interface automatically) and
+trimmed `gts9wifi-usb-gadget` down to just its wait-for-usb0 +
+force-the-address half (the configfs gadget-creation half is gone,
+not applicable to g_ether). Rebuilt kernel, rebuilt the boot bundle,
+patched the trimmed script directly onto the SD card, reflashed.
+
+**Real, working result**: after reboot, host-side `journalctl -k` showed
+the gadget renegotiate once between `cdc_subset` and full `RNDIS/
+Ethernet Gadget` modes within the first several seconds (the same
+physical link, not a device reboot) -- once settled on the second
+interface name, assigning a matching static IP via `nmcli` and pinging
+172.16.42.1 succeeded immediately (sub-millisecond RTT). SSH as the
+`x716b` user (password matching `$GTS9_USER`, i.e. `x716b`) succeeded
+cleanly: `Linux x716b-fedora 7.2.0-dirty ... aarch64 GNU/Linux`. **Root's
+own password did not work** with the same credential -- not
+investigated further given the non-root account already provides full
+sudo access via the wheel group.
+
+**Full real-hardware verification via live SSH, checked directly against
+gts9wifi-fedora's own feature table, not just probe success:**
+
+- **GPU**: `msm_dpu` bound to `3d00000.gpu`; zap-shader (`a740_zap.mdt`)
+  and GMU firmware (`gmu_gen70200.bin`, "Loaded GMU firmware v4.1.9")
+  both loaded from the real extracted files; `fb0` framebuffer
+  registered.
+- **Display**: `msm_dpu` bound to the real DSI panel
+  (`ae94000.dsi`) *and* the DisplayPort controller
+  (`ae90000.displayport-controller`).
+- **Touch**: `fts1ba90a 6-0049: resident firmware version 012400`, real
+  input device registered.
+- **WiFi**: not just a probe -- `wlp1s0: associated` with a real access
+  point, confirmed via a real WPA handshake in dmesg
+  (authenticate/associate/RX AssocResp).
+- **Bluetooth**: `hci0` QCA firmware download completed ("QCA setup on
+  UART is completed"), matching this project's own established firmware-
+  fallback-naming knowledge (the `wcnhp*` variants fail with -2, falling
+  back correctly to the real `hp*` files, exactly as expected).
+- **Speakers**: all four CS35L45 amplifiers detected on I2C
+  (`REVID A0 OTPID 0B` x4). The ASoC sound card itself has NOT bound yet
+  (`snd-sc8280xp: CS35L45 Speaker Playback: error getting cpu dai name`,
+  deferred-probe pending, no `/proc/asound/cards` entries) -- a real,
+  still-open gap, not yet root-caused.
+- **S Pen**: real digitizer query succeeded --
+  `wacom-wez01 5-0056: fw version 0x4018, max_x 14752, max_y 23603, max_pressure 4095`,
+  matching the driver's own expected query-response format exactly.
+- **Battery/charging**: SM5714 charger/fuel-gauge/MUIC device IDs read
+  successfully over I2C; `sm5714-battery`/`sm5714-usb` both present
+  under `/sys/class/power_supply/`.
+- **ADSP**: the first boot-time attempt correctly fails
+  (`Direct firmware load for qcom/sm8550/adsp.mdt failed with error -2`
+  at 0.6s -- the SD card rootfs isn't mounted yet at that point in
+  boot), but remoteproc retries once the real root is available: at
+  85.66s, `Booting fw image qcom/sm8550/adsp.mdt, size 7884` ->
+  `remote processor adsp is now up`. FastRPC glink channels and
+  `/dev/fastrpc-adsp` all created successfully.
+- **Live partition mounts**: `mnt-vendor-persist.mount`/`vendor-
+  dsp.mount`/`vendor-firmware_mnt.mount` all confirmed `active
+  (mounted)` against their real by-name partitions (`sda5`/`sda16`/
+  `sda17`) -- and critically, `/mnt/vendor/persist/sensors/` contains
+  real content (`registry/`, `sensorhubs_list.txt`, `sensors_list.txt`)
+  confirming the whole live-mount architecture decision (adopted from
+  gts9wifi-fedora's own design, see the Phase 3 entry above) is
+  genuinely correct, not just theoretically sound.
+- **Suspend/resume**: `gts9wifi-panel-coldboot-recover`'s real `pm_test`
+  cycle ran during boot (visible in dmesg as a ~50s->57s suspend/resume
+  window) and every subsystem checked above -- GPU, display, WiFi, BT,
+  speakers, S Pen, battery, ADSP -- resumed cleanly with no errors.
+- **Sensors (partial)**: `hexagonrpcd-adsp-sensorspd.service` reached
+  `active (running)` against the real `/dev/fastrpc-adsp` and the real
+  `-R /usr/share/qcom/sm8550/Samsung/gts9-5g` HexagonFS root, but its own
+  log shows repeated `Could not open /../sns_reg_version: No such file
+  or directory` -- the persist partition's real `sensors/registry/` tree
+  exists (confirmed above), so this looks like a path-mapping gap
+  between hexagonrpcd's HexagonFS view and the live persist mount, not a
+  missing-data problem -- not yet root-caused. `pd-mapper.service` fails
+  immediately with "no pd maps available" -- expected and benign,
+  matching gts9wifi-fedora's own documented finding verbatim (Samsung's
+  ADSP firmware ships no service-registry JSONs at all).
+- **USB host mode**: not tested (still `dr_mode = "peripheral"`,
+  unchanged this session, deliberately deferred to its own patch-
+  verification pass per the Phase 1 entry above) -- and now additionally
+  superseded for the *debug-access* purpose it originally served by the
+  new g_ether USB networking path, which needs no host mode at all.
+
+Overall: every item in gts9wifi-fedora's own feature table that's
+checkable without a physical dock is now confirmed real and working on
+this exact X716B unit, with only two open, non-blocking gaps (the sound
+card's own cpu-dai binding, and the sensor-registry path mapping) left
+for a follow-up pass. Per the user's own direction mid-session, kicked
+off a fresh GNOME Workstation rootfs build (`GTS9_DESKTOP=gnome`) next,
+incorporating every fix from this whole pivot -- the existing GNOME
+tarball predates all of it.
+
+### GNOME desktop confirmed working -- installed natively, live, over the real SSH link
+
+Per explicit user direction, abandoned the cross-built/qemu-emulated
+GNOME rootfs image in favor of installing GNOME directly onto the
+already-booted, already-working core system over the real SSH link --
+much faster, since it's a real native `dnf install` on real aarch64
+hardware rather than another qemu-user-emulated cross-build.
+`gdm gnome-shell gnome-session gnome-session-wayland-session
+gnome-control-center gnome-terminal mesa-dri-drivers mesa-vulkan-drivers
+adwaita-mono-fonts adwaita-sans-fonts xorg-x11-server-Xwayland` (475
+packages total once dependencies resolved) installed cleanly over the
+device's own real WiFi connection -- slow (the tethered link measured
+~100-300 KiB/s, one transient "Connection reset by peer" on the initial
+metalink fetch that resolved on retry) but genuinely `Complete!`, no
+scriptlet errors (unlike the emulated cross-build mechanism, which has
+always had to tolerate some).
+
+`systemctl enable gdm`, `set-default graphical.target`, `systemctl start
+gdm` -- real `gnome-shell --mode=gdm` process confirmed alive (353 MB
+RSS, not crashed) alongside its notifications/screensaver helper
+processes. **The user directly confirmed a real GNOME login screen is
+showing on the physical panel** -- the full display pipeline (mainline
+DRM/KMS -> the ANA38407 panel driver -> mutter's Wayland compositor ->
+gnome-shell's GDM greeter UI) works end to end on this exact hardware.
+Not yet logged into an actual session (no USB host mode yet for a
+keyboard, and gdm's on-screen keyboard needs a touch-capable text entry
+flow not yet exercised) -- this is real GUI rendering confirmed, not
+just a running process, matching this project's standing "real signal"
+bar.
+
+This is, in effect, gts9wifi-fedora's own top-line claim (a real GNOME
+desktop on this SoC/panel/GPU combination) now independently reproduced
+on the X716B.
+
+### Sound card and sensor registry: root-caused live, two real bugs found and fixed
+
+Picked back up the two gaps deprioritized during the GNOME push, over the
+same real WiFi SSH link (the USB gadget net link was down -- the user had
+disconnected it to charge the tablet; `192.168.2.124` over WiFi worked
+immediately and is now this session's primary access path).
+
+**Bug 1 -- pd-mapper could never succeed, so q6apm (the sound card's cpu
+dai) could never register.** `pd-mapper.service` was `failed (Result:
+exit-code)` from very early boot, printing "no pd maps available" and
+never retrying (its `Restart=always` burst-limited out in the first few
+seconds, long before ADSP itself came up at t=86s). Read pd-mapper 1.1's
+own source (`pd_load_maps()`/`pd_enumerate_jsons()`): it scans the
+*same directory* the currently-loaded remoteproc firmware came from
+(`dirname(/sys/class/remoteproc/remoteproc0/firmware)`, i.e.
+`/lib/firmware/qcom/sm8550/`) for `*.jsn`/`*.jsn.xz` service-registry
+files, and hard-exits if it finds none. Our own extraction only ever
+pulled `adsp.mdt`+segments+`adsp_dtb.mdt`+segments there -- confirmed via
+`find` that Samsung's `apnhlos` partition (already live-mounted at
+`/vendor/firmware_mnt`) *does* ship real PDR registry maps alongside
+them: `adspr.jsn`, `adsps.jsn`, `adspua.jsn` (this one maps `avs/audio` ->
+`msm/adsp/audio_pd` -- exactly what q6apm's PDR lookup needs), `cdspr.jsn`.
+Copying these four files into `/lib/firmware/qcom/sm8550/` and restarting
+pd-mapper fixed it immediately and durably (confirmed via
+`/sys/bus/aprbus/devices/` populating with `gprsvc:service:2:1`/`2:2`,
+and "error getting cpu dai name" disappearing from
+`/sys/kernel/debug/devices_deferred`). Fixed durably in
+`scripts/extract-vendor-firmware.sh` (now pulls the four `.jsn` files
+too) and `scripts/build-fedora-rootfs.sh` (its firmware-staging line was
+also a real bug in its own right: `cp "$adspfw"/adsp*` happened to catch
+three of the four `.jsn` files by accident since they start with "adsp",
+but silently dropped `cdspr.jsn` -- changed to copy the whole directory).
+
+This got q6apm registering and the ASoC card's cpu-dai lookup resolving,
+but surfaced the *next* real gap: `snd-sc8280xp` now fails to
+instantiate with `Direct firmware load for qcom/sm8550/Samsung-Galaxy-
+Tab-S9-5G-tplg.bin failed with error -2` -- an AudioReach topology binary
+matching this board's own `model` DT string, which (confirmed via
+`linux-firmware` 20260810's own file list, installed live to check) does
+not exist anywhere upstream for this device -- gts9wifi-fedora's own
+docs note "AudioReach topology in firmware payload" for their board,
+implying they authored/ship one specifically for their own model name;
+X716B needs its own, and authoring one (via the `audioreach-topology`
+YAML->binary toolchain) is a real, separate, nontrivial task, not yet
+started. Speakers are therefore now blocked on exactly one missing
+asset rather than a chain of bugs -- real progress, but not yet audible
+sound.
+
+**Bug 2 -- hexagonrpcd's HexagonFS could never serve `sns_reg_version`,
+regardless of what was on disk.** `hexagonrpcd-adsp-sensorspd` logged
+repeated `Could not open /../sns_reg_version: No such file or
+directory`. Traced hexagonrpcd 0.4.0's own `hexagonfs_openat_flags()`
+(the request path's leading `/` selects the daemon's real virtual
+*root* fd, and `..` from there is clamped exactly like POSIX `/..`) --
+meaning this literal request resolves to a **root-level** child, not
+under `persist/sensors/registry` like every other registry file. The
+existing `support-samsung-sensor-registry-writes.patch` (already carried
+over from gts9wifi-fedora) maps that virtual path to `<-R
+prefix>/sensors/`, but had no root-level entry at all for this specific
+alternate name the firmware also uses for the same file. Wrote a new,
+small patch (`specs/hexagonrpcd-samsung/patches/zz-map-sns-reg-version-
+at-root.patch` -- `zz-` prefixed deliberately, since it must apply
+*after* `support-samsung-sensor-registry-writes.patch`, which the
+alphabetical `*.patch` glob both `scripts/build-fedora-rootfs.sh` and
+this same investigation's first attempt got wrong) adding a
+`hfs_map("sns_reg_version", <prefix>/sensors/sns_reg_version)` entry to
+`rpcd_builder.c`'s root child list. Rebuilt hexagonrpcd natively on
+-device (meson/ninja/gcc were already present from the rootfs build) and
+confirmed via `strace` that the real fix works: `openat(...:
+"sns_reg_version"...) = 4` then `read(4, "version=6\0", 512) = 10` --
+the daemon now genuinely serves this file's real content from the live
+persist partition.
+
+Also found and fixed the *actual* correct physical location for the
+registry data along the way -- an intermediate mistake worth recording:
+first copied `/mnt/vendor/persist/sensors/*` into the HexagonFS root's
+`sensors/`, which looked plausible but left `sns_reg_version` (and every
+real per-sensor calibration file) unreachable. `find` on the real device
+showed the actual files live one level deeper, at
+`/mnt/vendor/persist/sensors/registry/*` (the `registry` directory
+`gts9wifi-sensor-registry-perms` already chmods) -- Android's own layout
+nests a second `registry/registry/` for the calibration files themselves,
+with `sns_reg_version` a direct sibling of that inner `registry/`, not of
+the outer `sensors/`. Fixed `usr/libexec/gts9wifi-sensor-registry-perms`
+to **bind-mount** `$REG/registry` onto the HexagonFS root's `sensors/`
+directory (rather than a build-time copy) so ongoing SSC calibration
+writes keep landing on the real, live persist partition, consistent with
+this same script's own perms-widening already assuming exactly that.
+
+Despite both fixes confirmed working at the file-access level, the ADSP's
+sensor protection domain still does not publish a "SSC" QMI service
+(`ssccli --sensor accelerometer` still reports "SSC QMI Service not
+found"; `qrtr-lookup` never lists it). A `strace` capture shows
+`Unsupported method: 24 (18020000)` immediately after the successful
+`sns_reg_version` read -- method 24 is not defined in hexagonrpcd's own
+`apps_std.def`, so this is very likely hexagonrpcd 0.4.0's own real,
+known feature gap (not something introduced by this port) rather than
+anything further fixable here without patching in a whole new interface.
+This matches gts9wifi-fedora's own README caveat that sensors are
+"⚠️ partial" even on their reference hardware -- not a bar this port is
+currently short of, just not yet fully investigated past this point.
+
+Both hexagonrpcd fixes are landed durably (the new patch file, the
+build script's firmware-staging fix, the bind-mount script change) and
+also applied live on the already-flashed SD card (rebuilt hexagonrpcd
+on-device via the same meson/ninja/gcc already present from the rootfs
+build, matching what a full rebuild would produce) so the current running
+system reflects them without needing a reflash.
+
+### Heartbeat vibration removed; real speakers, confirmed by ear (stereo bug included)
+
+Rebooted to TWRP for two follow-ups. First, a small one:
+`kernel/dts/sm8550-samsung-x716b.dts`'s `leds { led-vibrator-heartbeat {
+...} }` node (GPIO 18, added Session 4 as a "kernel is alive" debug
+signal before there was any display/serial/SSH) was removed outright --
+nothing has depended on it for many sessions, and it just meant the
+tablet's motor buzzed in a heartbeat pattern on every real boot. Pure DTS
+removal, no config change; rebuilt kernel+DTB, rebuilt the bundle with the
+real ramdisk override, and reflashed the same 4 boot-chain partitions as
+always (`boot`/`init_boot`/`vendor_boot`/`dtbo`, confirmed against a fresh
+nandroid backup first). Confirmed on reboot: no `gpio-leds`/vibrator node
+in the live devicetree, motor silent.
+
+Then the real remaining item from last session: the missing AudioReach
+topology binary. Research (a background agent) found this is **not** a
+from-scratch authoring task -- AudioReach topology only describes the
+ADSP-side DSP graph up to the I2S/codec-DMA interface, agnostic to which
+codec actually receives the bitstream, so the *same* topology Qualcomm
+ships for its own SM8550 reference boards is directly reusable. Real
+precedent: `agcarbajo/postmarketos-galaxy-tab-s9-ultra` (X910, same
+4x-CS35L45-on-PRIMARY-MI2S + VA-macro-DMIC layout) documents pinning
+`SM8550-HDK-tplg.bin` from upstream `linux-firmware.git` at a known
+commit, sha512-verifying it, and patching **one 4-byte token** -- the I2S
+sink module's `AR_TKN_U32_MODULE_SD_LINE_IDX` (module 0x0700100A, token
+256 in `include/uapi/sound/snd_ar_tokens.h`) from 1 (`I2S_SD0`) to 2
+(`I2S_SD1`), since their 4 amps are wired to MI2S data line 1, not line 0.
+Our own DTS matches that same wiring (`tdm0_dout_active`'s
+`function = "i2s0_data1"`) -- confirmed, not guessed. Wrote
+`scripts/stage-audioreach-topology.sh` +
+`scripts/patch-audioreach-sd-line.py` mirroring their recipe exactly:
+fetched `SM8550-HDK-tplg.bin` via git sparse-checkout at the same pinned
+commit, verified its sha512 matched upstream before touching it, patched
+the token, and the **patched output's sha512 came out byte-for-byte
+identical to the Ultra port's own confirmed-working file** -- about as
+strong a confirmation as this project gets that no board-specific
+authoring was needed at all. Wired into `build-fedora-rootfs.sh`'s
+firmware staging, cached under `out/firmware/` so a rebuild doesn't
+re-fetch every time.
+
+Pushed the file live, and `snd-sc8280xp` instantiated a real card
+immediately (`0 [SamsungGalaxyTa]: sm8550 - Samsung-Galaxy-Tab-S9-5G`).
+Getting actual sound out needed the DAPM route enabled too
+(`PRIMARY_MI2S_RX Audio Mixer MultiMedia1`) and each amp's own `AMP
+Enable Switch` -- neither obviously implied by "the card exists." Wrote
+these as an ALSA UCM `BootSequence`
+(`rootfs/overlay/usr/share/alsa/ucm2/conf.d/sm8550/
+Samsung-Galaxy-Tab-S9-5G.conf`, a new file: the existing
+`Samsung-Galaxy-Tab-S9.conf` ported from gts9wifi-fedora is named for the
+X710's card longname and never matches this board's actual
+"Samsung-Galaxy-Tab-S9-5G" longname, so UCM's exact-filename conf.d
+matching silently never applied it) plus a small systemd fallback service
+(`gts9wifi-audio-init.service`) since this project hasn't confirmed
+anything on this minimal rootfs actually triggers UCM's BootSequence
+application on its own. **A real `speaker-test` tone, confirmed audible
+by the user's own ears** -- the first genuine audio out of this port.
+
+**A second real bug, caught by the user's own testing, not this
+session's own verification**: only the left channel was ever audible --
+alternating L/R test tones never alternated. Root cause: gts9wifi-fedora's
+own `BootSequence` (copied here verbatim at first) sets *every* amp's
+`DACPCM Source` to `ASP_RX1` -- one of the two TDM/I2S RX slots on the
+shared MI2S bus. `ASP_RX1`/`ASP_RX2` are left/right respectively; setting
+all four amps to `ASP_RX1` put every physical speaker, including the
+"Right" ones, on the left channel, with the right channel never reaching
+any speaker at all. Fixed by setting the two Right amps'
+`DACPCM Source` to `ASP_RX2` instead -- confirmed by ear afterward: L/R
+test tones now genuinely alternate. Whether X710's own reference config
+has this same bug, or their hardware differs some other way, is
+unexplored and not this port's concern. Fixed in both the UCM
+`BootSequence` and the `gts9wifi-audio-init` fallback script; pushed live
+and reconfirmed the fallback script alone (a fresh `systemctl restart`,
+not the manual `amixer` calls used to find the bug) reproduces the
+correct per-amp slot assignment.
+
+**Distro-agnosticism flagged as a real, deferred concern.** This
+project's original scope (`README.md`'s own title) is "mainline Linux +
+Ubuntu," and the repo genuinely carries five rootfs builders today
+(`build-fedora-rootfs.sh`, `-alpine-`, `-buildroot-`, `-ubuntu-`, the
+bring-up ramdisk) -- but `rootfs/overlay/` (despite its generic name) is
+applied by *only* `build-fedora-rootfs.sh`, and this session's own new
+firmware-staging call and `gts9wifi-audio-init.service` (systemd-only,
+dead on Alpine/OpenRC or Buildroot's BusyBox init) both went straight
+into that Fedora-only path. The ALSA UCM mechanism itself is genuinely
+distro-agnostic (standard `alsa-lib`/`alsa-ucm-conf` tree, same path on
+every distro); the firmware file and the systemd fallback are not yet.
+Deliberately **not** restructured this session, per direct instruction:
+fix the right-channel bug first, keep the restructuring as a follow-up
+task. Proposed shape for when it's picked up: move firmware staging
+(topology `.bin`, the four `.jsn` files) into the already-shared
+`extract-vendor-firmware.sh`/`vendor-firmware-dump/` pipeline so every
+builder gets it for free, and split `rootfs/overlay/` into a
+distro-agnostic data layer (firmware-adjacent files, UCM configs, plain
+shell scripts) applied by every builder versus a thin per-distro layer
+for init-system glue.
+
+### Distro-agnostic restructuring, done
+
+Picked the deferred task back up immediately after the right-channel fix
+landed. Surveyed the actual repo first rather than assuming: this project
+carries five rootfs builders (`build-fedora-rootfs.sh`, `-alpine-`,
+`-buildroot-`, `-ubuntu-`, the bring-up ramdisk), but `extract-vendor-
+firmware.sh`/`vendor-firmware-dump/` -- already the shared, distro-
+agnostic firmware pipeline in *design* -- turned out to be consumed by
+Fedora's builder alone too; Alpine/Ubuntu haven't been touched since
+before the ADSP/audio/sensor work started (their own script headers
+already said as much, predating the gts9wifi-fedora pivot), and Buildroot
+is deliberately a small Weston-only artifact never meant to carry any of
+this.
+
+Did the restructuring anyway, since it's cheap now and expensive later:
+
+- **`rootfs/overlay/` split into `rootfs/overlay-common/` +
+  `rootfs/overlay-systemd/`.** Classified every one of its 30-some files
+  by hand: ALSA UCM configs, udev rules, the one D-Bus service file, the
+  two plain data files (`locale.conf`, `machine-info`), and 8 of 11
+  `usr/libexec/gts9wifi-*` scripts have zero init-system assumptions ->
+  `overlay-common/`. Every systemd unit/drop-in/preset, `tmpfiles.d`
+  entry, and the 3 libexec scripts that call `systemctl` directly
+  (`gts9wifi-bt-revive`, `gts9wifi-wait-sensor-proxy`,
+  `gts9wifi-sensors-resume`) -> `overlay-systemd/`. One real subtlety
+  caught mid-move: `etc/systemd/system-sleep/*` hooks are thin systemd-
+  specific wrappers (`case "$1" in post) /usr/libexec/gts9wifi-usb-host-
+  resume ;; esac`) calling back into otherwise-portable libexec scripts --
+  the wrapper is systemd-specific, the script it calls isn't, so they
+  split across the two trees, not together. Verified after the move: every
+  `/usr/libexec/gts9wifi-*` path referenced by any unit or hook actually
+  exists in one tree or the other (a small script, not just eyeballing).
+  `build-fedora-rootfs.sh` now applies both.
+- **Firmware staging moved into `extract-vendor-firmware.sh`.** The
+  AudioReach topology binary (reused + patched, not device-extracted) now
+  gets staged into `vendor-firmware-dump/firmware/qcom-sm8550/` -- the
+  exact same directory the real device-pulled `adsp.mdt`/`.jsn` files
+  already land in -- right alongside them, sha512-cached so a re-run
+  doesn't hit the network again. `build-fedora-rootfs.sh`'s own
+  topology-staging block (added last session) was deleted entirely: the
+  existing "copy the whole `qcom-sm8550` directory" line now picks it up
+  for free, same as everything else there.
+- **New `docs/distro-porting.md`**: the split explained, plus a concrete
+  checklist for whoever revives Alpine/Ubuntu or adds a new target --
+  what needs translating (unit -> init-system equivalent, `systemctl
+  restart` -> that system's own command, sleep hooks -> that system's own
+  hook mechanism) versus what's a straight reuse (`overlay-common/`,
+  `vendor-firmware-dump/`). Left short pointer comments at the top of
+  `build-alpine-rootfs.sh`/`build-ubuntu-rootfs.sh`/`build-buildroot-
+  rootfs.sh` themselves, since a maintainer opening one of those files
+  directly is exactly who needs to see this before writing more code
+  against a now-stale assumption.
+
+Not attempted: actually reviving Alpine/Ubuntu, or writing a real OpenRC
+translation of `overlay-systemd/` -- there's no live target to verify
+either against right now, and doing that speculatively would just be a
+different flavor of the same problem this restructuring exists to avoid.

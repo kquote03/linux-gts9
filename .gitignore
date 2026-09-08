@@ -79,3 +79,12 @@ __pycache__/
 # version; this ignore rule only takes effect once it's overwritten
 # in-place with real credentials for a local build.
 /buildroot/rootfs-overlay/etc/wpa_supplicant.conf
+
+# Same treatment, for the Fedora rootfs's NetworkManager connection
+# profiles (gts9wifi-fedora pivot, scripts/build-fedora-rootfs.sh) — real
+# SSID/PSK/UUID, never committed. The tracked files stay the
+# PLACEHOLDER_SSID/PLACEHOLDER_PASSWORD/.example versions. "home" (the
+# original network) and "guest" (an open network at a different
+# location, added Session 9) are both kept — see docs/porting-log.md.
+/buildroot/rootfs-overlay/etc/NetworkManager-system-connection.nmconnection
+/buildroot/rootfs-overlay/etc/NetworkManager-system-connection-guest.nmconnection

@@ -41,6 +41,38 @@ echo "== staging real-root initramfs contents =="
 mkdir -p "$workdir"/{bin,sbin,proc,sys,dev,tmp,mnt/newroot}
 cp "$BUSYBOX_AARCH64_STATIC" "$workdir/bin/busybox"
 
+# WiFi/BT/GPU firmware, embedded directly in the initramfs -- NOT just
+# staged in the real rootfs's own /usr/lib/firmware. Confirmed live
+# (gts9wifi-fedora pivot, Session 9, real dmesg timestamps): ath11k and
+# the Adreno GPU driver are both built-in (not modular, matching this
+# project's own established philosophy) and request their firmware
+# during their own early PCI/platform probe -- which happens *before*
+# this initramfs's own /init has found and mounted the real root
+# filesystem below (firmware load attempted at dmesg timestamp
+# [1.294542], real root not mounted until [1.326643] -- a genuine ~32ms
+# boot-order race, not a placement bug in the real rootfs). Copying the
+# same already-proven firmware files here, available immediately, is a
+# smaller, more surgical fix than converting these drivers to loadable
+# modules (gts9wifi-fedora's own approach, which sidesteps the same race
+# by deferring their probe until after switch_root instead).
+fwdir="$workdir/lib/firmware"
+repo_root_for_fw=$(cd "$repo_root" && pwd)
+mkdir -p "$fwdir"
+if [ -d "$repo_root_for_fw/buildroot/firmware-overlay/lib/firmware" ]; then
+	cp -a "$repo_root_for_fw/buildroot/firmware-overlay/lib/firmware/." "$fwdir/"
+else
+	echo "WARNING: buildroot/firmware-overlay not built -- run scripts/fetch-ath11k-firmware.sh first" >&2
+fi
+mkdir -p "$fwdir/qcom"
+vfw="$repo_root_for_fw/vendor-firmware-dump/firmware"
+for f in a740_zap.mdt a740_zap.b00 a740_zap.b01 a740_zap.b02 a740_sqe.fw gmu_gen70200.bin; do
+	if [ -f "$vfw/$f" ]; then
+		cp "$vfw/$f" "$fwdir/qcom/$f"
+	else
+		echo "WARNING: $vfw/$f not found -- GPU firmware will be incomplete" >&2
+	fi
+done
+
 for applet in sh mount umount cat echo ls dmesg sleep switch_root sync mkdir; do
 	ln -sf busybox "$workdir/bin/$applet"
 done

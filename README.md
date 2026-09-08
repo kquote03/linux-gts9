@@ -124,7 +124,14 @@ classic CLI is enough), a Linux host (for the AArch64 cross toolchain and
 ```sh
 git clone git@github.com:kquote03/linux-gts9.git
 cd linux-gts9
-nix-shell   # everything below runs inside this shell
+nix develop   # flake.nix, replaces shell.nix (still present, unused) --
+              # pins the exact nixpkgs commit this project's own dev
+              # machine builds from, so every tool below (including
+              # dnf5/qemu-aarch64-static for the Fedora rootfs build)
+              # resolves to an already-built, cached derivation. Also
+              # exposes each build stage as `nix run .#build-kernel` /
+              # `.#build-rootfs` / `.#build-bundle` / `.#flash`.
+              # everything below runs inside this shell
 
 # 1. Fetch pinned sources (exact commits recorded in each script; see also
 #    docs/hardware-facts.md for why these particular pins were chosen)
@@ -197,7 +204,15 @@ needed after a devicetree or kernel-config change.
 - `docs/` — `hardware-facts.md` (ground-truth device facts, what's measured
   vs. assumed vs. inherited from a reference device), `porting-log.md` (the
   full session-by-session diary — start here for *why*, not just *what*),
-  `boot-strategy.md` (the boot chain, pre-flash checklist, recovery plan).
+  `boot-strategy.md` (the boot chain, pre-flash checklist, recovery plan),
+  `distro-porting.md` (how the userspace device overlay splits into a
+  distro-agnostic layer every rootfs builder applies vs. each distro's own
+  init-system-specific layer — read this before adding a new rootfs
+  builder or a new hardware-workaround script).
+- `rootfs/overlay-common/` + `rootfs/overlay-systemd/` — the userspace
+  device overlay (systemd units, udev rules, ALSA UCM configs, hardware-
+  workaround scripts), split per `docs/distro-porting.md`; applied by
+  `scripts/build-fedora-rootfs.sh`.
 - `kernel/dts/` — the board devicetree.
 - `kernel/config/` — Kconfig fragments merged on top of `defconfig`.
 - `kernel/drivers/` — from-scratch drivers written for this port: a
