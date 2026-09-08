@@ -273,6 +273,62 @@
 	 * it unnecessary: it had no purpose left except buzzing the tablet's
 	 * motor for as long as the kernel ran, on every boot.
 	 */
+
+	/*
+	 * Volume Up: the only one of the three physical buttons that's a real
+	 * discrete GPIO rather than a PMIC PON-block pin (see &pon_pwrkey/
+	 * &pon_resin below for Power/Volume Down). Confirmed identical across
+	 * all three independent sources checked (gts9wifi-fedora's own X710,
+	 * ubuntu-galaxy-tab-s9ultra's X910, and this exact device's own stock
+	 * downstream DTS under android_kernel_samsung_gts9/ -- all four stock
+	 * board-revision DTBs agree byte-for-byte): PM8550 (not PMK8550, not
+	 * TLMM) GPIO6, active-low with an internal pull-up, 15 ms debounce.
+	 * Pinctrl state for that pin is under &pm8550_gpios below.
+	 */
+	gpio-keys {
+		compatible = "gpio-keys";
+		pinctrl-names = "default";
+		pinctrl-0 = <&volume_up_n>;
+
+		key-volume-up {
+			label = "Volume Up";
+			linux,code = <KEY_VOLUMEUP>;
+			gpios = <&pm8550_gpios 6 GPIO_ACTIVE_LOW>;
+			debounce-interval = <15>;
+			linux,can-disable;
+			wakeup-source;
+		};
+	};
+};
+
+/*
+ * Power and Volume Down: both are pins on the PMK8550 PMIC's own PON
+ * (power-on) hardware block, not discrete GPIOs -- pmk8550.dtsi already
+ * defines both `pon_pwrkey`/`pon_resin` (status "disabled", pwrkey
+ * hardcoding linux,code = KEY_POWER, resin with no code of its own since
+ * upstream leaves what it's wired to board-specific). Volume Down reuses
+ * the PON block's RESIN ("reset-in") pin -- normally the hardware
+ * power+resin force-reset combo -- as a plain key input instead, the same
+ * reference-design pattern this whole SM8550 tablet family uses. Same
+ * three-way confirmation as the gpio-keys node above.
+ */
+&pon_pwrkey {
+	status = "okay";
+};
+
+&pon_resin {
+	linux,code = <KEY_VOLUMEDOWN>;
+	status = "okay";
+};
+
+&pm8550_gpios {
+	volume_up_n: volume-up-n-state {
+		pins = "gpio6";
+		function = "normal";
+		power-source = <1>; /* 1.8 V */
+		bias-pull-up;
+		input-enable;
+	};
 };
 
 /*

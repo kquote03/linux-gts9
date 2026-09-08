@@ -368,6 +368,19 @@ CONFIG_DRM_DISPLAY_HELPER=y
 CONFIG_DRM_DISPLAY_DP_HELPER=y
 CONFIG_DRM_DISPLAY_DSC_HELPER=y
 
+# Physical power/volume keys (kernel/dts/sm8550-samsung-x716b.dts's
+# &pon_pwrkey/&pon_resin/gpio-keys nodes): confirmed via three independent
+# sources (gts9wifi-fedora/X710, ubuntu-galaxy-tab-s9ultra/X910, and this
+# exact device's own stock downstream kernel) that pwrkey and resin are
+# children of the PMK8550 pon@1300 node, and that parent is matched by
+# qcom-pon.c (POWER_RESET_QCOM_PON). Left at its mainline-default =m this
+# parent never probes on this port -- which does not autoload modules --
+# so the children are never created and only the gpio-keys Volume Up
+# works, silently leaving Power and Volume Down dead. Built-in.
+# CONFIG_KEYBOARD_GPIO and CONFIG_INPUT_PM8941_PWRKEY are already =y in
+# defconfig at the pinned tag -- only this one needs overriding.
+CONFIG_POWER_RESET_QCOM_PON=y
+
 # Explicitly NOT enabled here (see docs/hardware-facts.md non-goals):
 # camera, cellular modem remoteproc, hardware video decode (iris) --
 # gts9wifi-fedora's own reference doesn't ship these either (camera/

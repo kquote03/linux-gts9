@@ -2970,3 +2970,75 @@ Not attempted: actually reviving Alpine/Ubuntu, or writing a real OpenRC
 translation of `overlay-systemd/` -- there's no live target to verify
 either against right now, and doing that speculatively would just be a
 different flavor of the same problem this restructuring exists to avoid.
+
+### Power and volume buttons: three independent sources, all agreeing
+
+Nothing in `kernel/dts/sm8550-samsung-x716b.dts` implemented physical
+buttons at all until now. Rather than guess at GPIO numbers, spawned
+three parallel research agents against the three most relevant real
+references this project has locally: `gts9wifi-fedora/` (X710, vendored
+in this repo), `ubuntu-galaxy-tab-s9ultra/` (X910, a local reference
+clone), and `android_kernel_samsung_gts9/` (Samsung's own stock
+downstream kernel for this exact device, X716B -- the single most
+authoritative source available, more so than either sibling-device
+reference project).
+
+**All three agreed exactly**, independently, byte-for-byte on the
+mechanism (the stock kernel's own four board-revision DTBs, r00 through
+r04, also agreed with each other and with both reference projects):
+
+- **Power**: not a discrete GPIO at all -- a child node (`pwrkey`) of the
+  PMK8550 PMIC's own PON (power-on) hardware block, addressed over SPMI.
+  `linux,code = KEY_POWER` is upstream's own default on this node; the
+  board DTS only needs `status = "okay"`.
+- **Volume Down**: the *same* PON block's RESIN ("reset-in") pin --
+  normally the hardware power+resin force-reset combo -- repurposed as a
+  plain key input, the standard reference-design pattern across this
+  whole SM8550 tablet family. Needs both `status = "okay"` *and*
+  `linux,code = KEY_VOLUMEDOWN` (upstream leaves resin's code board-
+  specific, unlike pwrkey's).
+- **Volume Up**: the only one of the three that's a real discrete GPIO --
+  `gpio-keys`, but on a **PM8550 PMIC GPIO** (pin 6), not `&tlmm`.
+  Active-low, internal pull-up, 15 ms debounce, `wakeup-source`.
+- **Kconfig**: `CONFIG_KEYBOARD_GPIO`/`CONFIG_INPUT_PM8941_PWRKEY` were
+  already `=y` in defconfig. `CONFIG_POWER_RESET_QCOM_PON` was not --
+  it defaults to `=m`, and since this project doesn't autoload modules,
+  that parent PON node would never probe, silently leaving Power and
+  Volume Down dead while only the unrelated gpio-keys Volume Up worked.
+  Both the X710 and X910 reference projects independently found and
+  fixed this identical gap in their own config fragments -- a real,
+  recurring pattern for this whole board family, not board-specific
+  guesswork.
+
+Implemented in `kernel/dts/sm8550-samsung-x716b.dts` (`&pon_pwrkey`,
+`&pon_resin`, a new `gpio-keys` node, `&pm8550_gpios`'s `volume_up_n`
+pinctrl state) and `kernel/config/config-x716.fragment`
+(`CONFIG_POWER_RESET_QCOM_PON=y`). Rebuilt, reflashed (with explicit
+confirmation, against the existing 2026-09-07 nandroid backup), and
+verified about as directly as possible: `dmesg` showed all three input
+devices (`pmic_pwrkey`/event0, `pmic_resin`/event1, `gpio-keys`/event4)
+probing with the exact expected `KEY_POWER`/`KEY_VOLUMEDOWN`/
+`KEY_VOLUMEUP` bitmasks, then a **live `evtest` capture caught a genuine
+`KEY_POWER` press -- which promptly shut the tablet down**, since GNOME
+hadn't started yet and there was no session policy to intercept it at
+the tty. That's about the strongest possible confirmation the whole
+chain (PMIC -> kernel driver -> evdev -> logind's default action)
+actually works, even though it wasn't the *intended* test. After
+powering back on into a full GNOME session, the user confirmed all
+three buttons directly: power now suspends (GNOME's own default policy
+for a short press, with a session running), and both volume buttons
+work correctly.
+
+**Distro-agnostic by construction, not by extra effort this time**: the
+entire change is `kernel/dts/`+`kernel/config/` only -- nothing under
+`rootfs/overlay-common/` or `rootfs/overlay-systemd/` was touched, and
+none was needed. These three input devices register as completely
+standard Linux evdev nodes; which userspace daemon (if any) acts on
+`KEY_POWER`/`KEY_VOLUMEUP`/`KEY_VOLUMEDOWN` is entirely up to whatever
+distro sits on top (systemd-logind's own default here, unmodified -- no
+project-specific override added) and isn't this feature's concern. Kernel
+and DTB are built once by `scripts/build-mainline-kernel.sh` and boot
+identically under every rootfs this project carries, so this lands on
+Fedora, Alpine, Buildroot, and Ubuntu alike with zero additional work,
+unlike the audio/sensor work that needed the `overlay-common`/
+`overlay-systemd` split.
