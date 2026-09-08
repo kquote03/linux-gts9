@@ -97,15 +97,21 @@ CONFIG_FB_SIMPLE=y
 # was missing.
 CONFIG_EXFAT_FS=y
 
-# USB gadget serial console (ttyGS0), builtin (=y) -- CONFIG_USB_CONFIGFS
-# defaults to =m (module) which is useless with no rootfs/modprobe at this
-# bring-up stage; g_serial is a simple legacy gadget driver that needs no
-# userspace configfs setup at all. Added 2026-09-05 alongside
-# kernel/dts/sm8550-samsung-x716b.dts's minimal &usb_1/&usb_1_hsphy nodes,
-# after sec-log/last_kmsg, simple-framebuffer, and microSD logging all
-# failed to show anything past attempt 8's known-good point (though a
-# GPIO-heartbeat LED confirmed the kernel is genuinely alive, not crashed).
-CONFIG_USB_G_SERIAL=y
+# USB gadget console/network. Was CONFIG_USB_G_SERIAL=y (a simple legacy
+# serial-only gadget, ttyGS0) since 2026-09-05 -- switched to CONFIG_USB_ETH
+# (g_ether, legacy CDC-ECM/subset network gadget, real Fedora rootfs pivot)
+# after the serial console proved unreliable for actual interactive use
+# post-pivot (a real bug was found and fixed in the custom serial-getty
+# unit's agetty arg order, but even after that fix the serial line
+# produced no output on a second real-hardware test -- not fully root-
+# caused given the more direct path below, so abandoned for USB net
+# instead of continuing to debug it blind). g_ether needs no userspace
+# configfs setup either (same "no modprobe available" reasoning as
+# g_serial had) -- it creates a "usb0" network interface automatically
+# at boot, matching what rootfs/overlay's gts9wifi-usb-gadget script
+# already expects and configures (172.16.42.1/24, gts9wifi-fedora's own
+# real design -- see docs/porting-log.md).
+CONFIG_USB_ETH=y
 
 # Full USB Type-C stack (sm5714 TCPM + ps5169 redriver + ptn3222 eUSB2
 # repeater), added 2026-09-05 after a minimal HS-only gadget attempt (no
@@ -116,12 +122,17 @@ CONFIG_USB_G_SERIAL=y
 # sm5714_usbpd,ps5169}.c (ubuntu-galaxy-tab-s9ultra originals, GPL-2.0,
 # proven on the SM-X910 Ultra -- same SoC generation). All built-in (=y),
 # not modules -- no rootfs/modprobe exists at this bring-up stage.
-# TYPEC_DP_ALTMODE deliberately excluded: it can only be built in (=y) if
-# CONFIG_DRM is also =y, which it isn't (=m, and modules are useless with
-# no rootfs/modprobe at this stage) -- and DisplayPort-over-USB-C is
-# orthogonal to the actual goal here (a USB data/serial console), so the
-# DTS's altmode/displayport properties were dropped too rather than
-# fighting this dependency.
+# TYPEC_DP_ALTMODE was deliberately excluded here (CONFIG_DRM was =m at
+# the time, and modules were useless with no rootfs/modprobe yet) -- that
+# no longer applies (CONFIG_DRM=y below, since the panel/GPU work landed),
+# so it's re-added as part of the gts9wifi-fedora pivot's speaker/DP/PPS
+# DTS additions (kernel/dts/sm8550-samsung-x716b.dts, &sm5714_connector's
+# `displayport = <&mdss_dp0>;` + altmodes block, &mdss_dp0). See Phase 2 of
+# docs/porting-log.md's gts9wifi-fedora pivot entry for the rest of the
+# config symbols those DTS nodes need (CS35L45, SM5440, ADSP/Q6 audio) --
+# not yet merged as of this fragment edit, so none of that new DTS content
+# is live until they land.
+CONFIG_TYPEC_DP_ALTMODE=y
 # The actual root cause of "zero i2c adapters, zero USB chip drivers ever
 # probed" (found 2026-09-05 after all i2c-bus-level DTS wiring checked out
 # fine and even the bus *controllers* themselves showed zero adapters via
@@ -236,6 +247,13 @@ CONFIG_PM_TEST_SUSPEND=y
 # CONFIG_INPUT_TOUCHSCREEN is already =y by mainline defconfig.
 CONFIG_TOUCHSCREEN_FTS1BA90A_X716=y
 
+# S Pen: Wacom WEZ01 EMR digitizer (gts9wifi-fedora pivot). Presence on
+# this exact X716B unit confirmed via a real on-device wez01_gts9.bin
+# firmware blob -- see kernel/dts/sm8550-samsung-x716b.dts's i2c3 node.
+# From-scratch driver, same reasoning as the touchscreen/panel drivers
+# below (no usable mainline driver for this chip).
+CONFIG_TOUCHSCREEN_WACOM_WEZ01_X716=y
+
 # &i2c4 (the touchscreen's bus) never probed on real hardware even after the
 # Session 7 regulator fix -- confirmed via a live serial-console session:
 # `a90000.i2c: deferred probe pending: geni_i2c: Failed to get tx DMA ch`,
@@ -288,8 +306,74 @@ CONFIG_BT_HCIUART=y
 # available here -- same bug class, again).
 CONFIG_POWER_SEQUENCING_QCOM_WCN=y
 
-# Explicitly NOT enabled here (deferred, see docs/hardware-facts.md
-# non-goals): camera, audio DSP/APR, sensors, cellular modem remoteproc,
-# GPU acceleration (Mesa/Adreno firmware -- the initial Weston bring-up
-# target uses pixman/DRM dumb buffers only, see docs/porting-log.md's
-# Session 5 entry).
+# Internal audio + sensors, step 1: the ADSP (audio DSP / SSC) remoteproc
+# (gts9wifi-fedora pivot, matching their config-gts9wifi.fragment's own
+# reasoning verbatim -- same "no modprobe available" bug class as every
+# =m default fixed above). Firmware is Samsung's own signed adsp.mdt
+# (extracted from the apnhlos partition, same TWRP-based method as the
+# GPU zap/GMU firmware already pulled -- see &remoteproc_adsp's own DTS
+# comment). This is the foundation both q6 audio and SSC sensors sit on.
+CONFIG_REMOTEPROC=y
+CONFIG_QCOM_RPROC_COMMON=y
+CONFIG_QCOM_Q6V5_COMMON=y
+CONFIG_QCOM_Q6V5_PAS=y
+CONFIG_QCOM_SYSMON=y
+CONFIG_QCOM_PDR_HELPERS=y
+CONFIG_QCOM_PDR_MSG=y
+CONFIG_RPMSG_QCOM_GLINK_SMEM=y
+CONFIG_QRTR_SMD=y
+
+# Sensors, step 2: Samsung's sensor protection domain is started by
+# userspace through FastRPC. Without a built-in FastRPC driver the ADSP
+# announces fastrpcglink-apps-dsp yet /dev/fastrpc-adsp never exists,
+# hexagonrpcd (Phase 3) cannot attach sensorspd, and the SSC QMI service
+# is never published. Defaults to =m; this port doesn't autoload modules.
+CONFIG_QCOM_FASTRPC=y
+
+# Internal audio, step 2: AudioReach/GPR, the SM8550 machine card, the
+# CS35L45 I2C/MI2S speaker path, and the LPASS VA macro used by its
+# DMICs. The generic mainline config leaves this whole graph at =m; the
+# visible roots must be =y (their own selects pull q6apm/q6afe/q6prm,
+# WM_ADSP and QCOM PDR helpers up to =y too).
+CONFIG_SOUND=y
+CONFIG_SND=y
+CONFIG_SND_SOC=y
+CONFIG_SOUNDWIRE=y
+CONFIG_QCOM_APR=y
+CONFIG_SND_SOC_QCOM=y
+CONFIG_SND_SOC_QDSP6=y
+CONFIG_SND_SOC_SC8280XP=y
+CONFIG_SND_SOC_CS35L45_I2C=y
+CONFIG_SND_SOC_LPASS_VA_MACRO=y
+CONFIG_PINCTRL_LPASS_LPI=y
+CONFIG_PINCTRL_SM8550_LPASS_LPI=y
+
+# The four CS35L45 instances share their physical reset line (TLMM
+# GPIO42) and mainline routes shared reset lines like this through the
+# GPIO shared-proxy driver. Its default is =m; without module autoload
+# every codec gets -EPROBE_DEFER even though TLMM/GPIO42 are both valid.
+CONFIG_GPIO_SHARED_PROXY=y
+
+# PPS direct-charge pump (SM5440) and its battery-thermistor ADC channel
+# (&pmk8550's pmk8550_vadc, wired into sm5714_charger's io-channels).
+CONFIG_CHARGER_SM5440_DIRECT=y
+CONFIG_QCOM_SPMI_ADC5_GEN3=y
+
+# DisplayPort altmode link-training helpers. TYPEC_DP_ALTMODE (re-added
+# above) and the internal DP path both need these; DRM_MSM's own =y
+# likely already pulls DRM_DISPLAY_HELPER/DP_HELPER in transitively, but
+# listed explicitly rather than assumed given this is genuinely new
+# territory (Type-C DP altmode) for this port.
+CONFIG_DRM_DISPLAY_HELPER=y
+CONFIG_DRM_DISPLAY_DP_HELPER=y
+CONFIG_DRM_DISPLAY_DSC_HELPER=y
+
+# Explicitly NOT enabled here (see docs/hardware-facts.md non-goals):
+# camera, cellular modem remoteproc, hardware video decode (iris) --
+# gts9wifi-fedora's own reference doesn't ship these either (camera/
+# fingerprint confirmed absent from that project entirely; iris is
+# explicitly `❌` in their own README), so "same quality as the Wi-Fi
+# version" excludes them here too. GPU acceleration and audio DSP/
+# sensors, previously listed here as deferred, are no longer -- see the
+# Display/DRM block above and the ADSP/audio/sensors block above this
+# comment, both landed as part of the gts9wifi-fedora pivot.

@@ -1,0 +1,70 @@
+--- a/hexagonrpcd/rpcd_builder.c
++++ b/hexagonrpcd/rpcd_builder.c
+@@ -31,6 +31,7 @@
+ #define SENSORS_CONFIG		"/sensors/config/"
+ #define SNS_REG_CONFIG		"/sensors/sns_reg.conf"
+ #define SENSORS_ROOT		"/sensors/"
++#define SNS_REG_VERSION		"/sensors/sns_reg_version"
+ #define SYSFS_SOCINFO		"/socinfo/"
+ 
+ static struct hexagonfs_dirent *hfs_mkdir(const char *name, size_t n_ents, ...)
+@@ -111,7 +112,8 @@
+  */
+ struct hexagonfs_dirent *construct_root_dir(const char *prefix, const char *dsp)
+ {
+-	char *acdbdata, *dsp_libs, *sns_cfg, *sns_root, *sns_reg_config, *socinfo;
++	char *acdbdata, *dsp_libs, *sns_cfg, *sns_root, *sns_reg_config;
++	char *sns_reg_version, *socinfo;
+ 	size_t n_prefix;
+ 	struct hexagonfs_dirent *persist_dir, *vendor_dir;
+ 
+@@ -121,6 +123,7 @@
+ 	sns_cfg = malloc(n_prefix + strlen(SENSORS_CONFIG) + 1);
+ 	sns_root = malloc(n_prefix + strlen(SENSORS_ROOT) + 1);
+ 	sns_reg_config = malloc(n_prefix + strlen(SNS_REG_CONFIG) + 1);
++	sns_reg_version = malloc(n_prefix + strlen(SNS_REG_VERSION) + 1);
+ 	socinfo = malloc(n_prefix + strlen(SYSFS_SOCINFO) + 1);
+ 
+ 	dsp_libs = malloc(n_prefix + strlen(DSP_LIBS) + strlen(dsp) + 1);
+@@ -145,6 +148,11 @@
+ 		strcat(sns_reg_config, SNS_REG_CONFIG);
+ 	}
+ 
++	if (sns_reg_version != NULL) {
++		strcpy(sns_reg_version, prefix);
++		strcat(sns_reg_version, SNS_REG_VERSION);
++	}
++
+ 	if (socinfo != NULL) {
+ 		strcpy(socinfo, prefix);
+ 		strcat(socinfo, SYSFS_SOCINFO);
+@@ -180,7 +188,7 @@
+ 				)
+ 			);
+ 
+-	return hfs_mkdir("/", 6,
++	return hfs_mkdir("/", 7,
+ 			hfs_mkdir("mnt", 1,
+ 				hfs_mkdir("vendor", 1,
+ 					persist_dir
+@@ -195,6 +203,20 @@
+ 			hfs_mkdir("system", 1,
+ 				vendor_dir
+ 			),
++			/*
++			 * Samsung's SM8550 sensor firmware also probes for
++			 * "sns_reg_version" via a path that is *itself*
++			 * "/../sns_reg_version" -- a bare leading "/" makes
++			 * hexagonfs_openat() start from the real root fd, so
++			 * ".." (clamped there, same as POSIX "/..") leaves it
++			 * looking for "sns_reg_version" as a *root-level*
++			 * child, not under persist/sensors/registry like
++			 * every other registry file. Map it here too, same
++			 * physical file the "registry" mapping already
++			 * exposes (this is genuinely a second, independent
++			 * name the firmware uses for the one real file).
++			 */
++			hfs_map("sns_reg_version", sns_reg_version),
+ 			hfs_mkdir("usr", 1,
+ 				hfs_mkdir("lib", 1,
+ 					hfs_mkdir("qcom", 1,

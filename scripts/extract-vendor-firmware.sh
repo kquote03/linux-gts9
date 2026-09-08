@@ -91,6 +91,64 @@ file_list=(
 	/vendor/firmware/regdb.bin
 )
 
+echo "== mounting apnhlos (vfat/FAT16, adsp.mdt+segments) and dsp (ext4, HexagonFS payload) =="
+# gts9wifi-fedora pivot: their own docs/PORT-KIT.md documents these as the
+# real source of the ADSP firmware/HexagonFS payload ("extracted from the
+# tablet's own stock partitions (apnhlos, dsp, persist)") -- confirmed
+# directly on this X716B unit rather than assumed:
+#  - apnhlos (this device: /dev/block/sda17) is FAT16 ("MSDOS5.0" boot
+#    sector, confirmed via hexdump), NOT ext4 like the other partitions
+#    this script already mounts -- holds the actual PIL-loadable firmware
+#    images under image/: adsp.mdt + adsp.b00..b50 (real QUALCOMM DSP6 ELF,
+#    confirmed via `file`) + adsp_dtb.mdt + adsp_dtb.b00..b02. Also
+#    cdsp.{mdt,b*,_dtb.*} alongside -- deliberately NOT pulled (CDSP/
+#    cellular stays out of scope, see docs/hardware-facts.md non-goals).
+#  - Also under image/: adspr.jsn, adsps.jsn, adspua.jsn, cdspr.jsn -- the
+#    QMI servreg (PDR) service-registry maps for root_pd/sensor_pd/audio_pd
+#    and cdsp's root_pd (Samsung ships none for charger_pd, which is why
+#    battery goes through the SM5714 directly from the AP -- see the DTS
+#    comment on &i2c_hub_8). Real, live-hardware-confirmed root cause for
+#    why pd-mapper failed with "no pd maps available" and the sound card
+#    never got past "error getting cpu dai name": pd-mapper's
+#    pd_enumerate_jsons() scans the *same directory* the currently-loaded
+#    remoteproc firmware came from (dirname of
+#    /sys/class/remoteproc/remoteproc0/firmware, i.e. /lib/firmware/qcom/
+#    sm8550/) for *.jsn/*.jsn.xz files -- without adspua.jsn (which maps
+#    avs/audio -> msm/adsp/audio_pd) there, pd-mapper's pd_maps stays empty
+#    and it exits(1) immediately, so the kernel's PDR client can never get
+#    an UP indication for audio_pd, so q6apm's platform device (the sound
+#    card's cpu dai, "q6apmbedai") never registers. Pulling these 4 files
+#    into firmware/qcom-sm8550/ alongside adsp.mdt (same destination the
+#    rootfs build stages into /usr/lib/firmware/qcom/sm8550/) fixes this
+#    -- confirmed live: copying them in and restarting pd-mapper made
+#    q6apm register immediately (gprsvc:service:2:1/2:2 appeared on
+#    aprbus, "error getting cpu dai name" left devices_deferred).
+#  - dsp (this device: /dev/block/sda16) is ext4, holds userspace-side
+#    Hexagon FastRPC skel libraries under adsp/ (audio codec modules,
+#    "libsns_*" sensor skel libs -- SSC's real userspace half) and cdsp/
+#    (not pulled, same reasoning as above). This is the real, on-device
+#    source for what gts9wifi-fedora's own hexagonrpcd-samsung.spec calls
+#    the "firmware-samsung-gts9wifi payload" / HexagonFS root
+#    (/usr/share/qcom/sm8550/Samsung/gts9wifi/dsp) -- X716B needs its own
+#    extraction here, not a reuse of theirs (device-specific signed blobs).
+adb shell "mkdir -p /mnt_apnhlos /mnt_dsp
+mount -t vfat -o ro /dev/block/bootdevice/by-name/apnhlos /mnt_apnhlos 2>/dev/null
+mount -t ext4 -o ro /dev/block/bootdevice/by-name/dsp /mnt_dsp 2>/dev/null"
+mkdir -p "$outdir/firmware/qcom-sm8550" "$outdir/hexagonfs/dsp/adsp"
+echo "-- adsp PIL firmware (apnhlos/image) --"
+adb shell "ls /mnt_apnhlos/image/adsp.mdt /mnt_apnhlos/image/adsp.b* \
+	/mnt_apnhlos/image/adsp_dtb.mdt /mnt_apnhlos/image/adsp_dtb.b* \
+	/mnt_apnhlos/image/adspr.jsn /mnt_apnhlos/image/adsps.jsn \
+	/mnt_apnhlos/image/adspua.jsn /mnt_apnhlos/image/cdspr.jsn 2>/dev/null" \
+	| tr -d '\r' | while IFS= read -r remote; do
+	[ -z "$remote" ] && continue
+	adb pull "$remote" "$outdir/firmware/qcom-sm8550/" >/dev/null
+done
+echo "pulled $(ls "$outdir/firmware/qcom-sm8550" | wc -l) adsp PIL firmware + PDR registry files"
+echo "-- HexagonFS payload (dsp/adsp) --"
+adb pull /mnt_dsp/adsp "$outdir/hexagonfs/dsp/" 2>&1 | tail -3
+adb shell "umount /mnt_apnhlos /mnt_dsp 2>/dev/null; rmdir /mnt_apnhlos /mnt_dsp 2>/dev/null" || true
+
 echo "== pulling directories =="
 # `adb pull <remote_dir> <dest>` creates <dest>/$(basename remote_dir)/...
 # itself, so pull into local_sub's *parent* -- pulling into local_sub
@@ -118,6 +176,21 @@ for remote in "${file_list[@]}"; do
 		echo "not present on this device: $remote (skipping)"
 	fi
 done
+
+echo "== staging AudioReach topology (not device-specific -- reused + patched, see stage-audioreach-topology.sh) =="
+# Not actually pulled off this device (it doesn't exist on any Samsung
+# partition -- see that script's own header), but it belongs in this same
+# staging directory: every rootfs builder that copies
+# vendor-firmware-dump/firmware/qcom-sm8550/* into its own /lib/firmware
+# should get this file the same way it gets adsp.mdt and the PDR .jsn
+# files, without needing separate awareness of where it came from.
+tplg_dir="$outdir/firmware/qcom-sm8550"
+mkdir -p "$tplg_dir"
+if [ ! -f "$tplg_dir/Samsung-Galaxy-Tab-S9-5G-tplg.bin" ]; then
+	"$(dirname "${BASH_SOURCE[0]}")/stage-audioreach-topology.sh" \
+		"$tplg_dir/Samsung-Galaxy-Tab-S9-5G-tplg.bin" \
+		|| echo "warning: AudioReach topology staging failed -- sound card will not instantiate (re-run scripts/stage-audioreach-topology.sh manually to see why)" >&2
+fi
 
 echo "== done -- staged under $outdir (gitignored, proprietary) =="
 find "$outdir" -type f | sort

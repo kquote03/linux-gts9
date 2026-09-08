@@ -1,0 +1,34 @@
+#!/bin/sh
+# Samsung's stock persist partition ships the SSC sensor registry with
+# root-only permissions; hexagonrpcd runs as the fastrpc user and its
+# registry sync dies on every write (Permission denied) - the SSC never
+# finishes discovery and sensors stay dead.  Open the registry tree up
+# after the persist partition mounts.
+set -eu
+REG=/mnt/vendor/persist/sensors
+[ -d "$REG" ] || exit 0
+chmod -R a+rwX "$REG"
+
+# X716B pivot, real bug found and fixed on hardware: hexagonrpcd's
+# rpcd_builder.c maps its virtual "persist/sensors/registry" path onto the
+# *physical* directory "<-R prefix>/sensors/" -- so the daemon's own -R
+# root (this port's static, package-installed HexagonFS payload at
+# /usr/share/qcom/sm8550/Samsung/gts9-5g, extracted once from the dsp
+# partition) needs a "sensors/" entry whose *contents* match what
+# Android's real absolute layout keeps at
+# /mnt/vendor/persist/sensors/registry/ (confusingly, one level *inside*
+# the "registry" directory this script chmods above, not "sensors/"
+# itself -- verified directly on hardware with `find`: the real
+# sns_reg_version file and the real per-sensor calibration files both
+# live under .../sensors/registry/, not .../sensors/ directly).
+#
+# Bind-mount rather than copy: this keeps ongoing SSC registry writes
+# (fac-cal updates, etc.) landing on the real persist partition, matching
+# this script's own perms-widening above (already assumes -- and enables
+# -- writes there), rather than a build-time snapshot that would silently
+# drift from the real calibration data.
+HEXAGONFS_SENSORS=/usr/share/qcom/sm8550/Samsung/gts9-5g/sensors
+if [ -d "$REG/registry" ] && ! mountpoint -q "$HEXAGONFS_SENSORS" 2>/dev/null; then
+	mkdir -p "$HEXAGONFS_SENSORS"
+	mount --bind "$REG/registry" "$HEXAGONFS_SENSORS"
+fi

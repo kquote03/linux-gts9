@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
+# Deliberately out of scope for docs/distro-porting.md's device-overlay
+# split (no Mesa/GPU, no attempt at ADSP/audio/sensors) -- stays a small,
+# standalone "prove the display works" artifact, not a target for that
+# checklist.
+#
 # Build the minimal Weston + weston-terminal rootfs (Session 5, 2026-09-05).
 # This is a SEPARATE, smaller "prove the display works" rootfs -- not the
 # debootstrap-based Phase 4 Ubuntu rootfs (see docs/hardware-facts.md).

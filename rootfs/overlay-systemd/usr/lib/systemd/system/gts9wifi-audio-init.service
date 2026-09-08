@@ -1,0 +1,11 @@
+[Unit]
+Description=Apply mixer routing/volume the sound card needs for audible output
+After=sound.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/gts9wifi-audio-init
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

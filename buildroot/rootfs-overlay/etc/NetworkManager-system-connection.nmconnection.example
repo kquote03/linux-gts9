@@ -1,0 +1,32 @@
+# Example NetworkManager keyfile connection profile for the Ubuntu rootfs
+# (Phase 4) -- copy this file (same directory, drop the .example suffix)
+# and fill in a real SSID/PSK/UUID before running
+# scripts/build-ubuntu-rootfs.sh. The real, filled-in file is gitignored
+# (see .gitignore) and never committed -- same treatment as
+# buildroot/rootfs-overlay/etc/wpa_supplicant.conf/.example.
+#
+# Generate a real UUID with: cat /proc/sys/kernel/random/uuid
+#
+# NetworkManager refuses a keyfile connection that isn't exactly
+# root-owned, mode 0600 -- scripts/build-ubuntu-rootfs.sh sets that when it
+# copies this into the rootfs at
+# etc/NetworkManager/system-connections/home.nmconnection.
+[connection]
+id=home
+uuid=PLACEHOLDER_UUID
+type=wifi
+
+[wifi]
+mode=infrastructure
+ssid=PLACEHOLDER_SSID
+
+[wifi-security]
+key-mgmt=wpa-psk
+psk=PLACEHOLDER_PASSWORD
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+addr-gen-mode=default

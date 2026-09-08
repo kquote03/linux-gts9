@@ -1,0 +1,27 @@
+# Second example NetworkManager keyfile connection profile -- for an open
+# (no-password) network, e.g. a guest/public AP at a different location
+# than the primary "home" profile
+# (NetworkManager-system-connection.nmconnection/.example). Same
+# gitignored-real/tracked-placeholder treatment: copy this file (drop the
+# .example suffix), fill in a real SSID.
+#
+# Generate a real UUID with: cat /proc/sys/kernel/random/uuid
+#
+# No [wifi-security] section at all -- that's what makes this an open
+# network in NetworkManager's keyfile format (not e.g. key-mgmt=none with
+# an empty psk, which is a different, invalid state).
+[connection]
+id=guest
+uuid=PLACEHOLDER_UUID
+type=wifi
+
+[wifi]
+mode=infrastructure
+ssid=PLACEHOLDER_SSID
+
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+addr-gen-mode=default

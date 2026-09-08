@@ -1,0 +1,53 @@
+#!/bin/sh
+# Apply the mixer settings the sound card needs to actually produce audio,
+# independent of whatever (if anything) applies ALSA UCM's own
+# conf.d/sm8550/Samsung-Galaxy-Tab-S9-5G.conf BootSequence for this card
+# name -- this project hasn't confirmed UCM auto-matching actually runs on
+# this minimal rootfs (no alsaucm binary installed, no confirmed
+# PipeWire/WirePlumber ALSA-UCM integration exercised yet), so don't rely
+# on it alone for something this basic. Verified live on hardware: without
+# these csets the card instantiates and streams cleanly but a real
+# `speaker-test` tone is inaudible; with them, it is (confirmed by ear).
+#
+# The two "Right" amps' DACPCM Source is ASP_RX2, not ASP_RX1 like the
+# "Left" amps -- ASP_RX1/ASP_RX2 are the two TDM/I2S RX slots on the
+# shared MI2S bus (left/right respectively). gts9wifi-fedora's own
+# reference config (copied here verbatim at first) uses ASP_RX1 for all
+# four amps, which put every speaker on the left channel only -- a real
+# bug, confirmed live: alternating L/R test tones only alternated once
+# this was fixed.
+#
+# Safe to run before the sound card exists yet (amixer just fails
+# silently on a missing card/control) and safe to run repeatedly.
+set -u
+
+i=0
+while [ $i -lt 30 ] && ! grep -q Samsung-Galaxy-Tab-S9-5G /proc/asound/cards 2>/dev/null; do
+	sleep 1
+	i=$((i + 1))
+done
+
+for ctl in \
+	"PRIMARY_MI2S_RX Audio Mixer MultiMedia1|on" \
+	"Front Left AMP Enable Switch|on" \
+	"Front Right AMP Enable Switch|on" \
+	"Rear Left AMP Enable Switch|on" \
+	"Rear Right AMP Enable Switch|on" \
+	"Front Left Digital PCM Volume|380" \
+	"Front Right Digital PCM Volume|380" \
+	"Rear Left Digital PCM Volume|380" \
+	"Rear Right Digital PCM Volume|380" \
+	"Front Left Analog PCM Volume|3" \
+	"Front Right Analog PCM Volume|3" \
+	"Rear Left Analog PCM Volume|3" \
+	"Rear Right Analog PCM Volume|3" \
+	"Front Left DACPCM Source|ASP_RX1" \
+	"Front Right DACPCM Source|ASP_RX2" \
+	"Rear Left DACPCM Source|ASP_RX1" \
+	"Rear Right DACPCM Source|ASP_RX2" \
+; do
+	name="${ctl%%|*}"
+	value="${ctl##*|}"
+	amixer -c 0 cset name="$name" "$value" >/dev/null 2>&1
+done
+exit 0

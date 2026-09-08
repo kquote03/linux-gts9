@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# Predates the ADSP/audio/sensor work entirely (see docs/distro-porting.md
+# for the device-overlay split that came after this script was last
+# touched) -- if reviving this, apply rootfs/overlay-common/ and write an
+# OpenRC equivalent of rootfs/overlay-systemd/, and pull firmware from
+# vendor-firmware-dump/firmware/qcom-sm8550/ the same way
+# build-fedora-rootfs.sh does. Likely otherwise stale against the current
+# kernel config too -- not touched since.
+#
 # Build a real, persistent Alpine Linux (aarch64) root filesystem -- the
 # Storage bring-up session's Phase D. This is the actual "Phase 4" distro
 # rootfs, superseding the Buildroot Weston-only ramdisk (which stays as a
