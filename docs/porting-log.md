@@ -3085,3 +3085,79 @@ pointed at `out/real-root-initramfs.cpio.gz` booted cleanly in the
 normal ~40s. No regression, no corruption -- a process mistake, now
 documented in `docs/s-pen-orientation.md` as a reminder for future
 sessions.
+
+### USB host mode and charging, fixed -- confirmed on real hardware
+
+Root cause: `&usb_1`'s `dr_mode = "peripheral";`
+(`kernel/dts/sm8550-samsung-x716b.dts`), added 2026-09-05 to get a
+working debug gadget console before the Type-C stack's own prerequisite
+patches existed. Forcing peripheral mode skips
+`dwc3_get_dr_mode()`'s live GHWPARAMS0 hardware readback and, with it, the
+`/sys/class/usb_role/` device registration `ps5169` (the SuperSpeed/DP
+redriver and role switch, `usb-role-switch = <&usb_1>;`) blocks on
+forever -- so `ps5169` never probed, and downstream of it, real
+device-ownership/host-mode and (per `sm5714_battery.c`'s
+`sm5714_configure_charging()`) full-rate PD/PPS charging never engaged
+either. This project's own history had already traced this and explicitly
+planned to remove the override "once [the eUSB2-PHY-init/ptn3222-DT/TCPM-
+retained-role] patches are in" (see the Phase 1 pivot entry above) -- those
+four patches were confirmed present and applied, but the flip itself was
+never executed as its own step, until now.
+
+Three changes, all landed together as planned:
+
+1. **`kernel/dts/sm8550-samsung-x716b.dts`**: removed the `dr_mode =
+   "peripheral";` override entirely, matching gts9wifi-fedora's own DTS
+   for this exact SM8550 dwc3 IP block (no override at all). Comment
+   replaced with a short pointer to this entry.
+2. **`kernel/config/config-x716.fragment`**: checked, no change needed --
+   `CONFIG_USB_ROLE_SWITCH`/`CONFIG_USB_DWC3`/`CONFIG_USB_DWC3_QCOM` all
+   already `=y` in the merged `.config` (confirmed via a real build, not
+   assumed), unlike the several prior "silently defaults to `=m`" bugs
+   this project has hit.
+3. **`kernel/drivers/sm5714_usbpd.c`**: wired `sm->tcpc.
+   adopt_retained_source_ufp = true` and a `consume_retained_sink_dfp`
+   callback, ported from gts9wifi-fedora's own driver -- the two upstream
+   `tcpc_dev` hooks these need
+   (`kernel/patches/tcpm-adopt-retained-source-ufp-role.patch`,
+   `kernel/patches/tcpm-use-retained-sink-data-role.patch`) were already
+   applied to this project's pinned tree, but a stale comment claimed they
+   weren't and the driver never used them. Kept alongside, not replacing,
+   this repo's own hand-rolled CC-detach/reattach dock recovery (same as
+   the reference driver does) and this repo's own additive reliability
+   work beyond gts9wifi-fedora (`otg_rp`/`otg_ma` module params,
+   `cc_watch_work` attach watchdog) -- none of that was reverted.
+
+**Verified on real hardware, not just probe success**: after flashing,
+`dmesg` showed `ps5169 4-0028: PS5169 redriver detected (chip id 69:87)`
+and `sm5714-usbpd 3-0033: SM5714 USB Type-C/PD controller registered` --
+both previously stuck forever. `/sys/class/usb_role/a600000.usb-role-
+switch/role` now exists. `xhci-hcd xhci-hcd.1.auto: irq 283, io mem
+0x0a600000` -- the real xHCI host controller for this exact dwc3 block --
+registered, and **the user plugged in a real USB-C hub and it fully
+enumerated**: a 4-port hub plus a nested sub-hub, multiple downstream
+ports (`1-1`, `1-1.1`, `1-1.1.1`-`1-1.1.4`, `1-1.2`), confirmed working by
+the user directly ("my usb hub worked") -- the actual regression test for
+"never takes ownership of USB devices."
+
+Charging: with a real PD charger attached, `dmesg` showed genuine PPS
+direct-charge activity, not just fixed-PD fallback --
+`sm5714-usbpd 3-0033: USB-PD contract: 8200 mV, 2000 mA` alongside real
+`sm5440-direct` telemetry (`direct: pack=31.2C vbus=7881mV ibus=1444mA
+vbat=3800mV die=37.0C`, i.e. the 2:1 direct-charge pump actually pumping
+~1.3-1.5A into the battery), then a clean fallback to the fixed-PD path
+at `USB-PD contract: 9000 mV, 1660 mA` / `enabled charging for USB type 6
+at 9000 mV (1660 mA input, 2800 mA fast)` -- the full 15 W the connector's
+`sink-pdos` declares, versus the ~500 mA/2.5 W BC1.2 SDP fallback this
+board was stuck on before (no PD contract ever completing). **Per direct
+instruction, charging is documented as observed working in this session,
+not as a fully closed-out ✅** -- the PPS/direct-charge path in particular
+warrants more extended real-world testing (different chargers, a full
+charge cycle, thermal behavior) before calling it fully proven.
+
+Distro-agnostic by construction, same as the power/volume-button fix:
+the entire change is `kernel/dts/`+`kernel/config/`+`kernel/drivers/`
+only -- nothing under `rootfs/overlay-common/` or `rootfs/overlay-
+systemd/` was touched or needed. USB role switching, TCPM, and charging
+current are all kernel/driver-level behavior; no userspace daemon or
+init-system-specific glue is involved.

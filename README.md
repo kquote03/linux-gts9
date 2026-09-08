@@ -34,11 +34,11 @@ device.
 | Bluetooth | ✅ firmware loaded, HCI up |
 | Speakers (4× CS35L45 on PRIMARY MI2S) | ✅ both stereo channels confirmed audible by ear |
 | DMIC capture (LPASS VA macro) | ⚠️ wired in DTS, not yet tested with a real recording |
-| Battery / charging incl. PPS (SM5714 + SM5440) | ✅ |
+| Battery / charging incl. PPS (SM5714 + SM5440) | ⚠️ real PD/PPS contract confirmed negotiating (`docs/porting-log.md`), needs more extended real-world testing before calling it fully proven |
 | Power / volume buttons | ✅ confirmed on hardware (power suspends; both volume keys work) |
 | Book-cover lid switch | ❌ not implemented |
 | USB (gadget debug network) | ✅ `g_ether`, real SSH access |
-| USB host mode, Type-C PD, docks | ❌ deferred — `&usb_1`'s `dr_mode` is forced to `"peripheral"` |
+| USB host mode, Type-C PD, docks | ✅ confirmed on hardware — real USB-C hub enumerated fully (`docs/porting-log.md`) |
 | USB-C DisplayPort altmode | ⚠️ wired in DTS, not tested with a physical dock |
 | Sensors (SSC: accelerometer, ambient light, etc.) | ⚠️ ADSP boots and the HexagonFS registry path is fixed, but the SSC QMI service itself doesn't publish (a real, likely upstream `hexagonrpcd` gap — see `docs/porting-log.md`) |
 | Suspend (s2idle) | ✅ |

@@ -612,6 +612,15 @@ static int sm5714_usbpd_set_pd_rx(struct tcpc_dev *tcpc, bool on)
 			    on ? 0x08 : 0x00);
 }
 
+static bool sm5714_usbpd_consume_retained_sink_dfp(struct tcpc_dev *tcpc)
+{
+	struct sm5714_usbpd *sm = tcpc_to_sm5714(tcpc);
+	bool retained = sm->retained_sink_dfp;
+
+	sm->retained_sink_dfp = false;
+	return retained;
+}
+
 static int sm5714_usbpd_set_roles(struct tcpc_dev *tcpc, bool attached,
 				  enum typec_role role,
 				  enum typec_data_role data)
@@ -881,14 +890,22 @@ static int sm5714_usbpd_probe(struct i2c_client *client)
 
 	sm->tcpc.fwnode = sm->connector;
 	/*
-	 * X910's retained-source/sink dock-reboot recovery
-	 * (adopt_retained_source_ufp/consume_retained_sink_dfp) removed here:
-	 * those struct tcpc_dev fields don't exist in this project's pinned
-	 * kernel tag (a newer mainline addition than what we've pinned) --
-	 * see docs/porting-log.md's "Session 4" entry. Irrelevant to this
-	 * port's actual use case (a plain cable to a PC, not a powered dock)
-	 * regardless.
+	 * A powered USB-C dock stays Source/UFP across a tablet reboot. It is
+	 * the power source but the USB data peripheral, so recover as
+	 * Sink/DFP when its retained role appears in the first PD reply.
+	 * Ported from gts9wifi-fedora's own sm5714_usbpd.c (X710) -- the
+	 * fields this used to claim were missing from this project's pinned
+	 * kernel tag (see the removed comment, docs/porting-log.md's
+	 * "Session 4" entry) were added by kernel/patches/tcpm-adopt-
+	 * retained-source-ufp-role.patch and kernel/patches/tcpm-use-
+	 * retained-sink-data-role.patch during the ADSP/audio pivot and have
+	 * been applied ever since; this driver just never started using them.
+	 * Kept alongside, not replacing, the hand-rolled CC-detach/reattach
+	 * recovery above -- both come from the same reference driver.
 	 */
+	sm->tcpc.adopt_retained_source_ufp = true;
+	sm->tcpc.consume_retained_sink_dfp =
+		sm5714_usbpd_consume_retained_sink_dfp;
 	sm->tcpc.init = sm5714_usbpd_init;
 	sm->tcpc.get_vbus = sm5714_usbpd_get_vbus;
 	sm->tcpc.get_current_limit = sm5714_usbpd_get_current_limit;

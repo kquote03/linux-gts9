@@ -1512,45 +1512,21 @@
 
 &usb_1 {
 	/*
-	 * dr_mode = "peripheral" added 2026-09-05 after a deep investigation
-	 * traced ps5169/sm5714-usbpd's stalled probe to dwc3 itself: without
-	 * an explicit dr_mode, dwc3_get_dr_mode() (drivers/usb/dwc3/core.c)
-	 * does a *live hardware readback* of GHWPARAMS0 to decide DRD vs
-	 * peripheral-only, and only calls dwc3_setup_role_switch() (which
-	 * registers the /sys/class/usb_role/ device ps5169's
-	 * fwnode_usb_role_switch_get() call blocks on, forever, once
-	 * fw_devlink/deferred_probe_timeout stopped masking it) when that
-	 * readback resolves to OTG. If the silicon reports peripheral-only
-	 * capability, that registration is permanently skipped -- not a
-	 * timing issue, an architectural one. Since the actual goal here is
-	 * only a plain USB2 gadget serial console (not Type-C role
-	 * negotiation, PD, or DisplayPort alt mode), forcing peripheral mode
-	 * explicitly removes the dependency on that hardware-readback path
-	 * entirely, rather than continuing to chase whether it would have
-	 * resolved to OTG on its own. ps5169 (SuperSpeed/DP redriver) and
-	 * sm5714-usbpd (TCPM/PD) are expected to remain unbound after this --
-	 * both are for functionality outside this port's actual goal, and
-	 * ptn3222 (already bound, confirmed) handles the USB2 HS signal path
-	 * a plain gadget serial console actually needs.
-	 *
-	 * DELIBERATELY NOT REMOVED YET (gts9wifi-fedora pivot): their own
-	 * real, working DTS has no dr_mode override on &usb_1 at all, and
-	 * gets full USB host mode + Type-C PD + docks working on this exact
-	 * SM8550 dwc3 IP block -- proof the "peripheral-only" GHWPARAMS0
-	 * readback found above isn't a silicon limitation, since it's the
-	 * identical controller. But that finding came from a real, live
-	 * hardware readback on *this* unit at a time when the eUSB2 PHY init
-	 * sequence and TCPM role-retention fixes (Phase 2's `match-samsung-
-	 * sm8550-eusb2-phy-init.patch`, `configure-nxp-ptn3222-from-dt.patch`,
-	 * the two `tcpm-*-retained-*.patch` patches) weren't applied yet --
-	 * removing this override before those land risks reproducing the
-	 * exact regression this fix solved (the only working debug console
-	 * failing outright), not fixing anything. Remove `dr_mode` and
-	 * re-test only once those patches are in place, as one deliberate,
-	 * isolated change -- not bundled with anything else, matching this
-	 * project's own single-variable-change discipline throughout.
+	 * dr_mode = "peripheral" lived here from 2026-09-05 through the USB
+	 * host/PD/charging fix session: forcing peripheral mode skipped
+	 * dwc3_get_dr_mode()'s live GHWPARAMS0 hardware readback (and the
+	 * /sys/class/usb_role/ registration that only happens when it
+	 * resolves to OTG), which was needed at the time to get a working
+	 * debug gadget console up before the Type-C stack's own prerequisite
+	 * patches existed. Those patches (`match-samsung-sm8550-eusb2-phy-
+	 * init.patch`, `configure-nxp-ptn3222-from-dt.patch`, both
+	 * `tcpm-*-retained-*.patch`) are now in place, the debug console need
+	 * is superseded by the g_ether path, and gts9wifi-fedora's own DTS
+	 * has no dr_mode override at all on this exact dwc3 IP block -- so
+	 * this override was removed, restoring the hardware's own DRD
+	 * readback and letting ps5169/sm5714-usbpd probe normally. Full
+	 * history and real-hardware verification in docs/porting-log.md.
 	 */
-	dr_mode = "peripheral";
 	status = "okay";
 };
 
