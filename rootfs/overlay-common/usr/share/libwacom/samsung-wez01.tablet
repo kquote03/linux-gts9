@@ -1,0 +1,39 @@
+# Samsung Galaxy Tab S9 5G (SM-X716B) built-in S Pen digitizer
+#
+# Wacom WEZ01 EMR digitizer, driven by an out-of-tree i2c driver
+# (kernel/drivers/touchscreen-wacom-wez01-x716.c in this project, not
+# upstream) -- not a genuine Wacom-licensed part, so it has no real
+# USB/ACPI vendor-product pair. The vendor/product below are a fixed,
+# made-up identifier pair set directly by that driver
+# (input->id.vendor/product); this file's DeviceMatch= must keep matching
+# them exactly.
+#
+# Without this file, libwacom never recognizes the digitizer, so GNOME's
+# (or KDE's) wacom plugin never learns it's part of the built-in display
+# and never keeps its calibration matrix in sync with display rotation --
+# the pen then only tracks correctly in whichever single orientation
+# happens to match its raw coordinate frame. See docs/porting-log.md for
+# the full root-cause writeup (this was the second of two additive bugs,
+# alongside the digitizer@56 DTS swap/invert fix).
+#
+# Modeled directly on two real precedents already shipped in this
+# project's own built rootfs for the same class of hardware -- I2C
+# EMR/AES pen digitizers built into a laptop's own display, no USB
+# VID/PID: wacom-isdv4-527e.tablet (Lenovo X1 Yoga) and elan-2f2a.tablet.
+#
+# Width/Height are the panel's real physical size in landscape/native
+# orientation (docs/hardware-facts.md, qcom,mdss-pan-physical-
+# {width,height}-dimension), not the pen's own raw sensor units.
+
+[Device]
+Name=Samsung Galaxy Tab S9 5G S Pen
+ModelName=WEZ01
+DeviceMatch=i2c|f000|0056
+Class=ISDV4
+Width=236
+Height=148
+IntegratedIn=Display;System
+
+[Features]
+Stylus=true
+Touch=false

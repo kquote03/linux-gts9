@@ -1176,6 +1176,32 @@
 		pdct-gpios = <&tlmm 137 GPIO_ACTIVE_HIGH>;
 		pinctrl-names = "default";
 		pinctrl-0 = <&epen_int_default>, <&epen_pdct_default>;
+		/*
+		 * The digitizer's raw axes don't match the panel's mounted
+		 * orientation either, same as the touchscreen@49 node above.
+		 * Confirmed algebraically (not just guessed) from this
+		 * driver's own queried limits (docs/porting-log.md:
+		 * `max_x 14752, max_y 23603`, i.e. 147.52mm x 236.03mm at
+		 * this driver's fixed 100 units/mm) against the panel's real
+		 * physical size (docs/hardware-facts.md: 236mm x 148mm
+		 * landscape/native) -- raw X spans the panel's short (148mm)
+		 * dimension and raw Y spans the long (236mm) one, so X/Y are
+		 * swapped relative to native. Reported symptom on real
+		 * hardware: the pen tracked correctly only with GNOME's
+		 * rotation manually set to one specific non-native state and
+		 * stayed "stuck" in that geometry through every other
+		 * rotation -- exactly what an unswapped raw frame plus (see
+		 * the accompanying libwacom fix, docs/porting-log.md) no
+		 * automatic per-rotation calibration would produce.
+		 *
+		 * Starting from the touchscreen's own confirmed combination
+		 * (swap plus inverting only the pre-swap X axis) as the most
+		 * likely match, since both sensors sit on the same panel --
+		 * to be confirmed/corrected via the same real-hardware
+		 * corner-tap method Session 7 used, see docs/porting-log.md.
+		 */
+		touchscreen-swapped-x-y;
+		touchscreen-inverted-x;
 	};
 };
 

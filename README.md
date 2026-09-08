@@ -29,7 +29,7 @@ device.
 | Display (2560×1600 AMOLED, Samsung/Anapass ANA38407, DSI+DSC) | ✅ |
 | GPU (Adreno 740) | ✅ real zap/GMU firmware, GNOME renders on it |
 | Touchscreen (ST fts1ba90a) | ✅ |
-| S Pen digitizer (Wacom wez01) | ⚠️ detected, firmware queries cleanly (`fw version 0x4018`); not yet tested writing with an actual pen |
+| S Pen digitizer (Wacom wez01) | ✅ confirmed on hardware, tracks correctly across display rotations (see `docs/s-pen-orientation.md`) |
 | Wi-Fi (QCA6490 / ath11k) | ✅ real AP association confirmed |
 | Bluetooth | ✅ firmware loaded, HCI up |
 | Speakers (4× CS35L45 on PRIMARY MI2S) | ✅ both stereo channels confirmed audible by ear |
