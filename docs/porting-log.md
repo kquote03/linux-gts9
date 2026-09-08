@@ -3042,3 +3042,46 @@ identically under every rootfs this project carries, so this lands on
 Fedora, Alpine, Buildroot, and Ubuntu alike with zero additional work,
 unlike the audio/sensor work that needed the `overlay-common`/
 `overlay-systemd` split.
+
+### S Pen: fixing "stuck in one orientation" across display rotation
+
+Full writeup in `docs/s-pen-orientation.md` (kept as its own doc, not
+folded into this log, per direct instruction). Summary: two additive
+bugs, both fixed. (1) `digitizer@56`'s raw axes didn't match the panel's
+native frame -- same class of bug the touchscreen needed
+`touchscreen-swapped-x-y`/`-inverted-x` for, confirmed algebraically from
+the driver's own queried limits against the panel's real physical size
+before ever touching the device, then confirmed live after flashing via
+`udevadm`'s own computed `ID_INPUT_WIDTH_MM=236`/`HEIGHT_MM=147` matching
+the panel almost exactly. (2) GNOME/mutter never managed the device's
+rotation at all, because it registers as a libinput tablet-tool
+(`ID_INPUT_TABLET=1`), not a touchscreen, and tablet-tools only get
+automatic per-rotation calibration if `libwacom` recognizes them as
+integrated into the display -- the driver never set `input->id.vendor`/
+`id.product` and no `.tablet` database file existed. Fixed by setting
+those fields to a stable made-up pair (`0xf000`/`0x0056`, collision-
+checked against every `.tablet` file already in this project's built
+rootfs) and shipping a matching `samsung-wez01.tablet` file in
+`rootfs/overlay-common/usr/share/libwacom/` -- confirmed live,
+`libwacom-list-local-devices` went from "not supported" to fully
+recognizing it the moment the file was pushed to the running device. The
+user confirmed correct pen tracking across multiple real display
+rotations afterward, not just the "normal" baseline -- the actual
+regression test for the original bug.
+
+Also root-caused, mid-session, something that looked like a boot
+regression from this exact patch but wasn't: two flashes in a row
+appeared to hang on boot, including one deliberately built from the
+*pre-fix* kernel/DTB as a bisection test -- which should have booted fine
+and didn't, at first suggesting SD card corruption. The tty's actual
+error (`exFAT-fs (mmcblk0p1) invalid boot record signature`) traced back
+to a missing `BRINGUP_RAMDISK` override on both `nix run .#build-bundle`
+invocations, silently falling back to the stale original bring-up debug
+ramdisk (`scripts/build-bringup-ramdisk.sh`'s output), which still
+`mount -t exfat`s the microSD the way it did before this project
+repartitioned it to ext4. Neither flash could ever have reached the real
+rootfs, regardless of source changes. Reflashing with `BRINGUP_RAMDISK`
+pointed at `out/real-root-initramfs.cpio.gz` booted cleanly in the
+normal ~40s. No regression, no corruption -- a process mistake, now
+documented in `docs/s-pen-orientation.md` as a reminder for future
+sessions.

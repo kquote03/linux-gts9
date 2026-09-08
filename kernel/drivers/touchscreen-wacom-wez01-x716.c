@@ -236,6 +236,22 @@ static int wacom_wez01_probe(struct i2c_client *client)
 	w->input = input;
 	input->name = "Wacom WEZ01 S Pen";
 	input->id.bustype = BUS_I2C;
+	/*
+	 * This IC isn't Wacom-licensed (no ISDV4/HID handshake, no real USB
+	 * or ACPI vendor/product pair to report), so these are a made-up but
+	 * fixed identifier pair for GNOME/KDE's libwacom to key off of --
+	 * see rootfs/overlay-common/usr/share/libwacom/samsung-wez01.tablet,
+	 * whose DeviceMatch= must match these exactly. Without a nonzero
+	 * vendor/product here, libwacom can never recognize this device, and
+	 * GNOME/mutter's wacom plugin never learns it's an integrated-display
+	 * digitizer -- its calibration matrix then never follows display
+	 * rotation, which was the second of two bugs behind the S Pen
+	 * appearing "stuck" in whatever single orientation happened to match
+	 * its raw (pre-swap) coordinate frame. See docs/porting-log.md.
+	 * 0x0056 doubles as a reminder of this digitizer's i2c address.
+	 */
+	input->id.vendor = 0xf000;
+	input->id.product = 0x0056;
 
 	input_set_capability(input, EV_KEY, BTN_TOUCH);
 	input_set_capability(input, EV_KEY, BTN_STYLUS);
