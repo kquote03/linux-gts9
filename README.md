@@ -30,7 +30,7 @@ device.
 | GPU (Adreno 740) | ✅ real zap/GMU firmware, GNOME renders on it |
 | Touchscreen (ST fts1ba90a) | ✅ |
 | S Pen digitizer (Wacom wez01) | ✅ confirmed on hardware, tracks correctly across display rotations (see `docs/s-pen-orientation.md`) |
-| Wi-Fi (QCA6490 / ath11k) | ⚠️ associates and passes real traffic, but throughput is far below stock Android on the same network/position -- real fixes landed (power-save default, chip-identity/regulator correctness), root cause of the remaining gap not yet found; see `docs/porting-log.md` |
+| Wi-Fi (QCA6490 / ath11k) | ⚠️ associates and passes real traffic, but throughput is far below stock Android on the same network/position -- three real fixes landed (power-save default, chip-identity/regulator correctness, WLAN_EN cold-reset), each independently confirmed on hardware, none moved the throughput ceiling; likely a genuine antenna/RF hardware characteristic at this point, not a software bug -- see `docs/porting-log.md` |
 | Bluetooth | ✅ HCI up, real BT keyboard + touchpad HID input confirmed working on hardware |
 | Speakers (4× CS35L45 on PRIMARY MI2S) | ✅ both stereo channels confirmed audible by ear |
 | DMIC capture (LPASS VA macro) | ⚠️ wired in DTS, not yet tested with a real recording |

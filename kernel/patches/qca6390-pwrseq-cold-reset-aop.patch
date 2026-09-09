@@ -1,12 +1,13 @@
 --- a/drivers/power/sequencing/pwrseq-qcom-wcn.c
 +++ b/drivers/power/sequencing/pwrseq-qcom-wcn.c
 @@ -14,6 +14,7 @@
+ #include <linux/property.h>
  #include <linux/regulator/consumer.h>
  #include <linux/pwrseq/provider.h>
 +#include <linux/soc/qcom/qcom_aoss.h>
  #include <linux/string.h>
  #include <linux/types.h>
-
+ 
 @@ -24,6 +25,7 @@
  	unsigned int gpio_enable_delay_ms;
  	const struct pwrseq_target_data **targets;
@@ -14,18 +15,48 @@
 +	bool cold_reset_wlan;
  	int (*match)(struct pwrseq_device *pwrseq, struct device *dev);
  };
-
-@@ -320,6 +322,7 @@
+ 
+@@ -322,7 +324,27 @@
+ 	.num_vregs = ARRAY_SIZE(pwrseq_qca6390_vregs),
  	.pwup_delay_ms = 60,
  	.gpio_enable_delay_ms = 100,
- 	.targets = pwrseq_qcom_wcn_targets,
+-	.targets = pwrseq_qcom_wcn_targets,
++	/*
++	 * Confirmed live on real hardware (Networking bring-up session,
++	 * QCA6490 board): both patch #1 (PHY pipe-mux unpark) and patch #2
++	 * (AOP PDC votes) applied together still left the WLAN PCIe endpoint
++	 * undetected ("Device not found" -- LTSSM stuck in Detect.Quiet,
++	 * meaning the far-end receiver termination was never even seen).
++	 * This board's own stock DTS drives an XO-clock-enable GPIO
++	 * (qcom,xo-clk-gpio, GPIO 204) as part of *both* the WLAN and BT
++	 * halves of this exact chip's power-up sequence -- a real,
++	 * board-confirmed requirement mainline never wired up for the
++	 * QCA6390/QCA6490 pdata table (only wcn6855's table gained the
++	 * generic xo-clk-assert/deassert unit, even though the mechanism
++	 * itself is chip-agnostic). Reusing pwrseq_qcom_wcn6855_targets here
++	 * (rather than a new qca6490-specific target array) is deliberate:
++	 * it is the exact same xo-clk-assert-before-enable,
++	 * xo-clk-deassert-after-enable sequence, just previously gated
++	 * behind wcn6855's pdata only. See docs/porting-log.md's Networking
++	 * bring-up session entry.
++	 */
++	.targets = pwrseq_qcom_wcn6855_targets,
 +	.cold_reset_wlan = true,
  };
-
-@@ -457,6 +460,37 @@
+ 
+ static const char *const pwrseq_wcn3990_vregs[] = {
+@@ -382,6 +404,7 @@
+ 	.pwup_delay_ms = 50,
+ 	.gpio_enable_delay_ms = 5,
+ 	.targets = pwrseq_qcom_wcn6855_targets,
++	.cold_reset_wlan = true,
+ };
+ 
+ static const char *const pwrseq_wcn7850_vregs[] = {
+@@ -454,6 +477,45 @@
  	return pwrseq_qcom_wcn_match_regulator(pwrseq, dev, "vdd-1.8-xo-supply");
  }
-
+ 
 +/*
 + * Samsung's cnss2 programs the AOP WLAN PDC resources through the QMP
 + * mailbox before the first WCN power-on. This board's real stock DTS
@@ -68,7 +99,31 @@
  static int pwrseq_qcom_wcn_probe(struct platform_device *pdev)
  {
  	struct device *dev = &pdev->dev;
-@@ -504,7 +538,8 @@
+@@ -472,6 +534,23 @@
+ 		return dev_err_probe(dev, -ENODEV,
+ 				     "Failed to obtain platform data\n");
+ 
++	/*
++	 * Send the AOP WLAN PDC votes first, before any regulator/GPIO is
++	 * even requested -- confirmed (Networking bring-up session, via
++	 * downstream cnss2 source: cnss_probe(), main.c) that Samsung's own
++	 * driver calls cnss_aop_mbox_init()/cnss_aop_pdc_reconfig() (sends
++	 * every PDC vote) strictly before cnss_get_resources() (the call
++	 * that first acquires regulators/clocks/pinctrl, i.e. WLAN_EN/BT_EN).
++	 * Originally this call was placed after the WLAN GPIO/clock
++	 * acquisition below; moving it here makes the ordering byte-for-byte
++	 * faithful to real hardware's own probe sequence instead of an
++	 * approximation. See docs/porting-log.md's Networking bring-up
++	 * session entry.
++	 */
++	ret = pwrseq_qcom_wcn_program_wlan_pdc(dev);
++	if (ret)
++		return ret;
++
+ 	ctx->regs = devm_kcalloc(dev, ctx->pdata->num_vregs,
+ 				 sizeof(*ctx->regs), GFP_KERNEL);
+ 	if (!ctx->regs)
+@@ -504,7 +583,8 @@
  	 * the link down handling is implemented in the controller driver.
  	 */
  	ctx->wlan_gpio = devm_gpiod_get_optional(dev, "wlan-enable",
@@ -78,32 +133,24 @@
  	if (IS_ERR(ctx->wlan_gpio))
  		return dev_err_probe(dev, PTR_ERR(ctx->wlan_gpio),
  				     "Failed to get the WLAN enable GPIO\n");
-@@ -519,14 +554,27 @@
+@@ -518,9 +598,18 @@
+ 	/*
  	 * Set direction to output but keep the current value in order to not
  	 * disable the WLAN module accidentally if it's already powered on.
- 	 */
--	gpiod_direction_output(ctx->wlan_gpio,
--			       gpiod_get_value_cansleep(ctx->wlan_gpio));
-+	/*
++	 *
 +	 * cold_reset_wlan boards (Samsung's downstream boot chain hands
 +	 * Linux an already-asserted or otherwise unsequenced WLAN_EN) were
 +	 * instead requested GPIOD_OUT_LOW above; settle briefly so the
 +	 * normal regulator -> clock -> WLAN_EN sequence starts from a known
 +	 * state rather than racing whatever XBL/ABL left behind.
-+	 */
+ 	 */
+-	gpiod_direction_output(ctx->wlan_gpio,
+-			       gpiod_get_value_cansleep(ctx->wlan_gpio));
 +	if (ctx->pdata->cold_reset_wlan)
 +		usleep_range(5000, 10000);
 +	else
 +		gpiod_direction_output(ctx->wlan_gpio,
 +				       gpiod_get_value_cansleep(ctx->wlan_gpio));
-
+ 
  	ctx->clk = devm_clk_get_optional(dev, NULL);
  	if (IS_ERR(ctx->clk))
- 		return dev_err_probe(dev, PTR_ERR(ctx->clk),
- 				     "Failed to get the reference clock\n");
-
-+	ret = pwrseq_qcom_wcn_program_wlan_pdc(dev);
-+	if (ret)
-+		return ret;
-+
- 	memset(&config, 0, sizeof(config));
