@@ -3338,3 +3338,138 @@ touched. The SELinux fix is Fedora-rootfs-specific by nature (only
 Fedora ships `selinux-policy` and expects it enforced/permissive) --
 `SELINUX=disabled` is written only by `scripts/build-fedora-rootfs.sh`,
 not any distro-agnostic overlay path.
+
+### WiFi throughput bring-up session: real fixes landed, root cause of the remaining gap not found
+
+Real-hardware report: the same tablet, same network, gets 400-600 Mbps
+under stock Android but only 500 Kbps-8 Mbps under this port. Investigated
+over SSH (both USB gadget and real WiFi) plus a background code
+investigation comparing this project's DTS/config/firmware against the
+real, hardware-proven `gts9wifi-fedora` reference for the same chip
+family.
+
+**Fix 1, confirmed real and working**: `iw dev wlp1s0 get power_save`
+showed power-save **on**. Root cause: mainline's own `net/wireless/
+core.c` (`wiphy_register()`) unconditionally sets
+`WIPHY_FLAG_PS_ON_BY_DEFAULT` for every wiphy -- this is standard
+upstream kernel behavior, not a port-specific bug, so the fix belongs in
+userspace. Turning it off manually dropped ping RTT from 43ms to 3-7ms
+instantly. Added two overlay fixes: a distro-agnostic udev rule
+(`rootfs/overlay-common/usr/lib/udev/rules.d/
+72-gts9wifi-wifi-powersave-off.rules`, fires `iw ... set power_save off`
+at interface-creation time -- for any non-NetworkManager rootfs variant)
+and, after confirming live that this Fedora rootfs's NetworkManager
+actively re-asserts its own power-save policy on every (re)connection
+and silently undoes the udev rule's effect, the real fix for that case:
+`rootfs/overlay-systemd/etc/NetworkManager/conf.d/
+99-wifi-powersave-off.conf` (`wifi.powersave = 2`). Verified live: power
+save stays "off" across a full `systemctl restart NetworkManager`
+(reconnect), not just until the next event.
+
+**Fix 2, confirmed real, clean, but did not move throughput**: the
+background investigation found this project's own DTS driving the WiFi/
+BT combo chip under the wrong declared identity, self-contradicting this
+project's own real-hardware measurement (`docs/hardware-facts.md`: real
+chip identifies as `wcn6855 hw2.1`, PCI ID `17cb:1103`):
+- `wifi@0`'s `compatible` was `"pci17cb,1101"` (QCA6390) instead of
+  `"pci17cb,1103"` (WCN6855) -- gts9wifi-fedora's own proven DTS uses
+  the correct one for the identical chip.
+- `wcn_pmu`'s `compatible` was `"qcom,qca6390-pmu"` instead of
+  `"qcom,wcn6855-pmu"` -- functionally real:
+  `drivers/power/sequencing/pwrseq-qcom-wcn.c` picks a different
+  regulator-supply property name table per branch.
+- Both wifi@0 and (separately, a second latent bug found along the way)
+  the Bluetooth node still used the QCA6390 branch's `vddrfa1p7-supply`
+  property name despite Bluetooth's own `compatible` already having been
+  corrected to `"qcom,wcn6855-bt"` in an earlier session -- the required
+  WCN6855-branch property name is `vddrfa1p8-supply` (same underlying
+  `&vreg_pmu_rfa_1p7` rail, matching the binding's own worked example;
+  only the consumer-side property name was wrong). Fixed both.
+- `wcn_pmu`'s `vddpmu-supply` reused `vreg_s4e_0p952` -- this die's
+  shared USB3/DP combo PHY PLL rail doing double duty, not a dedicated
+  WLAN-PMU digital rail. gts9wifi-fedora's own proven DTS gives the WLAN
+  PMU its own separate S5G rail; this project's DTS never defined one at
+  all. Added `vreg_s5g_0p966` (value borrowed from gts9wifi-fedora by
+  analogy -- this project's own stock downstream DTS has no literal S5G
+  value to measure independently, same situation an earlier session
+  already documented for S4G/S6G) and rewired `vddpmu`/`vddpmumx`/
+  `vddpmucx` onto it.
+- `vddaon-supply`'s rail (`vreg_s2g_0p98`, 0.98V) sat 32mV *below* this
+  project's own `qcom,wlan-pdc-init` AOP vote table's own upval for that
+  exact rail (`s2g.v upval: 1012`) -- a real internal self-contradiction,
+  same bug class as an earlier session's S4G/S6G fix (just the opposite
+  direction: below the ceiling, not above it, so it never risked that
+  fix's specific AOP-clamp failure mode, but still contradicted this
+  project's own PDC table). Corrected to 1.012V, matching this project's
+  own established "sit exactly at the upval" methodology.
+
+All of this landed cleanly on real hardware: `dmesg` shows
+`vreg_s2g_1p012: Setting 1012000-1012000uV`, `vreg_s5g_0p966: Setting
+968000-968000uV`, `wcn-pmu` probing with no errors (one ordinary
+`-517`/`EPROBE_DEFER` retry, resolves immediately), `ath11k_pci`
+associating exactly as before. **But it did not move the needle on
+throughput or signal**: before this fix, signal measured -84 dBm with a
+real 55MB SCP transfer landing ~8.9 Mbit/s; after, in the user-confirmed
+*same physical position*, signal measured -88 to -90 dBm with the same
+transfer landing ~6.3 Mbit/s -- within normal minute-to-minute RF
+variance for an already-marginal link, not a regression, but not an
+improvement either. Still a real, worthwhile correctness fix (matches
+the project's own measured hardware identity and the proven reference
+wiring) -- just not the answer to the throughput question.
+
+**Investigated board-2.bin as the likely remaining cause -- found the
+opposite of what was expected.** Initial read of the shipped generic
+upstream `ath11k/WCN6855/hw2.1/board-2.bin` (158 board-ID entries)
+seemed to show zero Samsung entries, all HP/Dell/Qualcomm-reference-
+design subsystem-vendor IDs, with `dmesg`'s `board_id 0xff` read as "no
+match, generic fallback used." **Both readings turned out to be wrong
+on closer inspection**: this tablet's own real PCI subsystem ID
+(`lspci -vv`: `subsystem-vendor=17cb, subsystem-device=0108` -- Samsung
+apparently never rebranded this off Qualcomm's own reference value) has
+multiple *exact* matches in that same container, including
+`qmi-chip-id=2,qmi-board-id=255` with no variant name -- an exact match
+on every field `dmesg` reports for this chip (`chip_id 0x2`,
+`board_id 0xff` = 255 decimal). `board_id 0xff`/255 is simply this
+chip's own real board-strap value, not a "no calibration found"
+sentinel -- it's one of the single most common `qmi-board-id` values in
+the whole container, shared by real entries for other OEMs on the same
+reference PCI-subsystem ID (e.g. the Lenovo ThinkPad X13s,
+`variant=LE_X13S`, same `subsystem-device=0108`). So WiFi is very likely
+*already* using a real, exact-match calibration profile -- just one
+shared with other OEMs who used this same Qualcomm reference design,
+not a Samsung-exclusive one, because Samsung's own hardware doesn't
+expose a distinguishing subsystem ID for ath11k's lookup to key off of
+in the first place.
+
+Checked whether a real Samsung-specific board-data file could be built
+from this device's own dumped `vendor-firmware-dump/firmware/qca6490/
+bdwlan.elf`/`bdwlang.elf` instead. Confirmed directly: these are raw ARM
+32-bit ELF executables (Qualcomm's own Peripheral-Image-Loader format),
+structurally nothing like ath11k's `board-2.bin` TLV container. Web
+research confirmed this isn't a gap in this project's own knowledge --
+it's an independently-documented, unsolved problem in the broader ath11k/
+OpenWrt community: the current BDF format has no public documentation
+(Qualcomm requires an NDA), and existing open-source decoders are known
+to fail on it ([OpenWrt forum: "Qualcommax & ath11k board calibration &
+BDF data woes"](https://forum.openwrt.org/t/qualcommax-ath11k-board-calibration-bdf-data-woes/182646)).
+`ath11k-bdencoder` (from the `qca-swiss-army-knife` repo) is a real,
+established tool for *building* `board-2.bin` from already-decoded
+`.bin` blobs + a JSON descriptor -- useful if a real calibration blob
+were in hand, but it doesn't solve getting one out of `bdwlan.elf` in
+the first place. Combined with the sibling X910 Ultra port's own
+documented real MHI RDDM crash from a mismatched board-data/firmware
+generation pairing, and that the community entry we're likely already
+using is a real, non-generic match rather than a degraded fallback --
+**decided not to attempt this conversion**: real (if narrow) crash
+risk, confirmed-unsolved-upstream format, and likely little to gain even
+if it worked.
+
+**Net result, per explicit user decision to stop here**: power-save fix
+(real, measured, confirmed persistent) and the chip-identity/regulator
+correctness fixes (real, clean, no regressions) are landed. The
+remaining throughput gap vs. stock Android is most likely a genuine
+antenna/RF-front-end hardware characteristic (or simply normal variance
+on an already-marginal link at this test location), not something
+further software/calibration-file changes can safely or confidently
+close -- `README.md`'s Wi-Fi row reflects this honestly (⚠️, not ✅ or
+❌) rather than overclaiming a fix that wasn't actually confirmed.

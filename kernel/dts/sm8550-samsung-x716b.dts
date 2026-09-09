@@ -680,11 +680,50 @@
 		 * PDC ceiling, a second, later voter on the same physical
 		 * rails that AOP could clamp/reject. Lowered to sit exactly
 		 * at (not above) the real board's own measured PDC upval.
+		 *
+		 * S2G corrected (WiFi throughput bring-up session): same class
+		 * of bug as S4G/S6G above, just the opposite direction -- this
+		 * rail sat 32 mV *below* its own qcom,wlan-pdc-init upval
+		 * (s2g.v upval: 1012, wcn_pmu node below), not above it, so it
+		 * never risked the AOP-clamp failure mode, but it was still a
+		 * real self-contradiction against this project's own PDC
+		 * table. Renamed/corrected to sit exactly at that upval,
+		 * matching this project's own established methodology.
+		 * gts9wifi-fedora's identical rail lands one FTSMPS525 voltage
+		 * step higher (1016000, "stock qca6490 asks 1.012V; FTSMPS525
+		 * rounds up in 8mV steps") -- this project follows its own
+		 * precedent (exact-upval match, not step-rounded) instead, for
+		 * consistency with the S4G/S6G fix already on this file.
 		 */
-		vreg_s2g_0p98: smps2 {
-			regulator-name = "vreg_s2g_0p98";
-			regulator-min-microvolt = <980000>;
-			regulator-max-microvolt = <980000>;
+		vreg_s2g_1p012: smps2 {
+			regulator-name = "vreg_s2g_1p012";
+			regulator-min-microvolt = <1012000>;
+			regulator-max-microvolt = <1012000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/*
+		 * Dedicated WLAN PMU digital rail (vddpmu/vddpmumx/vddpmucx on
+		 * wcn_pmu below) -- WiFi throughput bring-up session. Previously
+		 * entirely absent: wcn_pmu's vddpmu-supply instead reused
+		 * vreg_s4e_0p952 (this die's USB3/DP combo PHY PLL supply,
+		 * see that node's own comment), doubling up an unrelated shared
+		 * rail onto the WLAN PMU's own dedicated digital supply input
+		 * instead of giving it the separate physical rail gts9wifi-
+		 * fedora's own proven DTS uses. Value borrowed directly from
+		 * gts9wifi-fedora (sm8550-samsung-gts9wifi.dts's vreg_s5g_0p966:
+		 * "stock qca6490 asks 0.966V; FTSMPS525 rounds up in 8mV
+		 * steps") -- this project's own stock downstream DTS has no
+		 * literal S5G value to measure independently (confirmed: no
+		 * "s5g"/"smps5" match anywhere in it), same situation the S4G/
+		 * S6G fix above already documented, so borrowed by analogy
+		 * (same PM8550VS-G die, same WLAN-PMU-digital role) rather than
+		 * guessed from scratch.
+		 */
+		vreg_s5g_0p966: smps5 {
+			regulator-name = "vreg_s5g_0p966";
+			regulator-min-microvolt = <968000>;
+			regulator-max-microvolt = <968000>;
 			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
 		};
 
@@ -1638,9 +1677,15 @@
  * Ultra's chip, a different chip family entirely; see
  * docs/hardware-facts.md and docs/porting-log.md). WiFi is ath11k over
  * PCIe0; mainline's ath11k has no separate QCA6490 PCI-ID or
- * devicetree-compatible entry at all -- it's treated as software-
- * identical to QCA6390 (compatible "pci17cb,1101"), confirmed directly in
- * Documentation/devicetree/bindings/net/wireless/qcom,ath11k-pci.yaml.
+ * devicetree-compatible entry at all -- QCA6490 is software-identical to
+ * one of the two IDs qcom,ath11k-pci.yaml *does* define, QCA6390
+ * (compatible "pci17cb,1101") or WCN6855 (compatible "pci17cb,1103").
+ * WiFi throughput bring-up session: this project's own real-hardware
+ * measurement (docs/hardware-facts.md) says this chip identifies as
+ * wcn6855 hw2.1 with PCI ID 17cb:1103 specifically -- wifi@0's
+ * compatible below was stuck on the wrong one of those two IDs
+ * (pci17cb,1101/QCA6390) until this session corrected it to match,
+ * same class of fix Bluetooth already got (next paragraph).
  * Bluetooth is hci_qca/btqca over UART14, compatible "qcom,wcn6855-bt"
  * (corrected from an earlier "qcom,qca6390-bt" guess -- Networking
  * bring-up session, full-fix boot test: real hardware readback over
@@ -1744,14 +1789,39 @@
  * hallmarks of a true dedicated AON supply. S4E, by contrast, feeds BT's
  * aon/dig/rfa0p8 AND WLAN's *digital* (not AON) input -- a shared
  * "always-on-adjacent" rail, not the chip's real AON rail. Swapped:
- * vddaon-supply is now S2G, vddpmu-supply is now S4E. Still not
- * independently confirmed on real hardware -- if WLAN/BT never power on,
- * re-check this mapping first; see docs/porting-log.md's Networking
- * bring-up session entry.
+ * vddaon-supply is now S2G, vddpmu-supply is now S4E.
+ *
+ * vddpmu-supply corrected again (WiFi throughput bring-up session):
+ * S4E was a real supply (WLAN/BT already power on and associate with
+ * it), but it's this die's shared USB3/DP combo PHY PLL rail doing
+ * double duty, not a WLAN-PMU-dedicated one -- gts9wifi-fedora's own
+ * proven DTS gives the WLAN PMU its own separate S5G rail instead.
+ * Added that dedicated S5G regulator (regulators-5 block above) and
+ * moved vddpmu/vddpmumx/vddpmucx onto it, matching gts9wifi-fedora
+ * exactly. Targets signal quality/throughput, not basic power-on
+ * (already working) -- see docs/porting-log.md's WiFi throughput
+ * bring-up session entry for real-hardware verification results.
  */
 / {
 	wcn_pmu: wcn-pmu {
-		compatible = "qcom,qca6390-pmu";
+		/*
+		 * "qcom,qca6390-pmu" -> "qcom,wcn6855-pmu" (WiFi throughput
+		 * bring-up session): this project's own real-hardware
+		 * measurement (docs/hardware-facts.md) already confirmed this
+		 * chip identifies as wcn6855 hw2.1, PCI ID 17cb:1103 -- this
+		 * node's compatible string never followed that correction
+		 * (same class of fix the BT node already got: "qcom,qca6390-bt"
+		 * -> "qcom,wcn6855-bt"). Functionally real:
+		 * drivers/power/sequencing/pwrseq-qcom-wcn.c matches on this
+		 * exact string and picks a different regulator-supply property
+		 * name table per branch (qca6390: vddrfa1p7; wcn6855:
+		 * vddrfa1p8) -- see wifi@0's own vddrfa1p8-supply rename below.
+		 * Both branches share the same pwrseq_qcom_wcn6855_targets
+		 * sequencing logic either way (already noted below), so this
+		 * alone shouldn't have broken power-up, but it was driving the
+		 * chip under the wrong declared identity.
+		 */
+		compatible = "qcom,wcn6855-pmu";
 
 		/*
 		 * AOP QMP mailbox PDC resource votes, measured verbatim from
@@ -1798,8 +1868,10 @@
 		 */
 		xo-clk-gpios = <&tlmm 204 GPIO_ACTIVE_HIGH>;
 
-		vddaon-supply = <&vreg_s2g_0p98>;
-		vddpmu-supply = <&vreg_s4e_0p952>;
+		vddaon-supply = <&vreg_s2g_1p012>;
+		vddpmu-supply = <&vreg_s5g_0p966>;
+		vddpmumx-supply = <&vreg_s5g_0p966>;
+		vddpmucx-supply = <&vreg_s5g_0p966>;
 		vddrfa0p95-supply = <&vreg_s4e_0p952>;
 		vddrfa1p3-supply = <&vreg_s4g_1p352>;
 		vddrfa1p9-supply = <&vreg_s6g_1p904>;
@@ -1853,7 +1925,22 @@
 
 &pcieport0 {
 	wifi@0 {
-		compatible = "pci17cb,1101"; /* QCA6390 ID -- see header comment above */
+		/*
+		 * "pci17cb,1101" (QCA6390) -> "pci17cb,1103" (WCN6855) --
+		 * WiFi throughput bring-up session. Corrects the same
+		 * wrong-chip-identity bug as wcn_pmu's own compatible fix
+		 * above, now that this project's real-hardware measurement
+		 * (docs/hardware-facts.md: "wcn6855 hw2.1", PCI ID
+		 * 17cb:1103) is what the DT binding schema is actually
+		 * validated against too. Likely cosmetic for driver binding
+		 * itself (ath11k_pci's own probe matches the real PCI
+		 * vendor/device ID straight from hardware, not this DT
+		 * compatible string), but Documentation/devicetree/bindings/
+		 * net/wireless/qcom,ath11k-pci.yaml requires a different
+		 * supply-name table per branch -- vddrfa1p8-supply (renamed
+		 * below), not vddrfa1p7-supply, for the 1103/WCN6855 branch.
+		 */
+		compatible = "pci17cb,1103";
 		reg = <0x10000 0x0 0x0 0x0 0x0>;
 		vddrfacmn-supply = <&vreg_pmu_rfa_cmn>;
 		vddaon-supply = <&vreg_pmu_aon_0p59>;
@@ -1861,7 +1948,7 @@
 		vddwlmx-supply = <&vreg_pmu_wlmx_0p85>;
 		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
 		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
-		vddrfa1p7-supply = <&vreg_pmu_rfa_1p7>;
+		vddrfa1p8-supply = <&vreg_pmu_rfa_1p7>;
 		vddpcie0p9-supply = <&vreg_pmu_pcie_0p9>;
 		vddpcie1p8-supply = <&vreg_pmu_pcie_1p8>;
 	};
@@ -1892,7 +1979,23 @@
 		vddbtcmx-supply = <&vreg_pmu_btcmx_0p85>;
 		vddrfa0p8-supply = <&vreg_pmu_rfa_0p8>;
 		vddrfa1p2-supply = <&vreg_pmu_rfa_1p2>;
-		vddrfa1p7-supply = <&vreg_pmu_rfa_1p7>;
+		/*
+		 * vddrfa1p7-supply -> vddrfa1p8-supply (WiFi throughput
+		 * bring-up session): this node's compatible was already
+		 * corrected to "qcom,wcn6855-bt" in an earlier session (see
+		 * the Networking bring-up session entry), but the supply
+		 * *property name* required by that branch of
+		 * Documentation/devicetree/bindings/net/bluetooth/
+		 * qcom,bluetooth-common.yaml (vddrfa1p8-supply, not
+		 * vddrfa1p7-supply -- only the qca6390-bt branch uses the
+		 * 1p7 name) was missed at the time. Same underlying rail
+		 * (&vreg_pmu_rfa_1p7 is just this PMU's own internal LDO7
+		 * node label, unchanged -- matches the WCN6855 branch's own
+		 * worked example in that binding file, which does the same
+		 * "vddrfa1p8-supply = <&vreg_pmu_rfa_1p7>" pairing), just the
+		 * consumer-side property name was wrong.
+		 */
+		vddrfa1p8-supply = <&vreg_pmu_rfa_1p7>;
 		max-speed = <3200000>;
 
 		/*

@@ -1,0 +1,21 @@
+# Real-hardware report: WiFi throughput collapsed to ~500 Kbps-8 Mbps
+# (vs. 400-600 Mbps on stock Android, same tablet, same network).
+# Confirmed live: mac80211's own kernel-level default is power-save ON
+# for every wiphy (net/wireless/core.c's wiphy_register() unconditionally
+# sets WIPHY_FLAG_PS_ON_BY_DEFAULT -- this is standard upstream behavior,
+# not a bug in this port's kernel/driver), and there's no
+# NetworkManager/wpa_supplicant-side override anywhere in this project's
+# rootfs to turn it off. Turning it off manually
+# (`iw dev wlp1s0 set power_save off`) dropped ping RTT from 43ms to
+# 3-7ms instantly -- a classic symptom of power-save fighting a sustained
+# transfer without transfer-aware tuning. See docs/porting-log.md for the
+# full measurement (this alone did not fully close the throughput gap --
+# a separate RF/regulator-wiring issue accounts for the rest -- but it's
+# a real, independent contributor worth fixing unconditionally).
+#
+# KERNEL=="wl*" matches systemd's predictable network interface naming
+# for wireless devices (this board's PCIe-attached WCN6855 comes up as
+# wlp1s0); ATTR{type}=="1" (ARPHRD_ETHER) narrows to real 802.11 station
+# interfaces, not the P2P-device virtual interface ath11k also exposes.
+ACTION=="add", SUBSYSTEM=="net", ATTR{type}=="1", KERNEL=="wl*", \
+	RUN+="/usr/bin/iw dev $env{INTERFACE} set power_save off"
