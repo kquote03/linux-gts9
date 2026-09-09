@@ -3473,3 +3473,122 @@ on an already-marginal link at this test location), not something
 further software/calibration-file changes can safely or confidently
 close -- `README.md`'s Wi-Fi row reflects this honestly (⚠️, not ✅ or
 ❌) rather than overclaiming a fix that wasn't actually confirmed.
+
+### WiFi throughput, round 2: three parallel research agents (X910 Ultra, a deeper gts9wifi-fedora re-check, and web research), one more real fix found and landed, throughput still unmoved
+
+Per explicit user request, spawned three subagents in parallel to look for
+anything missed: the sibling `ubuntu-galaxy-tab-s9ultra` port, a much
+deeper re-check of `gts9wifi-fedora`, and general web research on known
+ath11k/WCN6855 throughput issues.
+
+**X910 Ultra: no new lead.** Confirmed they use a different chip entirely
+(WCN7850/ath12k, not WCN6855/ath11k) and never benchmarked WiFi
+throughput at all -- their own docs only ever confirm basic ping
+connectivity. The two DTS/patch-level fixes their project independently
+also needed (PCIe0 PIPE-mux unpark, AOP PDC power sequencing) were
+already adopted into this project in an earlier session, well before
+this throughput investigation started.
+
+**Web research: two leads, both checked and closed.** (1) MSI vector
+fallback -- ath11k silently degrades to 1 shared MSI vector (serializing
+all RX/TX/copy-engine interrupts onto one core) if the PCIe host can't
+grant the chip's requested vector count; a real, documented failure mode
+on other Qualcomm ARM platforms. Already ruled out: this session's own
+earlier dmesg capture shows `MSI vectors: 32` -- the full count, not the
+degraded fallback. (2) `qcom,calibration-variant` -- confirms the exact
+mechanism behind the board-2.bin finding from the prior session (this
+DT property appends `,variant=<string>` to the board-2.bin lookup key
+specifically to disambiguate colliding subsystem IDs, which is exactly
+this device's situation), and found that the Lenovo ThinkPad X13s
+(same WCN6855, same colliding PCI subsystem ID 17cb:0108) sets
+`qcom,calibration-variant = "LE_X13S"` in its own upstream DTS to get a
+dedicated calibration entry instead of the generic one. Confirmed via
+its own honest caveat, though: setting this property without a matching
+variant entry actually present in the `board-2.bin` being loaded is a
+no-op (the lookup just falls through to the same generic entry either
+way) -- and building a new variant entry runs into the exact same
+undocumented-BDF-format/crash-risk wall already declined last session.
+Not pursued, for the same reason.
+
+**gts9wifi-fedora deep re-check: one real, concrete, previously-missed
+regression found and fixed.** The prior session's own `wcn_pmu`
+chip-identity fix (`"qcom,qca6390-pmu"` -> `"qcom,wcn6855-pmu"`, correct
+on its own, matching this project's real measured hardware) had a silent
+side effect: `drivers/power/sequencing/pwrseq-qcom-wcn.c`'s
+`of_device_id` match table resolves each compatible string to a
+*separate* pdata struct (`pwrseq_qca6390_of_data` vs.
+`pwrseq_wcn6855_of_data`). This project's own
+`kernel/patches/qca6390-pwrseq-cold-reset-aop.patch` only ever set
+`.cold_reset_wlan = true` on `pwrseq_qca6390_of_data` -- written back
+when the DTS still used that compatible string. Once the DTS was
+corrected to `"qcom,wcn6855-pmu"`, the driver started resolving to
+`pwrseq_wcn6855_of_data` instead, which never got the same flag added --
+the patch silently stopped doing anything for this board. Cross-checked
+against gts9wifi-fedora's own equivalent patch
+(`wcn7850-pwrseq-cold-reset-aop.patch`): they set `.cold_reset_wlan =
+true` directly on `pwrseq_wcn6855_of_data` (and separately on
+`pwrseq_wcn7850_of_data` for their own sibling board) -- i.e., attached
+to whichever struct their own compatible string actually resolves to,
+exactly the pattern this project's patch fell out of sync with. Fixed by
+adding the same field to `pwrseq_wcn6855_of_data` too.
+
+`cold_reset_wlan` controls real boot-time behavior
+(`pwrseq_qcom_wcn_probe()`): with it set, WLAN_EN is requested
+`GPIOD_OUT_LOW` and the code sleeps 5-10ms before the normal regulator ->
+clock -> enable sequence runs, giving the chip a real power-cycle from a
+known state; without it, WLAN_EN is requested `GPIOD_ASIS` and
+immediately driven back to whatever value it already had -- no real
+power-cycle at all, just inheriting whatever XBL/ABL left behind. A chip
+that never gets a real WLAN_EN cold-reset can still probe, associate,
+and pass some traffic (matching "works but badly," not "doesn't work"),
+while plausibly leaving analog RF/PLL state uncalibrated.
+
+**A second, unrelated real bug found and fixed while verifying this**:
+`kernel/patches/qca6390-pwrseq-cold-reset-aop.patch` itself turned out
+to be a malformed unified diff (a blank context line lacking its
+required single leading space, confirmed independently of this
+session's own edits -- the *original*, pre-session version of the patch
+fails identically against a pristine v7.2 source with GNU patch 2.8,
+the exact version this project's own build environment provides). This
+had been silently masked ever since it was first authored: the build
+script's `apply_unless` idempotency check only greps for a marker
+string in the already-patched, persistent `kernel/linux` checkout and
+skips re-applying if found -- so the patch had likely never actually
+been re-tested via a real `patch` invocation since its first successful
+application. A fresh clone of this repo would have failed to build at
+this exact step. Regenerated the whole patch file via a real `diff -u`
+between a pristine copy (`git show HEAD:...` inside the vendored kernel
+checkout) and the current, fully-corrected live source, and verified
+byte-for-byte that re-applying it to the pristine file reproduces the
+live file exactly, before replacing the old hand-edited patch file with
+this verified one.
+
+**Verified on real hardware**: `wcn-pmu`'s probe time increased from
+~4ms to ~10.5ms (10524 usecs), consistent with the new 5-10ms
+`cold_reset_wlan` settle delay actually executing now (previously a
+silent no-op). `MSI vectors: 32` confirmed unchanged (still full count).
+Power-save confirmed still off. **But throughput was, again, unchanged**:
+signal -88 dBm, rx bitrate down to VHT-MCS 0/NSS1 (6.5 Mbit/s PHY rate),
+and a real 55 MB SCP transfer measured ~7.3 Mbit/s -- squarely inside
+the same noisy 6-9 Mbit/s band every fix this session and last has
+landed in, regardless of what was changed.
+
+**Where this leaves things**: three independent fix rounds (power-save,
+DTS chip-identity/regulator correctness, and now `cold_reset_wlan`) plus
+three parallel research angles (a different-chip sibling port, a much
+deeper same-chip reference-port re-check, and general web research) have
+now all converged on the same conclusion -- every software/DT/Kconfig-
+level avenue this session could find either doesn't apply
+(different chip, no throughput data to compare against), was already
+ruled out with a direct real-hardware measurement (MSI vectors, PCIe
+link speed/width, board-2.bin match legitimacy), or landed clean and
+correct but left throughput and signal exactly where they were. All
+three fixes are kept -- they're each independently real and correct,
+matching this project's own established "worth doing regardless of the
+throughput question" standard from the prior session -- but the
+throughput gap itself remains open, and is now fairly strongly
+suspected to be a genuine antenna/RF-front-end hardware characteristic
+of this specific tablet model (the 5G variant's extra cellular
+antennas may share PCB real estate/RF front-end with WiFi in a way the
+WiFi-only X710 does not) rather than anything a further software fix
+can close.
