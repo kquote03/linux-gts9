@@ -30,10 +30,14 @@ if [ -z "${BUSYBOX_AARCH64_STATIC:-}" ]; then
 	exit 1
 fi
 
-# mmc block device letter/index isn't stable across boots (confirmed live
-# this session, same instability class as UFS's sdX letters) -- the SD
-# card has enumerated as both mmcblk0 and mmcblk1 depending on probe
-# order. Try both, don't hardcode one.
+# The real root is found by FILESYSTEM LABEL first (X716B_ROOT), so one
+# initramfs serves every deploy target -- the microSD partition and the
+# NixOS-on-userdata image both just carry that label (see nixos/). The
+# device-node list is the fallback for the older Fedora microSD, whose
+# root partition may be unlabelled: mmc block index isn't stable across
+# boots (confirmed live -- the SD card has come up as both mmcblk0 and
+# mmcblk1), so try both.
+REAL_ROOT_LABEL=${REAL_ROOT_LABEL:-X716B_ROOT}
 REAL_ROOT_CANDIDATES=${REAL_ROOT_CANDIDATES:-"/dev/mmcblk1p1 /dev/mmcblk0p1"}
 REAL_ROOT_FSTYPE=${REAL_ROOT_FSTYPE:-ext4}
 
@@ -73,7 +77,8 @@ for f in a740_zap.mdt a740_zap.b00 a740_zap.b01 a740_zap.b02 a740_sqe.fw gmu_gen
 	fi
 done
 
-for applet in sh mount umount cat echo ls dmesg sleep switch_root sync mkdir; do
+for applet in sh mount umount cat echo ls dmesg sleep switch_root sync mkdir \
+	      findfs blkid; do
 	ln -sf busybox "$workdir/bin/$applet"
 done
 
@@ -90,17 +95,25 @@ log() {
 
 log "=== linux-tabs9-port real-root initramfs: userspace reached ==="
 
+REAL_ROOT_LABEL="$REAL_ROOT_LABEL"
 REAL_ROOT_CANDIDATES="$REAL_ROOT_CANDIDATES"
 REAL_ROOT_FSTYPE="$REAL_ROOT_FSTYPE"
 
 # Bounded retry loop (mirrors the bring-up ramdisk's ttyGS0-wait pattern):
 # mmc/UFS enumeration is asynchronous, confirmed this session to take a
-# real, variable amount of time on this board. Try every candidate device
-# each second rather than committing to one up front -- mmc block device
-# naming isn't stable across boots (confirmed live this session).
+# real, variable amount of time on this board. Each second: first ask for
+# the labelled filesystem (works for any deploy target), then fall back to
+# the fixed device-node list -- mmc block naming isn't stable across boots.
 REAL_ROOT_DEV=""
 tries=0
 while [ "\$tries" -lt 30 ]; do
+	if [ -n "\$REAL_ROOT_LABEL" ]; then
+		cand=\$(/bin/busybox findfs "LABEL=\$REAL_ROOT_LABEL" 2>/dev/null)
+		if [ -n "\$cand" ] && [ -b "\$cand" ]; then
+			REAL_ROOT_DEV="\$cand"
+			break
+		fi
+	fi
 	for dev in \$REAL_ROOT_CANDIDATES; do
 		if [ -b "\$dev" ]; then
 			REAL_ROOT_DEV="\$dev"
