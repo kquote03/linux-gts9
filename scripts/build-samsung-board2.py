@@ -28,11 +28,9 @@ to confirm the swap.
 Usage:
   scripts/build-samsung-board2.py [<community board-2.bin>] [<out board-2.bin>]
 
-Defaults:
-  in : buildroot/firmware-overlay/lib/firmware/ath11k/WCN6855/hw2.1/board-2.bin
-       (must already be the community file -- run fetch-ath11k-firmware.sh
-       with WIFI_CAL=community first if it has been overwritten)
-  out: same path (in-place)
+Defaults (both committed, so this runs fully offline / deterministic):
+  in : buildroot/firmware-src/board-2.bin.wcn6855-community
+  out: buildroot/firmware-overlay/lib/firmware/ath11k/WCN6855/hw2.1/board-2.bin
 Source calibration:
   vendor-firmware-dump/firmware/qca6490/bdwlan.elf
 """
@@ -42,7 +40,8 @@ import struct
 import sys
 
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-DEFAULT_B2 = os.path.join(
+DEFAULT_IN = os.path.join(REPO, "buildroot/firmware-src/board-2.bin.wcn6855-community")
+DEFAULT_OUT = os.path.join(
     REPO, "buildroot/firmware-overlay/lib/firmware/ath11k/WCN6855/hw2.1/board-2.bin"
 )
 SS_BDF = os.path.join(REPO, "vendor-firmware-dump/firmware/qca6490/bdwlan.elf")
@@ -77,8 +76,8 @@ def iter_ies(buf, off, end):
 
 
 def main():
-    b2_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_B2
-    out_path = sys.argv[2] if len(sys.argv) > 2 else b2_path
+    b2_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_IN
+    out_path = sys.argv[2] if len(sys.argv) > 2 else DEFAULT_OUT
 
     orig = open(b2_path, "rb").read()
     if orig[:len(MAGIC)] != MAGIC:
