@@ -226,3 +226,8 @@ lands in `/sys/class/devcoredump/` and must be copied out within
   the quirk half would want a maintainer's call on whether a
   build-id-string match is acceptable or it should be a documented
   known-bad firmware instead.
+
+Byte-level detail (coredump layout, the faulting Hexagon instruction and
+its NULL-pointer chain, the board-2.bin / BDF format reverse-engineering,
+the checksum derivation) is in
+`wifi-samsung-calibration-forensics.md`.
