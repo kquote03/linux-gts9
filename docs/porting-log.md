@@ -3684,3 +3684,108 @@ no-op run doesn't even touch the inode. `85-gts9wifi.preset` and
 already-deployed systems). Verified on a clean reboot: load average
 ~1.2, ~10 x11-dir-fix journal lines/minute, `/tmp/.X11-unix` held at
 `root:1777`, WiFi unaffected.
+
+## Session 11 — 2026-09-10 — Charging: 45 W direct charge + charging through suspend
+
+Picking up the one thing the USB host/charging entry (Session 10) left
+open: *"charging is documented as observed working ... not as a fully
+closed-out ✅ ... the PPS/direct-charge path in particular warrants more
+extended real-world testing"*. Two concrete faults:
+
+1. **Slow.** The SM5440 PPS pump negotiated a hard ~15 W — a
+   `min(target_ma, 2200)` clamp in `sm5440_start()`, 700 mV of headroom
+   the board's stock 0.32 Ω `sm5440,r_ttl` ate at any real current, and
+   no closed loop, so it sagged into REVBLK and collapsed to a 5 V DCP
+   fallback. Non-PPS bricks capped at 2100 mA in `sm5714_battery.c`.
+   Stock Android does **45 W** on a 3-step current profile here.
+2. **No charge while asleep.** `sm5440_direct.c` had no `dev_pm_ops`; its
+   1 s poll `schedule_delayed_work` ran into suspend and hit the
+   GPI-DMA I2C bus after it suspended → "Transfer while suspended" → PD
+   contract to 5 V DCP. TCPM has no PPS keepalive and no PM ops either.
+
+### The pack is 8400 mAh, not 9800
+
+The governing constraint on the whole change. Samsung's stock
+sec-battery node has `battery,battery_full_capacity = 0x2648` (9800) and
+`battery,ttf_capacity = 0x251c` (9500) — but those are fuel-gauge/CISD
+internal constants that appear **identically on the S9 Ultra (X910)**,
+which has a physically larger pack, so they are *not* the pack rating.
+`android_kernel_samsung_gts9` is the base Tab S9 (X716/X710/…), not the
+Ultra. Every numeric constant in this work comes from this model's own
+stock DTS (`.../galaxytab/gts9/gts9_eur_openx_w00_r04.dts`, identical
+across r00–r04), never from `ubuntu-galaxy-tab-s9ultra/` — whose
+`sm5440_direct.c` supplied only the closed-loop *algorithm shape* (and
+whose own DTS repeats the 9800 error). `charge-full-design-microamp-hours`
+is `8400000`; using 9800000 would misrepresent the pack ~17 % and skew
+every rate/thermal estimate.
+
+### Changes (all kernel-level; `docs/charging.md` is the full write-up)
+
+- **`kernel/drivers/sm5440_direct.c`** — the bulk of the work.
+  - Deleted the 15 W cap. `sm5440_start()` uses `sm5440_target_mv()` /
+    `sm5440_request_ma()`, initial headroom 700 → 1100 mV, VBUS-settle
+    gate −500 → −700 mV over 40 (was 30) tries.
+  - New step table from `battery,dc_step_chg_cond_vol` (4130/4250/4440
+    mV) and `battery,dc_step_chg_val_iout` (8660/7420/5940 mA
+    battery-side; ÷2 = pump input). 8660 mA ≈ 1.03 C on 8.4 Ah — stock.
+  - Closed loop in `sm5440_work()` (Ultra shape, X716 numbers): pick
+    step by pack voltage, measure pump input current, nudge the PPS
+    request ±40 mV toward the step target, clamp to
+    `[2·Vpack+1100, min(2·Vpack+2000, 10500)] mV`, re-Request every ~2 s,
+    re-program `IBUSCNTL` per step. Regulates on current, not voltage
+    (the chip's VBUS ADC is unreliable, off by hundreds of mV).
+  - Switching freq 450 → 850 kHz (`sm5440,freq`), SIOP derate to
+    650/450 kHz (`sm5440,freq_siop`) on die/pack heat.
+  - Clean CV hand-off at Vpack ≥ 4430 mV or pump input < dchg_min/2 for
+    3 ticks — stop the pump, `sm5714_battery` finishes CV on the
+    switching charger; eligibility keeps it from restarting until the
+    pack falls back.
+  - **PPS entry gate**: `sm5440_eligible()` now requires the TCPM psy to
+    report `USB_TYPE == PD_PPS`. That flag is set only from a source
+    APDO — the same condition that makes `tcpm_pps_activate()` return
+    −95 (`-EOPNOTSUPP`). Before this, the driver retried a PPS hand-off
+    against every DCP / fixed-PD brick every 30 s forever.
+  - INT1–4 latch read-out on every stop (0x02 bit 1 = REVBLK).
+  - Pack-temp stop 44 °C, die stop 110 °C — stricter than Samsung's
+    65/70 °C gates, which watch a *charger* thermistor while
+    `POWER_SUPPLY_PROP_TEMP` here is the pack thermistor.
+- **`kernel/drivers/sm5440_direct.c`** — suspend keepalive. Poll work
+  moved to `system_freezable_wq` (frozen suspend→thaw, so it can't fault
+  the suspended bus — fixes the fixed-PD case outright). An
+  `ALARM_BOOTTIME` alarm wakes the system every 8 s; `.suspend` pets the
+  pump watchdog + arms it, `sm5440_work()`'s post-thaw keepalive tail
+  re-sends the PPS Request and re-checks temp (stricter asleep). Needs a
+  wake-capable RTC — `keepalive_capable = !!alarmtimer_get_rtcdev()`;
+  without one it degrades to the mainline-normal "hand back to the
+  switching charger for the sleep". Missed wake is self-limiting: the
+  pump's WDT_30S disables it and the next resume restores switching.
+  No second alarm in `sm5714_battery.c`.
+- **`kernel/dts/sm8550-samsung-x716b.dts`**:
+  `charge-full-design-microamp-hours` `8160000` → `8400000` (one line;
+  the node had the X710 figure). No `PDO_PPS_APDO` added — TCPM v7.2
+  keys PPS off *source* caps, and Samsung's 15 W fixed-path cap is
+  deliberate.
+- **`kernel/drivers/sm5714_battery.c`**: DCP `fast_ma` 2100 → 2200
+  (stock DCP ceiling for this pack); everything else — the 9 V/1660 mA
+  fixed-PD clamp, the `>9000 mV / >3000 mA` PD-contract reject, the
+  pack-thermistor STOP 50 / REDUCED 46 °C — unchanged.
+- **`kernel/config/config-x716.fragment`**: `CONFIG_RTC_DRV_PM8XXX=y`
+  (base leaves it `=m`; no `rtc0` → no wake alarm → keepalive silently
+  falls back). Matches `pmk8550.dtsi`'s already-enabled
+  `pmk8550_rtc: rtc@6100` (`qcom,pmk8350-rtc`, dedicated alarm reg bank
+  + IRQ).
+
+Bring-up knobs (`/sys/module/sm5440_direct/parameters/`): `pps_op_curr_ma`
+(default 4500, the PPS Request operating current — 45 W/~9 V ≈ 5 A, 4500
+leaves cable margin), `target_ibus_ma` (default 0 = step table; non-zero
+pins the loop's aim for staged testing), `verbose`.
+
+**Kernel builds clean** (`Image` + DTB, `sm5440_direct.o` /
+`sm5714_battery.o` / `rtc-pm8xxx.o` all compile with no warnings; the
+build script's strict fragment-symbol verify passes with
+`CONFIG_RTC_DRV_PM8XXX=y` intact). **Real-hardware validation is the
+staged protocol in `docs/charging.md` §"Staged validation"** (Stage 0
+instrument → 1 manual current ramp → 2 auto step table → 3 suspend
+keepalive → 4 full suspend charge), each stage gated on its own abort
+criteria, `&uart7` console attached throughout — not yet run. This is
+deliberately not marked ✅ until Stage 4 passes.
