@@ -3655,3 +3655,32 @@ community `-57 [-93, -57]`), NSS 2 / VHT-MCS 9, **~85 Mbit/s** download
 (verbose tracing, runtime-gated) kept; not required by the fix. Full
 write-up: `docs/wifi-samsung-calibration.md`. Only loose end: a
 controlled same-position/band/AP A/B to pin the exact delta.
+
+### gts9wifi-x11-dir-fix restart storm — properly fixed (was only masked live before)
+
+The `gts9wifi-x11-dir-fix.path`/`.service` pair (above) turned out to be
+storming on **every** boot, independent of the SELinux socket failures
+it was first spotted alongside — a fresh boot with SELinux compiled out
+and everything else healthy still showed ~50 re-triggers/second, ~90k
+journal lines in half an hour, load average ~3.6. It had only ever been
+`systemctl mask`ed live; the mask was never in the overlay source, so
+every rootfs redeploy brought the storm back.
+
+Root cause: it's a textbook `PathExists=` footgun. A `.path` unit with
+`PathExists=/tmp/.X11-unix` re-activates its `Unit=` for as long as the
+path merely *exists*; the triggered oneshot only `chown`/`chmod`s the
+directory, never removes it, so systemd re-fires it immediately, forever.
+The unit even set `StartLimitIntervalSec=0`, removing the one brake that
+would have rate-limited it into a stop. (Upstream gts9wifi-fedora ships
+the same units — same latent bug there.)
+
+Fix (`rootfs/overlay-systemd/usr/lib/systemd/system/`): drop the `.path`
+unit entirely; drive the re-assert from a new
+`gts9wifi-x11-dir-fix.timer` (`OnUnitActiveSec=30s`) instead, and make
+the service test-first (`stat -c %U:%a … = root:1777` || fix) so a
+no-op run doesn't even touch the inode. `85-gts9wifi.preset` and
+`scripts/build-fedora-rootfs.sh`'s enable loop updated `.path` → `.timer`
+(plus a `disable gts9wifi-x11-dir-fix.path` preset line for
+already-deployed systems). Verified on a clean reboot: load average
+~1.2, ~10 x11-dir-fix journal lines/minute, `/tmp/.X11-unix` held at
+`root:1777`, WiFi unaffected.
