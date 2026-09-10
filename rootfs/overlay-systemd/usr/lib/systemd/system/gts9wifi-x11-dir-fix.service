@@ -1,12 +1,22 @@
 [Unit]
-Description=Keep /tmp/.X11-unix root-owned for XWayland ownership checks
-# XWayland requires /tmp/.X11-unix to be owned by root or the session user;
-# whatever removes and recreates it per-uid mid-boot makes every other uid's
-# gnome-shell abort.  This guard re-roots it the instant it reappears.
-
-[Unit]
-StartLimitIntervalSec=0
+Description=Re-assert root:root 1777 on /tmp/.X11-unix for XWayland ownership checks
+# XWayland aborts if /tmp/.X11-unix is not owned by root (or the session
+# user); if something recreates it per-uid mid-session, every other uid's
+# gnome-shell aborts. This guard re-roots it.
+#
+# Triggered by gts9wifi-x11-dir-fix.timer (every 30s), NOT by a
+# PathExists= .path unit as upstream gts9wifi-fedora ships it: PathExists=
+# re-fires continuously for as long as the path merely exists, and this
+# oneshot never removes it, so the pair is an unbounded restart loop --
+# upstream's StartLimitIntervalSec=0 removed the only brake. Observed on
+# real hardware at ~50 starts/sec: journal flooded, a CPU pinned, load
+# average ~3.6. See docs/porting-log.md.
+StartLimitIntervalSec=60
+StartLimitBurst=20
 
 [Service]
 Type=oneshot
-ExecStart=/bin/sh -c 'chown root:root /tmp/.X11-unix 2>/dev/null || true; chmod 1777 /tmp/.X11-unix 2>/dev/null || true'
+# Only touch the inode when it is actually wrong. A no-op chown/chmod
+# still emits an inotify IN_ATTRIB event, which would needlessly wake
+# anything watching the directory.
+ExecStart=/bin/sh -c '[ "$(stat -c %%U:%%a /tmp/.X11-unix 2>/dev/null)" = "root:1777" ] || { chown root:root /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix; }'
