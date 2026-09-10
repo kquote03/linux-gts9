@@ -293,6 +293,14 @@ CONFIG_MAC80211=y
 CONFIG_QCOM_QMI_HELPERS=y
 CONFIG_ATH11K=y
 CONFIG_ATH11K_PCI=y
+# Verbose ath11k QMI/WMI/boot/BDF tracing, gated at runtime by
+# /sys/module/ath11k/parameters/debug_mask (0 by default, so no runtime
+# cost until enabled). Added during the WiFi-throughput / Samsung-BDF
+# investigation (see docs/wifi-samsung-calibration.md) where reading the
+# exact QMI+WMI command sequence out of dmesg was essential to
+# root-causing a firmware crash; kept because it is cheap and useful for
+# any future WiFi work. Not required by any fix.
+CONFIG_ATH11K_DEBUG=y
 CONFIG_MHI_BUS=y
 CONFIG_QRTR=y
 CONFIG_QRTR_MHI=y
