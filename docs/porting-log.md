@@ -3824,3 +3824,57 @@ direct charge correctly gated off, **zero `-95` spam**, fixed 9 V
 contract carried the charge. **Stages 0–4 against a real PPS adapter
 still pending** — needs the Samsung 45 W (has an 11 V/4.05 A APDO) and a
 drained pack. Task left open: "done, needs a little further testing".
+
+### Session 12 — 2026-09-10 — NixOS aarch64 rootfs (second distro)
+
+Added a **standalone flake under `nixos/`** that builds a full NixOS
+aarch64 userland (KDE Plasma 6, Wayland) carrying every device fix, as a
+second rootfs alongside Fedora. It implements the
+`docs/distro-porting.md` contract for a new distro: `overlay-common/`
+applied verbatim, `overlay-systemd/` **translated** (not copied) into
+idiomatic NixOS modules, the same vendor firmware + kernel module tree
+staged. Deployable to **either** microSD (as Fedora) **or** the internal
+`userdata` partition via TWRP — `scripts/deploy-nixos-rootfs.sh {sd,userdata}`.
+
+- **Boundary**: the flake is rootfs-only. It *consumes* `../out/kernel`
+  (`Image` + `modules-out`) and `../out/android/*.img` from the existing
+  pipeline; it does not build the kernel or the Android bundle. `out/` is
+  `.gitignore`d, so the flake reads it by absolute path → every build
+  needs `--impure` (documented in `nixos/README.md`, same honesty as the
+  root flake's Fedora-rootfs note).
+- **`pkgs.x716b.kernel`** wraps the prebuilt tree as a Nix "kernel"
+  package (`modDirVersion` = the real `kernel.release`, `passthru.config`
+  parsed from the real `.config`) so `boot.kernelPackages` /
+  `system.modulesTree` stay coherent while `boot.initrd.enable = false`
+  and no bootloader is installed (ABL boots the Android `boot`
+  partition; the bundle's busybox initramfs `switch_root`s into the
+  labelled rootfs).
+- **Custom packages** (none in nixpkgs): `libssc` 0.4.4, `pd-mapper` 1.1,
+  `hexagonrpcd` 0.4.0 + the 4 `specs/hexagonrpcd-samsung/` patches,
+  `iio-sensor-proxy` 3.9 `-Dssc-support=enabled` + the SSC patch — same
+  source pins the Fedora builder uses.
+- **`x716b-device.nix`** translates the 13 `gts9wifi-*` units + 5
+  drop-ins to `systemd.services.*`, preserving every `After=/Before=`
+  from the unit comments; `85-gts9wifi.preset` is the `wantedBy`
+  authority, so the ADSP chain (`hexagonrpcd-adsp-sensorspd`,
+  `gts9wifi-adsp-boot`) is defined but **manual-start**. zram / journald
+  cap / lid / NM-powersave / tmpfiles / vendor partlabel mounts become
+  native options; `gts9wifi-grow-rootfs` → `fileSystems."/".autoResize`;
+  `gts9wifi-chronyd` → a sandbox-stripping drop-in on NixOS's own
+  `chronyd` (the vendor override existed only because namespacing fails
+  on this kernel, `226/NAMESPACE`).
+- **`scripts/build-real-root-initramfs.sh`**: `/init` now resolves the
+  root by **filesystem label `X716B_ROOT`** first (`findfs`), falling
+  back to the old `mmcblkXp1` device-node list — one initramfs serves
+  both deploy targets.
+- **Kernel config**: checked `out/kernel/.config` against NixOS's
+  `system.requiredKernelConfig` (all 17 satisfied) and a curated
+  systemd-257 / Plasma-Wayland list — **nothing missing**
+  (`AUTOFS_FS`, `CGROUP_BPF`, `SECCOMP_FILTER`, `USER_NS`, full
+  `DRM_MSM`, `FB`, `VT`, `ZRAM` all `=y`). **No `config-x716.fragment`
+  change, no kernel rebuild.**
+- **Status**: all custom packages build (aarch64 via the host's
+  registered binfmt). Full `nix build ./nixos#rootfs-tar` /
+  `#rootfs-image` + real-hardware bring-up (SD path first, then
+  `userdata`) is the pending verification — the feature-parity checklist
+  is in the plan and `nixos/README.md`.

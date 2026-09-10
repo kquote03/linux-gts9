@@ -98,3 +98,30 @@ the current kernel config regardless of this split. `build-buildroot-
 rootfs.sh` is deliberately minimal (Weston-only, no Mesa/GPU, no attempt
 at ADSP/audio/sensors) and isn't a target for this checklist at all. This
 split is preparatory, not a claim that any of the three currently work.
+
+## NixOS — the reference non-Fedora port
+
+`nixos/` (a standalone flake) is the worked example of this checklist for
+a non-Fedora target. NixOS is also systemd, so step 2's *translation* is
+mostly mechanical — each `gts9wifi-*.service` becomes a
+`systemd.services.<name>` in `nixos/modules/x716b-device.nix` with the
+same `After=/Before=` intent, `85-gts9wifi.preset` drives `wantedBy`
+(so the ADSP chain stays manual-start), and the sleep hooks land in
+`/etc/systemd/system-sleep/`. What's genuinely different and worth
+copying if you do a third distro:
+
+- The Qualcomm sensor/ADSP stack (`libssc`, `pd-mapper`, `hexagonrpcd`,
+  `iio-sensor-proxy`-with-SSC) is packaged from the **same source pins**
+  the Fedora builder uses (`nixos/packages/*.nix`) — reuse those pins.
+- Firmware (step 3) is one merged `/lib/firmware` derivation
+  (`nixos/packages/x716b-firmware.nix`) fed to `hardware.firmware`; the
+  HexagonFS `-R` payload is a separate package at
+  `/usr/share/qcom/sm8550/Samsung/gts9-5g`.
+- The kernel module tree is the prebuilt `out/kernel/modules-out`,
+  wrapped as a kernel package so it matches the boot bundle's `Image`
+  vermagic — do **not** let the distro build its own kernel.
+- Root is found by filesystem **label `X716B_ROOT`**
+  (`scripts/build-real-root-initramfs.sh`), so a rootfs image works on
+  the microSD or on `userdata` unchanged.
+
+See `nixos/README.md`.
