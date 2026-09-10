@@ -41,6 +41,13 @@ in
     x.hexagonfs
   ];
 
+  # ALSA UCM2: nixpkgs' tree + the GTS9 configs from overlay-common,
+  # merged in x716b.ucm. Set for services and login sessions both;
+  # gts9wifi-audio-init.service is the belt-and-suspenders BootSequence
+  # trigger on top.
+  environment.variables.ALSA_CONFIG_UCM2 = "${x.ucm}/share/alsa/ucm2";
+  environment.sessionVariables.ALSA_CONFIG_UCM2 = "${x.ucm}/share/alsa/ucm2";
+
   ##########################
   # Vendor partition mounts #
   ##########################
