@@ -3592,3 +3592,50 @@ of this specific tablet model (the 5G variant's extra cellular
 antennas may share PCB real estate/RF front-end with WiFi in a way the
 WiFi-only X710 does not) rather than anything a further software fix
 can close.
+
+### WiFi throughput, round 3: SOLVED — Samsung's own factory calibration, and a real bug in Samsung's firmware
+
+Full write-up: **`docs/wifi-samsung-calibration.md`**. Summary:
+
+Per explicit user instruction (with informed acceptance of crash risk),
+pursued this device's own dumped Samsung calibration data
+(`vendor-firmware-dump/firmware/qca6490/…/bdwlan.elf`) as the cause of
+the throughput gap. 13 live crash/recovery cycles and three deep-dive
+analyses later, the whole chain is established and confirmed on
+hardware:
+
+- The generic community `board-2.bin` calibration genuinely does not fit
+  this board — one RX chain sits pinned at the noise floor (`-93` vs
+  `-57` dBm), which is why throughput was stuck at 6–9 Mbit/s regardless
+  of anything done at the software/DT level.
+- Samsung's real calibration is authored for firmware branch
+  `WLAN.HSP.2.0.c11-00358`; feeding it to the community `HSP.1.1`
+  `amss.bin` crashes on BDF parse (every representation tried).
+- Samsung's own **version-matched** firmware set (`amss20.bin` +
+  Samsung's `m3.bin` + `bdwlan.elf`) parses the BDF cleanly and boots to
+  a real connection — then crashes ~880 ms in. Root-caused from the
+  firmware RDDM coredump + Hexagon disassembly to an **unconditional
+  NULL-pointer dereference in that firmware build's
+  `WMI_VDEV_SET_WMM_PARAMS` handler** (`wal_pdev->[0x37c]` is NULL; the
+  exact fault instruction exists 3× in `amss20.bin`, 0× in the community
+  `amss.bin`). Not a vdev-lifecycle timing issue — confirmed by testing
+  three different call sites, all crash at the identical delay.
+- Fix (`kernel/patches/ath11k-defer-wmm-params-until-vdev-started.patch`,
+  wired into `scripts/build-mainline-kernel.sh`): defer the WMM-params
+  WMI send until `arvif->is_started` (correct regardless, also fixes a
+  latent all-zero-AC wart), plus a `ath11k.skip_legacy_wmm_params`
+  module param (off by default) that skips the crashing command
+  entirely — the only host-side workaround, since the firmware is
+  PIL-signed. WMM/EDCA tuning is lost when the quirk is on.
+- **Result, measured**: Samsung matched triple + quirk → stable
+  association, zero `MHI_CB_EE_RDDM` over a sustained transfer, no dead
+  antenna chain, NSS 2 / VHT operation, and **~40 Mbit/s download vs
+  ~8 Mbit/s on the community set** (~5×) — at a weaker signal on a
+  harder band. This closes the throughput investigation.
+
+Not yet productionised (deliberately): the quirk is a manual toggle not
+auto-gated on firmware version; redistributing Samsung's firmware blobs
+is an open licensing decision; a controlled same-position A/B and a
+permanent flash+deploy remain. `CONFIG_ATH11K_DEBUG=y` was added during
+this work (verbose QMI/WMI tracing) and kept — it is not required by the
+fix.

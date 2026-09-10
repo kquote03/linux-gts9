@@ -171,6 +171,21 @@ apply_unless 'adopt_retained_source_ufp' \
 apply_unless 'consume_retained_sink_dfp' \
 	include/linux/usb/tcpm.h tcpm-use-retained-sink-data-role.patch
 
+# ath11k: defer WMI_VDEV_SET_WMM_PARAMS until the vdev is actually started
+# -- WiFi throughput investigation (Samsung BDF reverse-engineering arc).
+# mac80211 calls conf_tx() at raw interface-up time, before any chanctx/
+# vdev_start has happened. Sending the WMM-params WMI command that early
+# crashes Samsung's real, version-matched WLAN.HSP.2.0 firmware outright: a
+# real, confirmed (RDDM coredump + Hexagon disassembly) unguarded
+# NULL-pointer dereference in that firmware's WMM-params handler, reading a
+# per-pdev field only populated once the vdev has genuinely started. The
+# community WLAN.HSP.1.1 firmware this port ships by default doesn't have
+# this bug, which is why it went unnoticed until testing Samsung's own
+# calibration/firmware set. See docs/porting-log.md for the full
+# investigation (9 live crash tests, byte-exact firmware fault analysis).
+apply_unless 'Flush WMM params deferred by ath11k_mac_op_conf_tx' \
+	drivers/net/wireless/ath/ath11k/mac.c ath11k-defer-wmm-params-until-vdev-started.patch
+
 # Kbuild's LLVM=1 points HOSTCC/HOSTCXX at bare clang-unwrapped even when an
 # environment-exported override is present -- only a command-line-supplied
 # HOSTCC/HOSTCXX takes effect. Same is true of KCFLAGS (needed for
