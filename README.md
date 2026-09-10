@@ -135,11 +135,25 @@ nix run .#build-kernel
 #    of libssc/pd-mapper/hexagonrpcd/iio-sensor-proxy, the full device
 #    overlay applied — see docs/distro-porting.md). Slow: this is a real
 #    rootfs build, not a container pull.
+#
+#    WiFi firmware: the committed buildroot/firmware-overlay/ already
+#    carries this device's own factory calibration (default; see
+#    docs/wifi-samsung-calibration.md), so nothing extra is needed here.
+#    Only run `scripts/fetch-ath11k-firmware.sh` if you want to change or
+#    refresh it — and if you do, re-run it AND step 4b together (a stale
+#    initramfs holding the other firmware generation crashes the WiFi
+#    firmware). `WIFI_CAL=community scripts/fetch-ath11k-firmware.sh`
+#    switches back to the upstream linux-firmware blobs.
 nix run .#build-rootfs
 
-# 5. Package boot.img/init_boot.img/vendor_boot.img/dtbo.img. Needs the
-#    real root-mounting initramfs, not the bring-up ramdisk the script
-#    still defaults to:
+# 4b. Build the real-root initramfs (finds the microSD root and
+#     switch_root's into it). Needs the nix env for the static busybox,
+#     so run it inside `nix develop` (or via nix-shell):
+nix develop --command bash scripts/build-real-root-initramfs.sh
+
+# 5. Package boot.img/init_boot.img/vendor_boot.img/dtbo.img, pointing the
+#    ramdisk at step 4b's output (not the bring-up ramdisk the script
+#    still defaults to):
 BRINGUP_RAMDISK="$(pwd)/out/real-root-initramfs.cpio.gz" \
     nix run .#build-bundle
 

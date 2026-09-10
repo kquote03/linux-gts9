@@ -153,20 +153,32 @@ same generation.
 Both halves are in-tree and on by default; nothing needs setting by
 hand.
 
-### Firmware — `scripts/fetch-ath11k-firmware.sh`
+### Firmware — committed, no fetch needed
 
-Defaults to `WIFI_CAL=samsung`: stages this device's own
-`vendor-firmware-dump/firmware/qca6490/{amss20.bin → amss.bin,
-m3.bin → m3.bin}` and builds `board-2.bin` via
-`scripts/build-samsung-board2.py` (which wraps `bdwlan.elf` into a fresh
-community `board-2.bin` container as this device's exact-match entry,
-leaving every other entry byte-identical). The result lands in
-`buildroot/firmware-overlay/lib/firmware/ath11k/WCN6855/hw2.1/` and is
-committed, so every rootfs flavour
-(`build-{fedora,ubuntu,buildroot}-rootfs.sh`,
-`build-real-root-initramfs.sh`) picks it up with no per-distro change.
-`WIFI_CAL=community` restores the upstream-only set (e.g. for an
-unpatched kernel or an A/B).
+`buildroot/firmware-overlay/lib/firmware/ath11k/WCN6855/hw2.1/` is
+committed with the Samsung set already in place, so `build-rootfs` /
+`build-real-root-initramfs.sh` pick it up with no extra step and no
+per-distro change. **A from-scratch build never has to run
+`fetch-ath11k-firmware.sh`.**
+
+`scripts/fetch-ath11k-firmware.sh` only *regenerates* the overlay.
+`WIFI_CAL=samsung` (default) is **fully offline and byte-deterministic**
+— all inputs are committed:
+
+- `vendor-firmware-dump/firmware/qca6490/{amss20.bin,bdwlan.elf,m3.bin}`
+- `buildroot/firmware-src/board-2.bin.wcn6855-community` — the pristine
+  upstream `linux-firmware` `board-2.bin`, kept here so the wrapper base
+  doesn't have to be downloaded.
+
+`scripts/build-samsung-board2.py` replaces only this device's own
+exact-match board entry's DATA in that community container with
+`bdwlan.elf`; every other entry stays byte-identical. Running it (or the
+fetch script) again produces the committed `board-2.bin` bit-for-bit
+(sha256 `9e08bbe0…`).
+
+`WIFI_CAL=community` restores the upstream-only set — this one *does*
+hit the network (wget from `linux-firmware`), for an A/B or an unpatched
+kernel.
 
 Redistribution: `vendor-firmware-dump/` and
 `buildroot/firmware-overlay/` are already committed to this repo per an

@@ -111,33 +111,44 @@ FW_BASE="https://gitlab.com/kernel-firmware/linux-firmware/-/raw/main"
 # or generation-specific; linux-firmware ships none for this chip).
 WIFI_CAL=${WIFI_CAL:-samsung}
 ss_fw_dir="$repo_root/vendor-firmware-dump/firmware/qca6490"
+comm_b2_src="$repo_root/buildroot/firmware-src/board-2.bin.wcn6855-community"
+
+# tiny fetcher: wget is in the flake devShell, curl usually is on a bare
+# host -- use whichever is present.
+fetch_to() {  # fetch_to <dest> <url>
+	if command -v wget >/dev/null 2>&1; then
+		wget -q -O "$1" "$2"
+	elif command -v curl >/dev/null 2>&1; then
+		curl -fsSL -o "$1" "$2"
+	else
+		echo "error: neither wget nor curl found" >&2
+		exit 1
+	fi
+}
 
 case "$WIFI_CAL" in
 community)
 	echo "== WiFi: community linux-firmware set (WIFI_CAL=community) =="
 	for f in amss.bin board-2.bin m3.bin; do
 		echo "fetching $f from upstream hw2.0"
-		curl -fsSL -o "$wifi_dir/$f.tmp" "$FW_BASE/$wifi_upstream_dir/$f"
+		fetch_to "$wifi_dir/$f.tmp" "$FW_BASE/$wifi_upstream_dir/$f"
 		mv "$wifi_dir/$f.tmp" "$wifi_dir/$f"
 	done
 	;;
 samsung)
 	echo "== WiFi: Samsung factory calibration set (WIFI_CAL=samsung, default) =="
-	for f in amss20.bin bdwlan.elf m3.bin; do
-		[ -f "$ss_fw_dir/$f" ] || {
-			echo "error: $ss_fw_dir/$f missing -- run scripts/extract-vendor-firmware.sh (device in TWRP)" >&2
+	# All inputs are committed (vendor-firmware-dump/ + firmware-src/),
+	# so this path is fully offline and byte-deterministic.
+	for f in "$ss_fw_dir/amss20.bin" "$ss_fw_dir/bdwlan.elf" "$ss_fw_dir/m3.bin" "$comm_b2_src"; do
+		[ -f "$f" ] || {
+			echo "error: $f missing -- run scripts/extract-vendor-firmware.sh (device in TWRP)" >&2
 			exit 1
 		}
 	done
 	cp "$ss_fw_dir/amss20.bin" "$wifi_dir/amss.bin"
 	cp "$ss_fw_dir/m3.bin"     "$wifi_dir/m3.bin"
-	# board-2.bin: build from a fresh community base so the swap is
-	# always against a known-good container, never a re-wrapped one.
-	curl -fsSL -o "$wifi_dir/board-2.bin.community" \
-		"$FW_BASE/$wifi_upstream_dir/board-2.bin"
 	"${PYTHON:-python3}" "$repo_root/scripts/build-samsung-board2.py" \
-		"$wifi_dir/board-2.bin.community" "$wifi_dir/board-2.bin"
-	rm -f "$wifi_dir/board-2.bin.community"
+		"$comm_b2_src" "$wifi_dir/board-2.bin"
 	;;
 *)
 	echo "error: WIFI_CAL must be 'samsung' or 'community', got '$WIFI_CAL'" >&2
