@@ -3873,8 +3873,17 @@ staged. Deployable to **either** microSD (as Fedora) **or** the internal
   (`AUTOFS_FS`, `CGROUP_BPF`, `SECCOMP_FILTER`, `USER_NS`, full
   `DRM_MSM`, `FB`, `VT`, `ZRAM` all `=y`). **No `config-x716.fragment`
   change, no kernel rebuild.**
-- **Status**: all custom packages build (aarch64 via the host's
-  registered binfmt). Full `nix build ./nixos#rootfs-tar` /
-  `#rootfs-image` + real-hardware bring-up (SD path first, then
-  `userdata`) is the pending verification — the feature-parity checklist
-  is in the plan and `nixos/README.md`.
+- **Status**: `nix build --impure ./nixos#rootfs-tar ./nixos#rootfs-image`
+  **completes on the dev host** — a 3.7 GB gzip rootfs tarball and a
+  9.2 GB ext4 image (label `X716B_ROOT`); the tarball carries the FHS
+  skeleton, `/sbin/init` → the system profile, `/nix/store/.reginfo`,
+  the `gts9wifi-*` units, `hexagonrpcd`/`libssc`/`pd-mapper`,
+  `x716b-firmware` and `lib/modules/7.2.0-dirty`. Getting there took two
+  fixes (own commit): the `alsa-ucm-conf` overlay override was forcing a
+  595-derivation emulated rebuild → OOM (replaced with a standalone
+  `x716b.ucm` package + `ALSA_CONFIG_UCM2`), and NixOS's udev-rules
+  validator rejected the `/usr/bin/iw` path in
+  `72-gts9wifi-wifi-powersave-off.rules` (rewritten to the store `iw`).
+  Plan is now 44 glue derivations / 720 MiB, everything else cached.
+- **Pending**: real-hardware bring-up (SD path first, then `userdata`)
+  against the feature-parity checklist in the plan and `nixos/README.md`.
