@@ -87,6 +87,22 @@ static const int sm5440_step_ibus_ma[SM5440_NR_STEPS]  = { 4330, 3710, 2970 };
 #define SM5440_MAX_HEADROOM_MV		2000
 #define SM5440_VSTEP_MV			40
 #define SM5440_IBUS_TOLERANCE_MA	200
+/*
+ * Ticks the loop may sit pegged at the ceiling with the current still short
+ * before it eases the request back down -- an underpowered source/cable
+ * cannot be made to deliver the step target by piling on voltage, and the
+ * unused headroom just heats the pump.
+ */
+#define SM5440_SAT_TICKS		8
+/*
+ * A tick-over-tick VBUS drop this large (with the input current at or below
+ * the step aim, so it is not our own down-regulation) means the source or a
+ * non-e-marked cable has hit its real ceiling and is folding back.  Climbing
+ * the Request further from here just ends in an -EPROTO contract collapse to
+ * 5 V DCP -- seen on a 65 W brick once bus current passed ~3 A through a 3 A
+ * cable -- so the loop stops chasing and settles at what the link can hold.
+ */
+#define SM5440_VBUS_SAG_MV		300
 
 /*
  * Hard ceilings, never raised at runtime.  SM5440_VFLOAT_MV is this model's
@@ -160,8 +176,11 @@ struct sm5440_direct {
 	int target_ma;
 	int step;
 	int freq_khz;
+	int prog_ibus_ma;	/* last value written to IBUSCNTL */
+	int last_vbus_mv;	/* measured VBUS at the previous tick, foldback guard */
 	unsigned int pps_ticks;
 	unsigned int cv_ticks;
+	unsigned int sat_ticks;	/* consecutive ticks pegged at ceil_mv, current short */
 	bool active;
 
 	struct alarm keepalive_alarm;
@@ -261,14 +280,21 @@ static int sm5440_pps_op_curr(void)
 
 /*
  * What to ask for in the Request at a given bus voltage: the knob, but never
- * below the current the 15 W PD floor needs there, rounded to the 50 mA a PPS
+ * below the current the 15 W PD floor needs there, and never above what the
+ * source's own APDO advertises (TCPM exposes that as CURRENT_MAX while a PPS
+ * contract is up).  Over-asking a source its APDO cannot meet was seen to
+ * renegotiate the contract down to 5 V DCP.  Rounded to the 50 mA a PPS
  * message can express.
  */
-static int sm5440_request_ma(int target_mv)
+static int sm5440_request_ma(struct sm5440_direct *sm, int target_mv)
 {
 	int floor_ma = DIV_ROUND_UP(DIV_ROUND_UP(15000000, target_mv), 50) * 50;
+	int want = max(sm5440_pps_op_curr(), floor_ma);
+	int src_max = sm5440_psy_get(sm->tcpm, POWER_SUPPLY_PROP_CURRENT_MAX);
 
-	return max(sm5440_pps_op_curr(), floor_ma);
+	if (src_max > 0)
+		want = min(want, (src_max / 1000) / 50 * 50);
+	return max(want, floor_ma);
 }
 
 /*
@@ -303,14 +329,33 @@ static int sm5440_target_ibus(int step)
 	return sm5440_step_ibus_ma[step];
 }
 
-/* Program the pump's hardware input-current limit a margin above the aim. */
+/* Hardware input-current limit for a step: a margin above the loop's aim. */
+static int sm5440_ibus_limit(int step)
+{
+	return min(sm5440_target_ibus(step) + SM5440_IBUS_CLAMP_MARGIN_MA,
+		   SM5440_IBUS_CLAMP_MAX_MA);
+}
+
+/*
+ * Write IBUSCNTL if it needs to change.  This must track the *target* input
+ * current, not just the step index -- a runtime target_ibus_ma change (staged
+ * bring-up) and auto mode before the pack first crosses a step boundary both
+ * leave the step index put, and without this the hardware limit stays pinned
+ * at whatever sm5440_start() set, capping the current the closed loop can ever
+ * reach.
+ */
 static int sm5440_program_ibus(struct sm5440_direct *sm, int step)
 {
-	int ma = min(sm5440_target_ibus(step) + SM5440_IBUS_CLAMP_MARGIN_MA,
-		     SM5440_IBUS_CLAMP_MAX_MA);
+	int ma = sm5440_ibus_limit(step);
+	int ret;
 
-	return i2c_smbus_write_byte_data(sm->client, SM5440_REG_IBUSCNTL,
+	if (ma == sm->prog_ibus_ma)
+		return 0;
+	ret = i2c_smbus_write_byte_data(sm->client, SM5440_REG_IBUSCNTL,
 					ma / 50);
+	if (!ret)
+		sm->prog_ibus_ma = ma;
+	return ret;
 }
 
 /* Switching frequency for the current thermals (stock SIOP derate shape). */
@@ -378,6 +423,9 @@ static void sm5440_restore_switching(struct sm5440_direct *sm)
 	sm5714_battery_set_direct_charge(false);
 	sm->pps_ticks = 0;
 	sm->cv_ticks = 0;
+	sm->sat_ticks = 0;
+	sm->prog_ibus_ma = 0;
+	sm->last_vbus_mv = 0;
 	sm->active = false;
 }
 
@@ -471,7 +519,7 @@ static int sm5440_start(struct sm5440_direct *sm)
 
 	step = sm5440_step_index(battery_uv / 1000);
 	target_mv = sm5440_target_mv(battery_uv);
-	target_ma = sm5440_request_ma(target_mv);
+	target_ma = sm5440_request_ma(sm, target_mv);
 
 	/*
 	 * Open the SM5714 switching path while VBUS is still at its safe fixed
@@ -486,7 +534,12 @@ static int sm5440_start(struct sm5440_direct *sm)
 		goto restore;
 	sm->freq_khz = SM5440_FREQUENCY_KHZ;
 
-	/* Raise the hardware input limit from hw_init's floor to this step. */
+	/*
+	 * hw_init wrote IBUSCNTL directly (its own conservative floor), so the
+	 * tracked value is stale -- clear it and let sm5440_program_ibus() push
+	 * this step's real limit.
+	 */
+	sm->prog_ibus_ma = 0;
 	ret = sm5440_program_ibus(sm, step);
 	if (ret)
 		goto restore;
@@ -550,6 +603,8 @@ static int sm5440_start(struct sm5440_direct *sm)
 	sm->target_ma = target_ma;
 	sm->pps_ticks = 0;
 	sm->cv_ticks = 0;
+	sm->sat_ticks = 0;
+	sm->last_vbus_mv = 0;
 	dev_info(sm->dev,
 		 "direct charge started: step %d, PPS %d mV/%d mA (aim %d mA in / %d mA pack)\n",
 		 step, target_mv, target_ma,
@@ -720,18 +775,24 @@ static void sm5440_work(struct work_struct *work)
 
 	/* Step-table walk: pick the step for the current pack voltage. */
 	step = sm5440_step_index(want / 1000);
-	if (step != sm->step) {
+	if (step != sm->step)
 		dev_info(sm->dev,
 			 "step %d -> %d at vbat=%dmV (aim %d mA in / %d mA pack)\n",
 			 sm->step, step, want / 1000,
 			 sm5440_target_ibus(step), sm5440_step_ibat_ma[step]);
-		ret = sm5440_program_ibus(sm, step);
-		if (ret) {
-			sm5440_restore_switching(sm);
-			delay = msecs_to_jiffies(SM5440_RETRY_MS);
-			goto out;
-		}
-		sm->step = step;
+	sm->step = step;
+
+	/*
+	 * Track the hardware input-current limit every tick, not only on a step
+	 * change -- sm5440_program_ibus() is a no-op when nothing changed, but
+	 * a runtime target_ibus_ma change (or auto mode before the pack first
+	 * crosses a step boundary) must still take effect.
+	 */
+	ret = sm5440_program_ibus(sm, step);
+	if (ret) {
+		sm5440_restore_switching(sm);
+		delay = msecs_to_jiffies(SM5440_RETRY_MS);
+		goto out;
 	}
 
 	/*
@@ -742,17 +803,46 @@ static void sm5440_work(struct work_struct *work)
 	 * trust, and let the voltage find its own level.  The floor still
 	 * tracks the pack (twice it plus the REVBLK headroom); the ceiling is
 	 * twice the pack plus SM5440_MAX_HEADROOM_MV, hard-capped at 10.5 V.
+	 * SM5440_SAT_TICKS is the anti-windup: once the request is pegged at
+	 * the ceiling and the current still will not come, ease it back rather
+	 * than dumping unused headroom into the pump as heat.
 	 */
 	tibus = sm5440_target_ibus(step);
 	floor_mv = sm5440_target_mv(want);
 	ceil_mv = min((want / 1000) * 2 + SM5440_MAX_HEADROOM_MV, 10500);
 
-	if (ibus < tibus - SM5440_IBUS_TOLERANCE_MA)
-		sm->target_mv += SM5440_VSTEP_MV;
-	else if (ibus > tibus + SM5440_IBUS_TOLERANCE_MA)
+	if (ibus > tibus + SM5440_IBUS_TOLERANCE_MA) {
 		sm->target_mv -= SM5440_VSTEP_MV;
+		sm->sat_ticks = 0;
+	} else if (sm->last_vbus_mv &&
+		   vbus < sm->last_vbus_mv - SM5440_VBUS_SAG_MV) {
+		/*
+		 * VBUS fell out from under us while the current was not above
+		 * aim: the source/cable is folding back.  Stop climbing and
+		 * drop the Request toward the level the bus is actually
+		 * holding; the loop then settles at what the link can sustain
+		 * instead of walking into a contract collapse.
+		 */
+		sm->target_mv = clamp(vbus + SM5440_VSTEP_MV, floor_mv, ceil_mv);
+		sm->sat_ticks = 0;
+		dev_warn(sm->dev,
+			 "source foldback: vbus %d -> %d mV, easing request to %d mV\n",
+			 sm->last_vbus_mv, vbus, sm->target_mv);
+	} else if (ibus < tibus - SM5440_IBUS_TOLERANCE_MA) {
+		if (sm->target_mv < ceil_mv) {
+			sm->target_mv += SM5440_VSTEP_MV;
+			sm->sat_ticks = 0;
+		} else if (++sm->sat_ticks >= SM5440_SAT_TICKS) {
+			sm->target_mv = clamp(vbus + SM5440_VSTEP_MV,
+					      floor_mv, ceil_mv);
+			sm->sat_ticks = 0;
+		}
+	} else {
+		sm->sat_ticks = 0;
+	}
 	sm->target_mv = clamp(sm->target_mv, floor_mv, ceil_mv);
-	sm->target_ma = sm5440_request_ma(sm->target_mv);
+	sm->target_ma = sm5440_request_ma(sm, sm->target_mv);
+	sm->last_vbus_mv = vbus;
 
 	/*
 	 * Re-send the Request periodically or the source drops the programmable
@@ -762,6 +852,21 @@ static void sm5440_work(struct work_struct *work)
 	if (++sm->pps_ticks >= 2) {
 		sm->pps_ticks = 0;
 		ret = sm5440_refresh_pps(sm);
+		if (ret) {
+			/*
+			 * A lone -EPROTO here is usually the source trimming its
+			 * APDO under load: TCPM renegotiates and the in-flight
+			 * Request collides.  Re-read the (now lower) APDO current
+			 * ceiling, back the aim down to it and try once more.  A
+			 * clean fall back to DCP is the right end state, but not
+			 * on a single transient.
+			 */
+			dev_warn(sm->dev, "PPS refresh failed (%d), retrying\n",
+				 ret);
+			msleep(50);
+			sm->target_ma = sm5440_request_ma(sm, sm->target_mv);
+			ret = sm5440_refresh_pps(sm);
+		}
 		if (ret) {
 			dev_warn(sm->dev, "failed to refresh PPS: %d\n", ret);
 			sm5440_restore_switching(sm);

@@ -3789,3 +3789,38 @@ instrument → 1 manual current ramp → 2 auto step table → 3 suspend
 keepalive → 4 full suspend charge), each stage gated on its own abort
 criteria, `&uart7` console attached throughout — not yet run. This is
 deliberately not marked ✅ until Stage 4 passes.
+
+### Session 11b — 2026-09-10 — Charging: round-2 closed-loop hardening
+
+Five `sm5440_direct.c` bug fixes from the first bring-up, no DT/config
+change. Full write-up in **`docs/charging-followup.md`**.
+
+1. **`IBUSCNTL` tracked the step *index*, not the target current** — in
+   auto mode before the pack crossed 4130 mV, and on any runtime
+   `target_ibus_ma=` write, the hardware input limit stayed pinned at
+   the `sm5440_start()` value and capped the loop in silicon.
+   `sm5440_program_ibus()` now self-tracks its last write and runs every
+   tick. Live-verified: input current 1.5 A → 2.8 A the moment the
+   per-tick write landed.
+2. **Request current not clamped to the APDO** — `sm5440_request_ma()`
+   now also clamps to `POWER_SUPPLY_PROP_CURRENT_MAX` (the active APDO
+   ceiling), never below the 15 W floor. Over-asking had been seen to
+   renegotiate the contract down to 5 V DCP.
+3. **Source-foldback detection** — a > 300 mV tick-over-tick VBUS sag
+   (current not above aim, so not our own down-regulation) is treated as
+   the source/cable folding back: stop climbing the Request, ease it to
+   the level the bus is holding, settle there instead of collapsing.
+4. **One retry before tearing down** — a lone `-EPROTO` from
+   `sm5440_refresh_pps()` now re-reads the APDO ceiling and retries once
+   (50 ms) before falling back to the switching charger.
+5. **`SM5440_SAT_TICKS` 12 → 8** — the first collapse happened at ~10 s
+   of ceiling saturation, before the 12-tick anti-windup could act.
+
+**Verified on hardware** (build `a2494b92…`): driver loads/binds,
+keepalive armed, `rtc0` = `rtc-pm8xxx`, PM ops clean. The charger on
+hand advertised **fixed PDOs only** (5/9/12/15/20 V @ 3 A, no APDO), so
+the PPS loop could not be exercised — but the non-PPS path was clean:
+direct charge correctly gated off, **zero `-95` spam**, fixed 9 V
+contract carried the charge. **Stages 0–4 against a real PPS adapter
+still pending** — needs the Samsung 45 W (has an 11 V/4.05 A APDO) and a
+drained pack. Task left open: "done, needs a little further testing".
