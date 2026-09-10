@@ -878,19 +878,23 @@
 	 *
 	 * Updated 2026-09-07 (gts9wifi-fedora pivot) from X910's figures to
 	 * gts9wifi-fedora's real, Samsung-sec-battery-node-derived values for
-	 * the X710 (EB-BX916ABY, charge-full-design 8160 mAh /
-	 * chg_float_voltage 4440 mV -- not the marketing "11200 mAh" figure).
-	 * X716B is the same physical tablet chassis in a 5G SKU, so the same
-	 * battery pack is likely, but this is UNVERIFIED for X716B
-	 * specifically (no teardown/label check done) -- same cross-SKU
-	 * confidence caveat as adspslpi_mem/the sensor regulators above.
-	 * Still only cosmetic for our purposes either way (feeds a
-	 * time-remaining estimate, not the fuel gauge's actual state-of-charge
-	 * reporting).
+	 * the X710; corrected 2026-09-10 for the X716B pack specifically.
+	 *
+	 * charge-full-design-microamp-hours = 8400 mAh -- the SM-X716B's
+	 * published pack rating (base Tab S9, EB-BX716ABY). NOT 9800: Samsung's
+	 * stock sec-battery node carries `battery,battery_full_capacity = 9800`
+	 * and `battery,ttf_capacity = 9500`, but those are fuel-gauge/CISD
+	 * internal constants (they appear identically on the S9 Ultra X910,
+	 * which has a physically larger pack) -- not the pack's rated capacity.
+	 * Using 9800 here would misrepresent the pack by ~17% and skew every
+	 * rate/thermal estimate downstream, so it is deliberately avoided.
+	 * chg_float_voltage 4440 mV matches voltage-max-design below and stock.
+	 * This node feeds sm5714_battery's time-to-full estimate, not the fuel
+	 * gauge's actual state-of-charge reporting.
 	 */
 	battery: battery {
 		compatible = "simple-battery";
-		charge-full-design-microamp-hours = <8160000>;
+		charge-full-design-microamp-hours = <8400000>;
 		voltage-max-design-microvolt = <4440000>;
 		voltage-min-design-microvolt = <3400000>;
 	};

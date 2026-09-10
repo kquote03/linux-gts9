@@ -380,8 +380,12 @@ static int sm5714_configure_charging(struct sm5714_battery *sm)
 	} else switch (usb_type) {
 	case POWER_SUPPLY_USB_TYPE_DCP:
 		input_ma = 1800;
-		/* 2100 mA maps to the stock bootloader's CHGCNTL2=0x86. */
-		fast_ma = 2100;
+		/*
+		 * 2200 mA is this pack's stock DCP fast-charge ceiling (base
+		 * Tab S9 / SM-X716B).  The warm-band REDUCED clamp below still
+		 * pulls it back to the well-tested 2100 mA.
+		 */
+		fast_ma = 2200;
 		break;
 	case POWER_SUPPLY_USB_TYPE_CDP:
 		input_ma = 1500;

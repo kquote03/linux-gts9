@@ -387,6 +387,19 @@ CONFIG_GPIO_SHARED_PROXY=y
 CONFIG_CHARGER_SM5440_DIRECT=y
 CONFIG_QCOM_SPMI_ADC5_GEN3=y
 
+# PMIC RTC (drivers/rtc/rtc-pm8xxx.c, matched to pmk8550.dtsi's
+# `pmk8550_rtc: rtc@6100` via "qcom,pmk8350-rtc"; that node ships enabled
+# with a dedicated "alarm" reg bank + alarm IRQ). Mainline defconfig and
+# our vendored base both leave it =m, and this port never modprobes -- so
+# with no built-in RTC driver there is no `rtc0`, and an ALARM_BOOTTIME
+# alarm has no wake-capable RTC backing it. sm5440_direct.c's suspend
+# keepalive (2026-09-10 charging work) needs a real wakealarm to re-Request
+# the PPS APDO every few seconds across s2ram; force the driver built-in so
+# `/sys/class/rtc/rtc0/wakealarm` exists. Falls back gracefully if the RTC
+# still fails to register (keepalive_capable check), but on this SoC the
+# node is present and functional.
+CONFIG_RTC_DRV_PM8XXX=y
+
 # DisplayPort altmode link-training helpers. TYPEC_DP_ALTMODE (re-added
 # above) and the internal DP path both need these; DRM_MSM's own =y
 # likely already pulls DRM_DISPLAY_HELPER/DP_HELPER in transitively, but
