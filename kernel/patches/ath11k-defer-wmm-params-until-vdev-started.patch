@@ -1,32 +1,48 @@
 --- a/drivers/net/wireless/ath/ath11k/mac.c
 +++ b/drivers/net/wireless/ath/ath11k/mac.c
-@@ -25,6 +25,25 @@
+@@ -25,6 +25,41 @@
  #include "hif.h"
  #include "wow.h"
  
-+/* Experimental quirk (WiFi throughput / Samsung BDF investigation, Galaxy
-+ * Tab S9 5G port): Samsung's real, version-matched WLAN.HSP.2.0.c11-00358
-+ * firmware for QCA6490/WCN6855 crashes hard (MHI_CB_EE_RDDM, confirmed via
-+ * RDDM coredump disassembly to be an unguarded NULL-pointer dereference)
-+ * whenever the host sends WMI_VDEV_SET_WMM_PARAMS_CMDID (legacy type) --
-+ * confirmed NOT to be a vdev-start timing issue (deferring the send to
-+ * after vdev_start, tried first, still crashes at the exact same ~880ms
-+ * delay with correct values) -- this is an unconditional bug in that
-+ * firmware build's WMM-params handler. Skipping the send entirely is the
-+ * only known host-side workaround; real WMM/EDCA tuning is lost as a
-+ * result (mac80211/firmware fall back to their own defaults instead).
-+ * Off by default -- only relevant when deliberately testing that exact
-+ * firmware. See docs/porting-log.md for the full investigation.
++/* Quirk (WiFi throughput / Samsung BDF investigation, Galaxy Tab S9 5G
++ * port): Samsung's real, version-matched WLAN.HSP.2.0 firmware for
++ * QCA6490/WCN6855 crashes hard (MHI_CB_EE_RDDM, confirmed via RDDM
++ * coredump + Hexagon disassembly to be an unguarded NULL-pointer
++ * dereference in wal_pdev->[0x37c]) whenever the host sends
++ * WMI_VDEV_SET_WMM_PARAMS_CMDID (legacy type). Confirmed NOT a
++ * vdev-start timing issue: deferring the send to after vdev_start still
++ * crashes at the same ~880 ms delay with correct values, and all three
++ * vdev-lifecycle call sites crash identically. The exact fault
++ * instruction exists 3x in this firmware and 0x in the community
++ * WLAN.HSP.1.1 build. Skipping the send is the only host-side
++ * workaround (the firmware is PIL-signed); host-configured WMM/EDCA
++ * tuning is lost when it is active -- mac80211/firmware fall back to
++ * their own defaults. See docs/wifi-samsung-calibration.md.
++ *
++ *   -1 (default) = auto: skip only when the running firmware build id
++ *                  contains "WLAN.HSP.2.0" (the affected generation);
++ *                  a no-op on the community HSP.1.1 firmware this port
++ *                  ships by default.
++ *    0           = always send (old behaviour).
++ *    1           = always skip.
 + */
-+static bool ath11k_skip_legacy_wmm_params;
-+module_param_named(skip_legacy_wmm_params, ath11k_skip_legacy_wmm_params, bool, 0644);
++static int ath11k_skip_legacy_wmm_params = -1;
++module_param_named(skip_legacy_wmm_params, ath11k_skip_legacy_wmm_params, int, 0644);
 +MODULE_PARM_DESC(skip_legacy_wmm_params,
-+		 "never send WMI_VDEV_SET_WMM_PARAMS (legacy type) -- workaround for a firmware bug on some builds");
++		 "skip WMI_VDEV_SET_WMM_PARAMS (legacy): -1=auto (WLAN.HSP.2.0 only), 0=never, 1=always -- firmware-bug workaround");
++
++static bool ath11k_mac_skip_legacy_wmm_params(struct ath11k *ar)
++{
++	if (ath11k_skip_legacy_wmm_params >= 0)
++		return ath11k_skip_legacy_wmm_params;
++
++	return strstr(ar->ab->qmi.target.fw_build_id, "WLAN.HSP.2.0") != NULL;
++}
 +
  #define CHAN2G(_channel, _freq, _flags) { \
  	.band                   = NL80211_BAND_2GHZ, \
  	.hw_value               = (_channel), \
-@@ -5511,9 +5530,40 @@ static int ath11k_mac_op_conf_tx(struct ieee80211_hw *hw,
+@@ -5511,9 +5546,37 @@ static int ath11k_mac_op_conf_tx(struct ieee80211_hw *hw,
  	p->aifs = params->aifs;
  	p->txop = params->txop;
  
@@ -39,28 +55,25 @@
 +	 * that point the values above are cached into arvif->wmm_params,
 +	 * but the actual WMI_VDEV_SET_WMM_PARAMS_CMDID send (and the mu_edca/
 +	 * uapsd sends below, which touch the same not-yet-configured vdev
-+	 * state) must wait until the vdev has genuinely started --
-+	 * ath11k_mac_op_assign_vif_chanctx() flushes the cached params once
-+	 * arvif->is_started goes true. This isn't just theoretical: on real
-+	 * hardware, sending WMI_VDEV_SET_WMM_PARAMS this early crashes at
-+	 * least one real firmware build (Samsung's WLAN.HSP.2.0.c11-00358
-+	 * for QCA6490/WCN6855) with a hard firmware fault -- confirmed via
-+	 * RDDM coredump disassembly to be an unguarded NULL-pointer
-+	 * dereference in that firmware's WMM-params handler, reading a
-+	 * per-pdev field that's only populated once the vdev has actually
-+	 * started (community WLAN.HSP.1.1 firmware doesn't have this bug,
-+	 * which is why it went unnoticed). Mainline's own "TODO: Setup ps
-+	 * and cts/rts protection" comment in assign_vif_chanctx() already
-+	 * flags this exact class of gap for a different feature; this is
-+	 * the same fix applied to conf_tx(). See docs/porting-log.md
-+	 * (Galaxy Tab S9 5G port) for the full analysis.
++	 * state) is deferred until the vdev has genuinely started --
++	 * ath11k_mac_op_assign_vif_chanctx() / ath11k_mac_start_vdev_delay()
++	 * flush the cached params once arvif->is_started goes true. Sending
++	 * WMI_VDEV_SET_WMM_PARAMS this early also lets ath11k ship three
++	 * all-zero AC entries on the first of mac80211's four per-AC calls.
++	 * (Deferral does NOT by itself fix the Samsung WLAN.HSP.2.0 firmware
++	 * crash -- that handler faults regardless of when the command
++	 * arrives; ath11k_mac_skip_legacy_wmm_params() handles that.)
++	 * Mainline's own "TODO: Setup ps and cts/rts protection" comment in
++	 * assign_vif_chanctx() already flags this exact class of gap for a
++	 * different feature. See docs/wifi-samsung-calibration.md (Galaxy
++	 * Tab S9 5G port) for the full analysis.
 +	 */
 +	if (!arvif->is_started) {
 +		ret = 0;
 +		goto exit;
 +	}
 +
-+	if (ath11k_skip_legacy_wmm_params) {
++	if (ath11k_mac_skip_legacy_wmm_params(ar)) {
 +		ret = 0;
 +	} else {
 +		ret = ath11k_wmi_send_wmm_update_cmd_tlv(ar, arvif->vdev_id,
@@ -70,7 +83,7 @@
  	if (ret) {
  		ath11k_warn(ar->ab, "failed to set wmm params: %d\n", ret);
  		goto exit;
-@@ -7957,6 +8007,25 @@ static int ath11k_mac_start_vdev_delay(struct ieee80211_hw *hw,
+@@ -7957,6 +8020,26 @@ static int ath11k_mac_start_vdev_delay(struct ieee80211_hw *hw,
  
  	arvif->is_started = true;
  
@@ -84,7 +97,8 @@
 +	 * the bss peer is created. Both flush sites are needed; which one
 +	 * actually runs depends on hw_params.vdev_start_delay.
 +	 */
-+	if (arvif->vdev_type != WMI_VDEV_TYPE_MONITOR && !ath11k_skip_legacy_wmm_params) {
++	if (arvif->vdev_type != WMI_VDEV_TYPE_MONITOR &&
++	    !ath11k_mac_skip_legacy_wmm_params(ar)) {
 +		ret = ath11k_wmi_send_wmm_update_cmd_tlv(ar, arvif->vdev_id,
 +							 &arvif->wmm_params,
 +							 WMI_WMM_PARAM_TYPE_LEGACY);
@@ -96,7 +110,7 @@
  	/* TODO: Setup ps and cts/rts protection */
  	return 0;
  }
-@@ -8456,6 +8525,29 @@ ath11k_mac_op_assign_vif_chanctx(struct ieee80211_hw *hw,
+@@ -8456,6 +8539,30 @@ ath11k_mac_op_assign_vif_chanctx(struct ieee80211_hw *hw,
  		}
  	}
  
@@ -112,7 +126,8 @@
 +	 * vdev is already started, so their own conf_tx() call goes through
 +	 * normally without ever needing to be deferred.
 +	 */
-+	if (arvif->vdev_type != WMI_VDEV_TYPE_MONITOR && !ath11k_skip_legacy_wmm_params) {
++	if (arvif->vdev_type != WMI_VDEV_TYPE_MONITOR &&
++	    !ath11k_mac_skip_legacy_wmm_params(ar)) {
 +		ret = ath11k_wmi_send_wmm_update_cmd_tlv(ar, arvif->vdev_id,
 +							 &arvif->wmm_params,
 +							 WMI_WMM_PARAM_TYPE_LEGACY);

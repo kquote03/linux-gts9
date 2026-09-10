@@ -96,107 +96,121 @@ fully-started vdev — all three call sites, same crash. The bug is
    wcn6855 hw2.1 included). This also fixes a real latent wart: without
    it, `ath11k` sends three all-zero AC entries on the first
    `conf_tx()`.
-2. **Quirk** — module parameter, **off by default**:
+2. **Quirk** — `ath11k_mac_skip_legacy_wmm_params()`, controlled by the
+   `ath11k.skip_legacy_wmm_params` module parameter:
 
-   ```
-   ath11k.skip_legacy_wmm_params=1
-   ```
+   | value | behaviour |
+   |---|---|
+   | `-1` (default) | **auto** — skip only when the running firmware's `fw_build_id` contains `WLAN.HSP.2.0` |
+   | `0` | always send (pre-fix behaviour) |
+   | `1` | always skip |
 
-   When set, the legacy `WMI_VDEV_SET_WMM_PARAMS` send is skipped
-   entirely (all three call sites). Host-configured WMM/EDCA tuning is
-   lost — mac80211 and firmware fall back to their own defaults — but
-   the firmware NULL-deref is avoided. Only relevant when running the
-   `HSP.2.0` firmware; harmless (but pointless) otherwise. The firmware
-   is PIL-signed, so patching the firmware itself is not an option.
+   When skipping, the legacy `WMI_VDEV_SET_WMM_PARAMS` send is dropped
+   at all three call sites; host-configured WMM/EDCA tuning is lost —
+   mac80211 and firmware fall back to their own defaults. On the
+   community `HSP.1.1` firmware the auto default is a no-op, so the
+   patch is inert until Samsung's `HSP.2.0` firmware is actually
+   present. The firmware is PIL-signed, so patching the firmware itself
+   is not an option.
 
 The deferral half is a legitimate upstream-shaped fix. The quirk half
 is a workaround for a bug that lives in a closed, signed firmware blob.
 
 ## Result (measured on real hardware)
 
-Same tablet, community firmware vs. Samsung matched triple + quirk, back
-to back over the same real network (noisy home/campus environment,
-different bands/APs between samples — treat magnitudes as indicative,
-not lab-grade):
+Same tablet, same real network. The community numbers are from a
+back-to-back sample earlier in the session; the Samsung numbers are from
+the final **cold boot** with everything permanent (flashed kernel +
+initramfs, committed firmware, auto-quirk — no manual steps). Noisy
+real-world environment, so treat magnitudes as indicative:
 
-| | community `HSP.1.1` | Samsung `HSP.2.0` + quirk |
+| | community `HSP.1.1` | Samsung `HSP.2.0` (auto-quirk) |
 |---|---|---|
-| BDF parse / boot | works | works |
-| Crashes over a sustained transfer | n/a (stable) | **zero `MHI_CB_EE_RDDM`** |
-| Per-chain RSSI | `-57 [-93, -57]` (one chain at noise floor) | `-68 [-68]` (single healthy chain, no dead chain) |
-| Spatial streams | NSS 1 effective | **NSS 2**, VHT-MCS 4 rx / MCS 9 tx |
-| Download throughput | ~1.0 MB/s (~8 Mbit/s) | **~5 MB/s (~40 Mbit/s)** |
+| Boot / BDF parse | works | works, no crash |
+| `MHI_CB_EE_RDDM` over a sustained transfer | n/a (stable) | **zero** |
+| Per-chain RSSI | `-57 [-93, -57]` (one chain at the noise floor, ~36 dB gap) | `-65 [-69, -67]` (**both chains healthy, ~2 dB apart**) |
+| Spatial streams | NSS 1 effective (MCS 5) | **NSS 2**, VHT-MCS 5 rx / MCS 9 tx (~173 Mbit/s PHY) |
+| Download throughput | ~1.0 MB/s (~8 Mbit/s) | **~10 MB/s (~85 Mbit/s)**, 3/3 samples |
 
-Samsung's calibration delivered ~5× the throughput at a *weaker* signal
-on a *harder* band, and the "one dead chain" signature that defined the
-whole investigation is gone. The core hypothesis — generic calibration
-does not fit this board, its own factory calibration does — is
-confirmed.
+~10× the throughput, and the "one dead chain" signature that defined the
+whole investigation is gone — both RX chains are now live and matched.
+The core hypothesis — generic calibration does not fit this board, its
+own factory calibration does — is confirmed.
 
-## How to reproduce
+### Cold-boot integration note
 
-### The kernel fix (already in-tree, distro-agnostic)
+ath11k's multi-stage firmware load straddles the initramfs →
+switch_root boundary: `amss.bin` can be fetched from the initramfs and
+`board-2.bin` from the real root. If the two `/lib/firmware` trees hold
+different firmware *generations*, that mismatch is itself the RDDM
+crash. So `scripts/build-real-root-initramfs.sh` (which already copies
+`buildroot/firmware-overlay/lib/firmware` in) must be re-run whenever
+`fetch-ath11k-firmware.sh` changes the set — both trees must carry the
+same generation.
 
-`scripts/build-mainline-kernel.sh` applies the patch idempotently
-(marker: `Flush WMM params deferred by ath11k_mac_op_conf_tx`). A fresh
-`scripts/fetch-mainline.sh` + `scripts/build-mainline-kernel.sh` picks
-it up automatically. `CONFIG_ATH11K_DEBUG=y`
-(`kernel/config/config-x716.fragment`) is **not required by the fix** —
-it was added for the investigation (verbose QMI/WMI/boot tracing via
-`debug_mask`) and is kept because it is cheap and useful for any future
-WiFi work.
+## How it's wired in (the default, as of 2026-09-10)
 
-### Using Samsung's calibration (manual — not yet a default)
+Both halves are in-tree and on by default; nothing needs setting by
+hand.
 
-This is deliberately **not** wired into the image build. Samsung's
-`amss20.bin` / `m3.bin` / `bdwlan.elf` are extracted from this specific
-unit; bundling them into a redistributable rootfs is a licensing
-decision left open. To use them:
+### Firmware — `scripts/fetch-ath11k-firmware.sh`
 
-1. Stage the three files as
-   `ath11k/WCN6855/hw2.1/{amss,m3,board-2}.bin` where the kernel
-   firmware loader looks — either
-   `/lib/firmware/ath11k/WCN6855/hw2.1/` (persistent, any distro), or a
-   tmpfs dir pointed at by `/sys/module/firmware_class/parameters/path`
-   (non-persistent, self-heals on reboot — see the test harness).
-   `board-2.bin` is `bdwlan.elf` re-wrapped into the `board-2.bin` TLV
-   container as this device's exact-match entry — see
-   `scripts/` note below.
-2. Set the quirk before the driver probes:
-   - kernel cmdline: `ath11k.skip_legacy_wmm_params=1`, or
-   - `echo 1 > /sys/module/ath11k/parameters/skip_legacy_wmm_params`
-     then re-probe (`unbind`/`bind` the PCI device).
-3. `unbind`/`bind` `0000:01:00.0` on
-   `/sys/bus/pci/drivers/ath11k_pci/`, or reboot.
+Defaults to `WIFI_CAL=samsung`: stages this device's own
+`vendor-firmware-dump/firmware/qca6490/{amss20.bin → amss.bin,
+m3.bin → m3.bin}` and builds `board-2.bin` via
+`scripts/build-samsung-board2.py` (which wraps `bdwlan.elf` into a fresh
+community `board-2.bin` container as this device's exact-match entry,
+leaving every other entry byte-identical). The result lands in
+`buildroot/firmware-overlay/lib/firmware/ath11k/WCN6855/hw2.1/` and is
+committed, so every rootfs flavour
+(`build-{fedora,ubuntu,buildroot}-rootfs.sh`,
+`build-real-root-initramfs.sh`) picks it up with no per-distro change.
+`WIFI_CAL=community` restores the upstream-only set (e.g. for an
+unpatched kernel or an A/B).
 
-Both staging methods and both quirk-setting methods are
-distro-agnostic (no systemd, no NetworkManager dependency). For a
-persistent deployment the firmware files belong in
-`rootfs/overlay-common/lib/firmware/ath11k/WCN6855/hw2.1/` and the
-cmdline arg in the boot bundle
-(`scripts/build-android-v4-bundle.sh`'s `cmdline`).
+Redistribution: `vendor-firmware-dump/` and
+`buildroot/firmware-overlay/` are already committed to this repo per an
+earlier explicit decision (`.gitignore` header, 2026-09-07) — the
+Samsung/Qualcomm binaries are not this project's to relicense, and that
+caveat is documented in `docs/hardware-facts.md`.
 
-### The crash-safe test harness
+### Kernel — `kernel/patches/ath11k-defer-wmm-params-until-vdev-started.patch`
 
-`board-2.bin` builder and the live test scripts used for this
-investigation are scratch (kept under a working dir, not committed).
-The key idea for anyone repeating this: stage test firmware in tmpfs and
-point `/sys/module/firmware_class/parameters/path` at it — it is
-searched before `/lib/firmware`, is **not persistent**, and
-`/lib/firmware` is never touched, so any reboot (watchdog included)
-comes back clean. No TWRP rescue is ever needed. A firmware RDDM
-coredump, when one is produced, lands in `/sys/class/devcoredump/` and
-must be copied out within ~5 minutes (reading it frees it).
+Applied idempotently by `scripts/build-mainline-kernel.sh` (marker
+`ath11k_mac_skip_legacy_wmm_params`). The quirk defaults to `-1` (auto),
+so on the staged `HSP.2.0` firmware it activates itself and on any
+`HSP.1.1` firmware it is inert. `CONFIG_ATH11K_DEBUG=y`
+(`kernel/config/config-x716.fragment`) is **not required** — kept
+because it is cheap (runtime-gated by `debug_mask=0`) and was essential
+for root-causing this.
+
+### Overriding at runtime (any distro, no systemd/NM dependency)
+
+- Force the old firmware: build with `WIFI_CAL=community`.
+- Force quirk state: `ath11k.skip_legacy_wmm_params={0,1}` on the kernel
+  cmdline, or `echo N > /sys/module/ath11k/parameters/skip_legacy_wmm_params`
+  then re-probe (`echo 0000:01:00.0 > /sys/bus/pci/drivers/ath11k_pci/{unbind,bind}`).
+
+### The crash-safe test harness (for anyone re-testing firmware)
+
+Stage candidate firmware in a tmpfs dir and point
+`/sys/module/firmware_class/parameters/path` at it — it is searched
+before `/lib/firmware`, is **not persistent**, and `/lib/firmware` is
+never touched, so any reboot (watchdog included) comes back clean. No
+TWRP rescue is ever needed. A firmware RDDM coredump, when produced,
+lands in `/sys/class/devcoredump/` and must be copied out within
+~5 minutes (reading it frees it).
 
 ## Open follow-ups
 
-- Auto-gate the quirk on the firmware `build_id` (`fw_version` /
-  `HSP.2.0` detection at runtime) instead of a manual toggle.
-- Decide on redistribution of the Samsung firmware blobs; if yes, wire
-  the overlay + cmdline in and make it the default.
 - A controlled same-position / same-band / same-AP A/B to pin the exact
-  throughput delta.
+  throughput delta (tonight's samples were real but across different
+  bands/APs/positions).
 - `cause=0x7003` has no decodable meaning in anything available locally;
   naming *what* fails to populate `wal_pdev->[0x37c]` would need the
   QShrink message DB for this exact firmware build. Not required — the
   faulting instruction, address and NULL base are established directly.
+- If this ever goes upstream: the deferral half is submittable as-is;
+  the quirk half would want a maintainer's call on whether a
+  build-id-string match is acceptable or it should be a documented
+  known-bad firmware instead.

@@ -31,18 +31,24 @@
 # hw2.0 and stages locally under hw2.1, replicating that same real-world
 # practice.
 #
-# Deliberately does NOT reuse this device's own pulled downstream firmware
-# (vendor-firmware-dump/firmware/qca6490/{amss20.bin,bdwlan*.elf,...}) for
-# the main WiFi image/board-data: the sibling X910 Ultra port's own
-# bring-up hit exactly this trap for its (different) WCN7850 chip --
-# mixing a downstream-generation board-data file with an official
-# upstream amss caused an MHI RDDM crash. Samsung's own `bdwlan*.elf`
-# board-data files are almost certainly in a downstream-specific format,
-# not directly usable by ath11k's board-2.bin/board.bin loader. Instead,
-# this fetches the well-tested official linux-firmware blobs. Only
-# `regdb.bin` (the regulatory database, not chip- or generation-specific)
-# is reused from this device's own pulled dump, since linux-firmware's own
-# WCN6855/hw2.0 directory doesn't ship one at all.
+# WiFi calibration: since the throughput investigation (2026-09, see
+# docs/wifi-samsung-calibration.md), this script defaults to staging this
+# device's OWN factory calibration (vendor-firmware-dump/.../bdwlan.elf,
+# wrapped by scripts/build-samsung-board2.py) plus Samsung's version-
+# matched amss20.bin + m3.bin -- WIFI_CAL=samsung. The generic
+# linux-firmware board-2.bin genuinely does not fit this board (one RX
+# chain at the noise floor, ~6-9 Mbit/s); the factory calibration gives
+# ~5x throughput. This needs the patched kernel (its
+# ath11k_mac_skip_legacy_wmm_params() quirk auto-handles a NULL-deref in
+# the HSP.2.0 firmware's WMM-params handler). An earlier version of this
+# script deliberately did NOT do this -- an out-of-generation board-data
+# file mixed with an out-of-generation amss did cause an MHI RDDM crash
+# for the sibling X910 Ultra port -- but that turned out to be a
+# generation *mismatch*: the version-matched Samsung triple works.
+# WIFI_CAL=community restores the old upstream-only behaviour.
+# `regdb.bin` (regulatory DB, not chip- or generation-specific) comes
+# from this device's own dump either way -- linux-firmware ships none for
+# this chip.
 #
 # ## Bluetooth firmware -- RESOLVED via a DTS fix, not a firmware fetch
 #
@@ -82,14 +88,62 @@ mkdir -p "$wifi_dir" "$bt_dir"
 
 FW_BASE="https://gitlab.com/kernel-firmware/linux-firmware/-/raw/main"
 
-echo "== WiFi: ath11k/WCN6855/hw2.1 (staged from upstream's hw2.0 content -- hw2.1 is a symlink to hw2.0 in real-world firmware distros) =="
-for f in amss.bin board-2.bin m3.bin; do
-	if [ ! -f "$wifi_dir/$f" ]; then
-		echo "fetching $f"
+# WIFI_CAL selects which WiFi calibration/firmware set to stage:
+#
+#   samsung  (default) -- this device's own factory calibration
+#     (vendor-firmware-dump/.../bdwlan.elf) wrapped into board-2.bin by
+#     scripts/build-samsung-board2.py, paired with Samsung's version-
+#     matched amss20.bin + m3.bin. The generic linux-firmware board-2.bin
+#     does not fit this specific board (one RX chain at the noise floor,
+#     ~6-9 Mbit/s); Samsung's own calibration gives ~5x throughput, no
+#     dead chain, NSS 2. Requires the patched kernel -- its
+#     ath11k_mac_skip_legacy_wmm_params() quirk auto-activates on the
+#     WLAN.HSP.2.0 build id to dodge an unconditional NULL-deref in that
+#     firmware's WMM-params handler. Full write-up:
+#     docs/wifi-samsung-calibration.md.
+#
+#   community -- the upstream linux-firmware WCN6855/hw2.0 blobs (what
+#     this port shipped before the calibration investigation). Stable
+#     everywhere, but the throughput ceiling stands. Use this if running
+#     an unpatched kernel, or for an A/B comparison.
+#
+# regdb.bin is the same file either way (the regulatory DB is not chip-
+# or generation-specific; linux-firmware ships none for this chip).
+WIFI_CAL=${WIFI_CAL:-samsung}
+ss_fw_dir="$repo_root/vendor-firmware-dump/firmware/qca6490"
+
+case "$WIFI_CAL" in
+community)
+	echo "== WiFi: community linux-firmware set (WIFI_CAL=community) =="
+	for f in amss.bin board-2.bin m3.bin; do
+		echo "fetching $f from upstream hw2.0"
 		curl -fsSL -o "$wifi_dir/$f.tmp" "$FW_BASE/$wifi_upstream_dir/$f"
 		mv "$wifi_dir/$f.tmp" "$wifi_dir/$f"
-	fi
-done
+	done
+	;;
+samsung)
+	echo "== WiFi: Samsung factory calibration set (WIFI_CAL=samsung, default) =="
+	for f in amss20.bin bdwlan.elf m3.bin; do
+		[ -f "$ss_fw_dir/$f" ] || {
+			echo "error: $ss_fw_dir/$f missing -- run scripts/extract-vendor-firmware.sh (device in TWRP)" >&2
+			exit 1
+		}
+	done
+	cp "$ss_fw_dir/amss20.bin" "$wifi_dir/amss.bin"
+	cp "$ss_fw_dir/m3.bin"     "$wifi_dir/m3.bin"
+	# board-2.bin: build from a fresh community base so the swap is
+	# always against a known-good container, never a re-wrapped one.
+	curl -fsSL -o "$wifi_dir/board-2.bin.community" \
+		"$FW_BASE/$wifi_upstream_dir/board-2.bin"
+	"${PYTHON:-python3}" "$repo_root/scripts/build-samsung-board2.py" \
+		"$wifi_dir/board-2.bin.community" "$wifi_dir/board-2.bin"
+	rm -f "$wifi_dir/board-2.bin.community"
+	;;
+*)
+	echo "error: WIFI_CAL must be 'samsung' or 'community', got '$WIFI_CAL'" >&2
+	exit 1
+	;;
+esac
 
 vendor_regdb="$repo_root/vendor-firmware-dump/firmware/qca6490/regdb.bin"
 if [ -f "$vendor_regdb" ]; then
