@@ -3623,19 +3623,35 @@ hardware:
 - Fix (`kernel/patches/ath11k-defer-wmm-params-until-vdev-started.patch`,
   wired into `scripts/build-mainline-kernel.sh`): defer the WMM-params
   WMI send until `arvif->is_started` (correct regardless, also fixes a
-  latent all-zero-AC wart), plus a `ath11k.skip_legacy_wmm_params`
-  module param (off by default) that skips the crashing command
-  entirely — the only host-side workaround, since the firmware is
-  PIL-signed. WMM/EDCA tuning is lost when the quirk is on.
+  latent all-zero-AC wart), plus `ath11k_mac_skip_legacy_wmm_params()` —
+  `ath11k.skip_legacy_wmm_params` module param, default `-1` = auto,
+  skipping only on firmware whose build id contains `WLAN.HSP.2.0`. The
+  only host-side workaround, since the firmware is PIL-signed; WMM/EDCA
+  tuning is lost when it engages.
 - **Result, measured**: Samsung matched triple + quirk → stable
   association, zero `MHI_CB_EE_RDDM` over a sustained transfer, no dead
   antenna chain, NSS 2 / VHT operation, and **~40 Mbit/s download vs
   ~8 Mbit/s on the community set** (~5×) — at a weaker signal on a
-  harder band. This closes the throughput investigation.
+  harder band.
 
-Not yet productionised (deliberately): the quirk is a manual toggle not
-auto-gated on firmware version; redistributing Samsung's firmware blobs
-is an open licensing decision; a controlled same-position A/B and a
-permanent flash+deploy remain. `CONFIG_ATH11K_DEBUG=y` was added during
-this work (verbose QMI/WMI tracing) and kept — it is not required by the
-fix.
+**Productionised (2026-09-10), validated on a cold boot**:
+`scripts/fetch-ath11k-firmware.sh` now defaults to `WIFI_CAL=samsung` —
+stages this unit's own `amss20.bin` + `m3.bin` and builds `board-2.bin`
+from `bdwlan.elf` via the new `scripts/build-samsung-board2.py`,
+committed into `buildroot/firmware-overlay/` so every rootfs flavour
+picks it up (`WIFI_CAL=community` restores the old set). The kernel
+quirk auto-gates on the firmware build id — no cmdline flag needed.
+`vendor-firmware-dump/` + `firmware-overlay/` were already committed
+(`.gitignore` header, 2026-09-07), so no new redistribution decision.
+One integration gotcha, found and fixed here: ath11k's firmware load
+straddles the initramfs → switch_root boundary, so
+`build-real-root-initramfs.sh` must be re-run alongside
+`fetch-ath11k-firmware.sh` — a stale initramfs holding the *other*
+firmware generation reproduces the RDDM crash by mismatch. After
+rebuilding both and flashing: cold boot loads `WLAN.HSP.2.0` clean,
+zero RDDM, **both RX chains live and matched** (`-65 [-69, -67]` vs the
+community `-57 [-93, -57]`), NSS 2 / VHT-MCS 9, **~85 Mbit/s** download
+(3/3 samples) vs ~8 Mbit/s community — ~10×. `CONFIG_ATH11K_DEBUG=y`
+(verbose tracing, runtime-gated) kept; not required by the fix. Full
+write-up: `docs/wifi-samsung-calibration.md`. Only loose end: a
+controlled same-position/band/AP A/B to pin the exact delta.
