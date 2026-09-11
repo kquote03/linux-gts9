@@ -4187,3 +4187,75 @@ real SM-X716B hardware, on the first real-hardware attempt. Task
 (WiFi association, S Pen, audio, charging — the full feature-parity
 checklist every other rootfs on this port has gone through) are follow-
 up, not blocking.
+
+**Session 14 addendum, same day — desktop package set, twice wrong
+before landing right.** User feedback on the first flashed image: SDDM
+was running (confirmed live above) but the actual desktop was not
+functional. Two more live iterations:
+
+1. First fix attempt: `task-desktop`/`task-kde-desktop`/`task-laptop`
+   explicitly, plus `-o APT::Install-Recommends=true` for that one
+   install (this script's global `Install-Recommends "false"`, kept
+   everywhere else for reproducibility, was starving Debian's tasksel
+   desktop metapackages of exactly the pieces they lean on Recommends
+   for — confirmed live via `apt-cache depends sddm`: **sddm itself has
+   no theme package as a hard Depends at all**, only via Recommends,
+   which is the actual root cause of the first "SDDM running but
+   nothing renders" report). This technically would have worked, but
+   confirmed live it also pulled ~1500 packages -- full kde-standard,
+   LibreOffice, GIMP, accessibility/orca, print-manager, Akonadi/PIM
+   data for KMail/KOrganizer -- and took far too long to be worth it.
+2. Correct fix: dropped the tasksel packages and the Recommends
+   override entirely. `kde-plasma-desktop` is Debian's own minimal
+   Plasma metapackage (confirmed live via `apt-cache show`: Depends
+   only on kde-baseapps, plasma-desktop, plasma-workspace, udisks2,
+   upower -- a small fraction of kde-standard's closure). Wayland is
+   already the Depends-level default, not something extra to request:
+   `plasma-workspace` hard-Depends on `kwin-wayland` (confirmed live via
+   `apt-cache depends plasma-workspace`), so a plain Depends-only
+   install already ships a real Wayland session (SDDM auto-detects
+   `/usr/share/wayland-sessions/plasma.desktop` at login) with no
+   Recommends override needed. The one thing still added explicitly:
+   `sddm-theme-breeze`, for the exact reason found in step 1 -- sddm's
+   own missing-theme-by-default gap, fixed with one targeted package
+   instead of a blanket Recommends flip. Also added per user request:
+   `network-manager-tui` (nmtui -- confirmed live NOT bundled into
+   `network-manager` itself on Debian), `bluedevil` (the KDE Bluetooth
+   system-tray applet/KCM -- bluez alone has no user-facing pairing UI),
+   `kde-config-tablet` (confirmed live, via `apt-cache search`, the
+   actual Debian package name for the Wacom digitizer System Settings
+   KCM -- there is no "wacomtablet"/"plasma-wacom"-named package here).
+
+**A real regression found and fixed along the way**: the home-directory
+ownership fix from the same day's earlier entry (`run_in_ns chown -R
+"$uid:$gid" ...`) was itself wrong, confirmed live via `stat` after a
+rebuild: chowning to the *numeric* target uid/gid (1000:1000) inside
+`run_in_ns`'s own mapped namespace does not mean "real host uid/gid
+1000" -- 1000 falls inside the wide subordinate range
+(`1:$subuid_base:65536`), so it silently resolved to a *different*
+wrong owner on the real shipped disk (~100999) instead. More generally:
+an unprivileged build can only make a real `chown(2)` persist to
+exactly (a) its own real uid/gid, or (b) something in its own delegated
+`/etc/subuid`/`/etc/subgid` range -- 1000 is neither in general (it
+only half-coincides here: this build host's own real *uid* happens to
+also be 1000, but its real *gid* is 100, not 1000). The actual fix
+doesn't fight build-time uid mapping at all: a static `systemd-tmpfiles`
+`z` line (`/etc/tmpfiles.d/x716b-home-owner.conf`) that resolves the
+username by NAME at *real boot time*, via the device's own genuine root
+and genuine NSS lookup against its own `/etc/passwd` -- no numeric
+coincidence needed, confirmed live after a redeploy: SSH login lands in
+`/home/x716b`, `stat` shows `Uid: (1000/x716b) Gid: (1000/x716b)`
+correctly.
+
+**Final confirmed-live state**: `systemctl --failed` down to exactly
+one unit (`pd-mapper.service`, the already-documented missing-PDR-
+`.jsn`-files gap) -- `x716b-serial-getty` and `gts9wifi-wait-sensor-
+proxy` no longer even appear as failed this run. `sddm.service` active
+and running (Xorg + the greeter, `breeze`/`debian-theme` both present
+under `/usr/share/sddm/themes/`), `plasma.desktop` present under
+`/usr/share/wayland-sessions/`, rootfs auto-grown to fill the SD
+partition (3.3G/4.1G used) via `gts9wifi-grow-rootfs.service`. Whether
+the greeter/desktop actually *renders* correctly on the physical panel
+is a visual check only the user can make -- everything checkable from
+this side (service state, theme presence, session files, ownership) is
+now correct.

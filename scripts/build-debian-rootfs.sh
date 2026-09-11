@@ -509,7 +509,6 @@ if ! grep -q "^$username:" "$rootdir/etc/passwd"; then
 		-G sudo,tty,audio,video,input,dialout,netdev "$username"
 	run_in_chroot bash -c "echo '${username}:${username}' | chpasswd"
 fi
-# run_in_ns, not just useradd's own -m: confirmed live on real hardware,
 # useradd -m's own chown of the new home directory to the new user does
 # NOT reliably persist to the real on-disk ownership -- proot's -0
 # fake-root chown is a ptrace-layer illusion for the REST OF THAT SAME
@@ -517,10 +516,36 @@ fi
 # it is not guaranteed to be the real underlying chown(2) result once the
 # session ends. Confirmed live: /home/x716b booted on real hardware still
 # owned by root:root, blocking SSH login from chdir-ing into $HOME even
-# though auth succeeded. A real chown, inside run_in_ns's wide-mapped
-# namespace (the same mechanism stage 1 and seed_sysusers/seed_tmpfiles
-# already rely on for exactly this class of problem), actually persists.
-run_in_ns chown -R "$username:$username" "$rootdir/home/$username"
+# though auth succeeded.
+#
+# A first attempt at fixing this tried a real chown(1) inside run_in_ns's
+# wide-mapped namespace -- wrong, and confirmed live the hard way:
+# run_in_ns's chown resolves ITS OWN numeric argument against the
+# ACTIVE NAMESPACE mapping, not against any meaningful real identity.
+# "chown 1000:1000" inside that namespace does NOT mean "real host uid/
+# gid 1000" -- 1000 falls inside the wide subordinate range
+# ("1:$subuid_base:65536"), so it resolved to real host uid/gid
+# ~100999 instead (confirmed live via `stat`: "Uid: (100999/ UNKNOWN)").
+# That's a DIFFERENT wrong owner on the real shipped image, not a fix.
+# And there is no numeric target this unprivileged build can correctly
+# make persist to real disk as exactly 1000:1000 in general: an
+# unprivileged process can only make a real chown(2) stick for (a) its
+# own real uid/gid, or (b) something in its own delegated /etc/subuid/
+# /etc/subgid range -- 1000 is neither (this host's own real uid happens
+# to also be 1000, pure coincidence, but its real *gid* is 100, not
+# 1000, so even that only half-works).
+#
+# The actual fix: don't fight build-time uid mapping at all -- let the
+# REAL DEVICE's own first real boot fix this for real, with genuine root
+# and genuine NSS resolution against its own /etc/passwd (no numeric
+# coincidence needed). systemd-tmpfiles' "z" line type adjusts an
+# existing path's ownership/mode, resolving user/group by NAME at the
+# time it runs -- shipped as a static config line, this applies
+# correctly on every real boot via systemd-tmpfiles-setup.service,
+# which runs early, well before sshd/getty accept any login.
+mkdir -p "$rootdir/etc/tmpfiles.d"
+echo "z /home/$username - $username $username - -" \
+	> "$rootdir/etc/tmpfiles.d/x716b-home-owner.conf"
 
 echo "== ssh =="
 mkdir -p "$rootdir/etc/ssh/sshd_config.d"
@@ -757,15 +782,58 @@ ln -sf /etc/systemd/system/x716b-serial-getty.service \
 	"$rootdir/etc/systemd/system/multi-user.target.wants/x716b-serial-getty.service"
 
 if [ "$desktop" = "kde" ]; then
-	echo "== KDE desktop: task-kde-desktop (kde-standard scope), SDDM, Wayland =="
-	# Real GPU-accelerated Plasma 6 on Wayland, not a Weston/software-
-	# rendering fallback (see header) -- the mesa/freedreno Vulkan+GL
-	# driver packages below are what make that real; confirm their exact
-	# names live against the pinned snapshot the same way every other
-	# "not guessed ahead of time" package in this script is.
+	echo "== desktop: minimal Wayland Plasma (kde-plasma-desktop, not" \
+	     " task-kde-desktop/kde-standard) =="
+	# A deliberately narrower target than an earlier attempt at this
+	# script's full tasksel selection (task-desktop + task-kde-desktop +
+	# task-laptop with Install-Recommends=true) -- confirmed live that
+	# pulled in ~1500 packages (full kde-standard, LibreOffice, GIMP,
+	# accessibility/orca, print-manager, Akonadi/PIM data for KMail/
+	# KOrganizer, ...) and took far too long to be worth it for what this
+	# device actually needs: a working, minimal Plasma session.
+	# kde-plasma-desktop is Debian's own minimal Plasma metapackage
+	# (Depends: kde-baseapps, plasma-desktop, plasma-workspace, udisks2,
+	# upower -- confirmed live via `apt-cache show`), a small fraction of
+	# kde-standard's closure.
+	#
+	# Wayland is the DEPENDS-level default, not something extra to ask
+	# for: plasma-workspace hard-Depends on kwin-wayland (confirmed live
+	# via `apt-cache depends plasma-workspace`) regardless of Install-
+	# Recommends, so a plain Depends-only install already gets a real
+	# Wayland session (SDDM auto-detects /usr/share/wayland-sessions/ at
+	# login) -- no -o APT::Install-Recommends=true needed or used here,
+	# unlike the earlier attempt; this script's global Recommends=false
+	# (see the apt.conf.d snippet above, kept for reproducibility) is
+	# fine for this narrower target.
+	#
+	# sddm-theme-breeze IS explicitly needed, though: confirmed live via
+	# `apt-cache depends sddm` that sddm itself has NO theme as a hard
+	# Depends at all -- only as one of several Recommends alternatives.
+	# This is the actual root cause of an earlier attempt's "SDDM greeter
+	# process is running but the desktop is not functional": built with
+	# the global Recommends=false, sddm installed with zero greeter theme
+	# and nothing to actually render at the login screen. One explicit
+	# package, not a blanket Recommends flip, fixes exactly that gap.
+	#
+	# bluedevil: the KDE Bluetooth system-tray applet/KCM (bluez itself
+	# is already in base_packages) -- without it there is no user-facing
+	# way to pair/manage Bluetooth devices from the desktop at all.
+	# kde-config-tablet: the actual Debian package name for the Wacom
+	# digitizer System Settings KCM (there is no "wacomtablet"/"plasma-
+	# wacom"-named package here, confirmed live via apt-cache search --
+	# this is the one that exists).
+	# network-manager-tui: provides nmtui, NOT bundled into network-
+	# manager itself on Debian (confirmed live) -- network-manager is
+	# already in base_packages for the daemon/nmcli.
+	#
+	# mesa-vulkan-drivers/libgl1-mesa-dri: real GPU-accelerated rendering
+	# (freedreno), not a software fallback -- confirm their exact names
+	# live against the pinned snapshot the same way every other "not
+	# guessed ahead of time" package in this script is.
 	run_in_chroot apt-get install -y \
-		task-kde-desktop sddm \
-		mesa-vulkan-drivers libgl1-mesa-dri
+		kde-plasma-desktop sddm sddm-theme-breeze \
+		mesa-vulkan-drivers libgl1-mesa-dri \
+		network-manager-tui bluedevil kde-config-tablet
 	run_in_chroot systemctl set-default graphical.target
 	run_in_chroot systemctl enable sddm.service
 fi
