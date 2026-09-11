@@ -40,15 +40,23 @@
       host = "x86_64-linux";
 
       # Tracked parent-checkout inputs -- pure relative paths (git-visible
-      # to the flake).
+      # to the flake from this checkout).
       #
       # ../out/kernel is the exception: it is .gitignore'd (a build
       # artifact of ../scripts/build-mainline-kernel.sh), so the flake
-      # cannot see it purely. It is read via an absolute path, which makes
-      # every build here REQUIRE `--impure`. This is deliberate and
-      # matches the root flake's honesty about the Fedora rootfs not being
-      # hermetic -- see ./README.md. Point X716B_REPO_ROOT at the checkout
-      # (defaults to $PWD, i.e. run nix from the repo root).
+      # cannot see it purely from THIS checkout. It is read via an
+      # absolute path, which makes every build here from this checkout
+      # REQUIRE `--impure`. This is deliberate and matches the root
+      # flake's honesty about the Fedora rootfs not being hermetic -- see
+      # ./README.md. Point X716B_REPO_ROOT at the checkout (defaults to
+      # $PWD).
+      #
+      # ./packages/etc-nixos.nix stages real copies of all five of these
+      # onto the device's /etc/nixos/vendor/, and repoints all five
+      # lines below at that ./vendor/* copy in the shipped flake.nix --
+      # /etc/nixos sits outside any git repository, so those substituted
+      # lines resolve purely there, no X716B_REPO_ROOT/--impure needed
+      # for on-device rebuilds.
       repoRoot =
         let e = builtins.getEnv "X716B_REPO_ROOT";
         in if e != "" then e else builtins.getEnv "PWD";
@@ -78,11 +86,25 @@
         specialArgs = { inherit repoPaths; };
         modules = [
           { nixpkgs.overlays = [ overlay ]; nixpkgs.config.allowUnfree = true; }
-          ./modules/x716b-hardware.nix
-          ./modules/rootfs-image.nix
-          ./modules/x716b-desktop.nix
-          ./modules/x716b-device.nix
+          ./hardware.nix # device support -- everything in ./packages/* is hardware bring-up too
+          ./configuration.nix # desktop + anything user-customizable
         ];
+      };
+
+      # Staged onto the device's /etc/nixos (see ./packages/etc-nixos.nix) so
+      # `sudo nixos-rebuild switch` there is self-contained -- a real,
+      # editable copy of exactly this flake, not a read-only store symlink.
+      etcNixos = (pkgsFor target).callPackage ./packages/etc-nixos.nix {
+        files = {
+          flakeNix = ./flake.nix;
+          flakeLock = ./flake.lock;
+          hardware = ./hardware.nix;
+          configuration = ./configuration.nix;
+          overlay = ./overlay.nix;
+          readme = ./README.md;
+        };
+        packagesDir = ./packages;
+        inherit repoPaths;
       };
 
       # Build products are all aarch64 derivations (realised on the dev
@@ -91,9 +113,15 @@
       # x86_64.
       products = {
         toplevel = x716b.config.system.build.toplevel;
-        rootfs-image = x716b.config.system.build.rootfsImage;
+        inherit etcNixos;
+        rootfs-image = (pkgsFor target).callPackage ./packages/rootfs-image.nix {
+          modulesPath = nixpkgs + "/nixos/modules";
+          toplevel = x716b.config.system.build.toplevel;
+          inherit etcNixos;
+        };
         rootfs-tar = (pkgsFor target).callPackage ./packages/rootfs-tar.nix {
           toplevel = x716b.config.system.build.toplevel;
+          inherit etcNixos;
         };
       };
     in

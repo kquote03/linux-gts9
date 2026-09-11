@@ -3,7 +3,7 @@
 # formatted partition (ext4, label X716B_ROOT) and the Android bundle's
 # switch_root initramfs boots it via /sbin/init. Used by the microSD
 # deploy path (scripts/deploy-nixos-rootfs.sh sd ...).
-{ lib, stdenvNoCC, buildPackages, gnutar, gzip, coreutils, toplevel }:
+{ lib, stdenvNoCC, buildPackages, gnutar, gzip, coreutils, toplevel, etcNixos }:
 
 let
   closureInfo = buildPackages.closureInfo { rootPaths = [ toplevel ]; };
@@ -31,6 +31,10 @@ stdenvNoCC.mkDerivation {
     ln -s /nix/var/nix/profiles/system $root/nix/var/nix/gcroots/booted-system
     ln -s /nix/var/nix/profiles/system/init $root/sbin/init
     ln -s /nix/var/nix/profiles/system/sw/bin/sh $root/bin/sh
+
+    mkdir -p $root/etc/nixos
+    cp -a ${etcNixos}/. $root/etc/nixos/
+    chmod -R u+w $root/etc/nixos
 
     tar --numeric-owner --sort=name \
       --owner=0 --group=0 \
