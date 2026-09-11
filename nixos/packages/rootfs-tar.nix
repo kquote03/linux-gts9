@@ -2,7 +2,7 @@
 # the Fedora builder's x716b-fedora-*-rootfs.tar.gz: unpack it onto a
 # formatted partition (ext4, label X716B_ROOT) and the Android bundle's
 # switch_root initramfs boots it via /sbin/init. Used by the microSD
-# deploy path (scripts/deploy-nixos-rootfs.sh sd ...).
+# deploy path (scripts/deploy-rootfs.sh sd ...).
 { lib, stdenvNoCC, buildPackages, gnutar, gzip, coreutils, toplevel, etcNixos }:
 
 let

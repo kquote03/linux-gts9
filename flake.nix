@@ -81,6 +81,26 @@
         # this instead of doing its own `nix-build -E '...'` lookup.
         QEMU_AARCH64_STATIC = "${pkgs.pkgsStatic.qemu-user}/bin/qemu-aarch64";
 
+        # scripts/build-debian-rootfs.sh's workaround for a confirmed-live,
+        # deterministic proot crash ("path.c:547: compare_paths2: Assertion
+        # `length2 > 0' failed", a known upstream proot limitation under
+        # systemd-heavy workloads) that hits every time dpkg's postinst
+        # triggers the GUEST's (qemu-emulated) systemd-sysusers to create a
+        # genuinely NEW system user -- confirmed NOT to crash when the user
+        # already exists (idempotent no-op path). The fix is to create
+        # those users via the HOST's own native (x86_64, no qemu/proot at
+        # all) systemd-sysusers --root=$rootdir instead, so the guest's
+        # later (still-emulated) call just finds them already present.
+        # Explicit path, same PATH-ambiguity-avoidance pattern as
+        # QEMU_AARCH64_STATIC/BUSYBOX_AARCH64_STATIC above.
+        SYSTEMD_SYSUSERS_HOST = "${pkgs.systemd}/bin/systemd-sysusers";
+        # Same fix, same reason -- confirmed live the actual proot-crashing
+        # step in systemd's postinst is `systemd-tmpfiles --create` (dh_
+        # installtmpfiles' automatically-added postinst snippet), NOT
+        # systemd-sysusers (which merely runs immediately before it and so
+        # LOOKS like the crash site from the log's last visible line).
+        SYSTEMD_TMPFILES_HOST = "${pkgs.systemd}/bin/systemd-tmpfiles";
+
         # Confirmed live (this flake, `nix run .#build-kernel`): HOSTCC
         # ("cc", falls through PATH to the host system's own compiler --
         # nothing in devPackages provides a plain "cc") compiles fine for
@@ -113,10 +133,21 @@
         zlib zstd lz4
 
         # Rootfs / image pipeline
-        debootstrap # superseded by the Fedora rootfs pivot for the actual
-                    # distro rootfs, but scripts/build-ubuntu-rootfs.sh stays
-                    # in the repo unused (this project's convention for
-                    # superseded work, e.g. uniLoader) -- kept available.
+        debootstrap # scripts/build-ubuntu-rootfs.sh (stale, kept unused) AND
+                    # scripts/build-debian-rootfs.sh (the real, maintained
+                    # Debian target).
+        proot # scripts/build-debian-rootfs.sh's stage-2 chroot replacement:
+              # this sandbox's own chroot(2) is blocked outright (confirmed
+              # live -- every chroot() call returns EPERM with zero output,
+              # even `chroot $dir /bin/true`, evidently a container-level
+              # restriction, same class as the /sys-bind-mount and mknod
+              # restrictions already worked around elsewhere in that
+              # script). proot needs no chroot(2)/mount(2) at all -- it's a
+              # pure ptrace-based path-translation layer, so it works
+              # unprivileged inside this same restricted sandbox. A REAL
+              # (non-sandboxed) host's chroot() would also work fine; proot
+              # is a strict superset here, so it's used unconditionally
+              # rather than branching on which environment this is.
         dnf5 # scripts/build-fedora-rootfs.sh's real package manager.
         # NOT `pkgsStatic.qemu-user` in this list -- see commonEnv's
         # QEMU_AARCH64_STATIC above for why it's referenced by explicit

@@ -128,3 +128,67 @@ What's genuinely different and worth copying if you do a third distro:
   the microSD or on `userdata` unchanged.
 
 See `nixos/README.md`.
+
+## Debian — the reference apt/dpkg port
+
+`scripts/build-debian-rootfs.sh` builds a Debian **unstable (sid)**
+aarch64 rootfs with a full KDE Plasma 6 desktop (`task-kde-desktop`,
+SDDM, GPU-accelerated Wayland). Debian is systemd + merged-`/usr` by sid,
+same as Fedora, so step 2's overlay application needs **no translation at
+all** — `cp -a rootfs/overlay-common/.` and `cp -a rootfs/overlay-
+systemd/.` verbatim, exactly like the Fedora builder.
+
+**Reproducibility**: both debootstrap and every `apt-get install` point
+at a fixed-timestamp `snapshot.debian.org` URL (`$DEBIAN_SNAPSHOT`), not
+the live rolling archive — re-running the script resolves the identical
+package set every time, a *stronger* guarantee than the Fedora builder's
+own (honestly non-pinned) live dnf mirror.
+
+What's genuinely new here, not just a copy of the Fedora/NixOS work:
+
+- **This build environment's `chroot(2)` is unconditionally blocked**
+  (confirmed live: even `chroot dir /bin/true` returns exit 255 with zero
+  output) — debootstrap's `--second-stage` and every later `apt-get
+  install` run under **`proot`** instead (`run_in_chroot_once`), a pure
+  ptrace-based path-translation layer needing neither `chroot(2)` nor
+  `mount(2)`, combined with the root flake's `$QEMU_AARCH64_STATIC`
+  (genuinely static, not the plain dynamically-linked `qemu-user`
+  package, which pulls in an easy-to-break host `.so` closure). A
+  real host's `chroot()` would work fine too; proot is a strict
+  superset, so it's used unconditionally rather than branching per
+  environment.
+- **`systemd-tmpfiles --create` cannot run under this proot build at
+  all** — a confirmed-live, deterministic upstream proot bug
+  (`path.c:547: compare_paths2: Assertion length2 > 0 failed`,
+  unconditional, not just on first-create) that pre-seeding cannot work
+  around (unlike `systemd-sysusers`, which only crashes when actually
+  creating something new, and so IS fixed by pre-seeding). The real fix:
+  divert `/usr/bin/systemd-tmpfiles` to a no-op stub for the whole
+  package-install phase (the same `policy-rc.d`-style technique
+  container pipelines use to block service *starts* during installs),
+  then run the real thing exactly once from the **host** (no qemu/proot,
+  `$SYSTEMD_TMPFILES_HOST`) after every package is installed.
+- **Two Debian packaging quirks any meson-based source build here will
+  hit**: `dependency('udev')`/`dependency('systemd')` look for the OLD
+  pkg-config names — Debian's `libudev-dev`/`libsystemd-dev` ship
+  `libudev.pc`/`libsystemd.pc` instead, with no compatibility alias.
+  Symlink `udev.pc -> libudev.pc` and `systemd.pc -> libsystemd.pc`
+  before building anything. hexagonrpcd's own `meson.build` also
+  installs its `.service` units under `get_option(libdir)/systemd/system`
+  directly (not via the systemd dependency's `systemdsystemunitdir`
+  variable), which resolves to the multiarch triplet directory
+  (`/usr/lib/aarch64-linux-gnu/systemd/system`) on Debian, not systemd's
+  real search path — relocate them after install.
+- Same sensor/ADSP stack, same source pins as Fedora/NixOS (`libssc`,
+  `pd-mapper`, `hexagonrpcd` + Samsung patches, `iio-sensor-proxy` +
+  SSC). apt package names differ from dnf's (see the script's own
+  build-deps comment) — `libqrtr-dev` (plain C reference library) is
+  a real, separate dependency from `libqrtr-glib-dev` (GLib bindings),
+  easy to miss since Fedora's single `qrtr-devel` covers both.
+- Root found by filesystem label **`X716B_ROOT`**, same as every other
+  builder — `scripts/deploy-rootfs.sh`'s `sd`/`twrp-sd`/`userdata`
+  targets and the already-flashed boot bundle work unchanged.
+
+See `scripts/build-debian-rootfs.sh`'s own header for the full reasoning
+behind each of the above, and `docs/porting-log.md` for the live
+debugging session that found them.
