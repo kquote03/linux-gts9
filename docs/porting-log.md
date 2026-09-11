@@ -4131,6 +4131,59 @@ snapshot-pinned base packages, vendor firmware + kernel modules, the
 device overlay, the full sensor/ADSP stack built from source, and
 `task-kde-desktop` (SDDM + Plasma 6 + Mesa/Vulkan drivers) — all with
 zero manual intervention, `rootfs directory ready` printed at the end.
-Not yet flashed to real hardware or committed — that's staged
-real-hardware validation and docs/commit, the same two steps every other
-rootfs on this port has gone through.
+
+**Real-hardware validation, same session**: `scripts/build-rootfs-image.sh`
+(a raw ext4 image, unprivileged via `mke2fs -d`) needed the same
+`run_in_ns` wide-uid-mapping fix as everything else that touches this
+rootdir — confirmed live, a plain unprivileged `mke2fs -d` doesn't just
+skip unreadable subdirectories (`/run/systemd/dissect-root`,
+`/var/lib/sddm`, both created via the mapped namespace during the
+`systemd-tmpfiles` pass), it treats permission-denied as fatal and
+aborts the whole image build. `scripts/deploy-rootfs.sh` had an
+unrelated, genuinely new bug: when invoked with a non-terminal stdin
+(exactly this session's own execution context), an earlier `adb shell
+cat /proc/partitions` silently consumed the line meant for the later
+`read -rp "Type ERASE..."` confirmation prompt, which then hit EOF and
+aborted under `set -e` with no error message at all — fixed by
+redirecting every `adb shell`/`adb get-state` call that isn't the actual
+image-streaming `dd` from `/dev/null`.
+
+Deployed via `twrp-sd` (3.58 GB, ~17 MB/s over USB, byte-exact),
+rebooted with `adb reboot system`. **Confirmed live, real hardware**:
+reachable over the USB gadget network (172.16.42.1) immediately after
+boot, kernel matches the build (`7.2.0-dirty aarch64`), SSH works,
+`graphical.target` active, SDDM/Xorg/the Plasma greeter genuinely
+running (`systemctl status sddm` showed the full Xorg + sddm-greeter-qt6
+process tree), Bluetooth initializes (`hci0 UP RUNNING`, correct BD
+address), NetworkManager correctly recognizes the WiFi radio
+(disconnected, as expected — no SSID configured yet). `systemctl
+--failed` showed exactly three units, all either already-documented or
+not Debian-specific: `pd-mapper.service` (the pre-existing missing-PDR-
+`.jsn`-files gap, shared with Fedora/NixOS, not this session's job to
+fix) and `gts9wifi-wait-sensor-proxy.service` (downstream of the
+manual-start ADSP chain, same as every other builder) both expected;
+`x716b-serial-getty.service` failed because `/dev/ttyGS0` doesn't exist
+at all under this kernel's gadget config (`g_ether`-only, no serial
+function) — a kernel/gadget-config fact common to every distro on this
+port, not something this session introduced or is responsible for
+fixing.
+
+One genuine new bug, found and fixed: `/home/x716b` booted owned by
+`root:root` instead of `x716b:x716b`, blocking the login shell's `cd`
+into `$HOME` even though password auth succeeded. Root cause: `useradd
+-m`'s own chown of the new home directory runs through `run_in_chroot`
+(proot's `-0` fake-root), and confirmed live that fake-chown does not
+reliably persist as real on-disk ownership once the proot session ends
+— the exact same class of limitation `seed_sysusers`/`seed_tmpfiles`
+already exist to work around for systemd's own tooling, just not
+previously caught for this one `useradd` call. Fixed live on the running
+device (`sudo chown -R x716b:x716b /home/x716b`) and in the script
+itself (an explicit `run_in_ns chown -R` — real chown, wide-mapped
+namespace — right after user creation, for the next build).
+
+**Result**: a genuinely working Debian sid + KDE Plasma 6 desktop, on
+real SM-X716B hardware, on the first real-hardware attempt. Task
+#82-equivalent staged validation complete; remaining open items
+(WiFi association, S Pen, audio, charging — the full feature-parity
+checklist every other rootfs on this port has gone through) are follow-
+up, not blocking.

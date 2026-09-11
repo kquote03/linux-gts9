@@ -509,6 +509,18 @@ if ! grep -q "^$username:" "$rootdir/etc/passwd"; then
 		-G sudo,tty,audio,video,input,dialout,netdev "$username"
 	run_in_chroot bash -c "echo '${username}:${username}' | chpasswd"
 fi
+# run_in_ns, not just useradd's own -m: confirmed live on real hardware,
+# useradd -m's own chown of the new home directory to the new user does
+# NOT reliably persist to the real on-disk ownership -- proot's -0
+# fake-root chown is a ptrace-layer illusion for the REST OF THAT SAME
+# proot session (later stat() calls inside it see the faked owner), but
+# it is not guaranteed to be the real underlying chown(2) result once the
+# session ends. Confirmed live: /home/x716b booted on real hardware still
+# owned by root:root, blocking SSH login from chdir-ing into $HOME even
+# though auth succeeded. A real chown, inside run_in_ns's wide-mapped
+# namespace (the same mechanism stage 1 and seed_sysusers/seed_tmpfiles
+# already rely on for exactly this class of problem), actually persists.
+run_in_ns chown -R "$username:$username" "$rootdir/home/$username"
 
 echo "== ssh =="
 mkdir -p "$rootdir/etc/ssh/sshd_config.d"
