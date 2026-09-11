@@ -49,6 +49,19 @@
 # file round-tripped byte-for-byte at bs=64k but not at bs=1M/8M. Every
 # `adb shell dd ... < file` below uses bs=64k for exactly this reason.
 #
+# A second, unrelated stdin gotcha, also confirmed live: every OTHER
+# `adb shell ...` call in this script inherits this script's own stdin
+# unless explicitly redirected -- when this script itself is invoked with
+# a non-terminal stdin (piped input, a redirected file, run from an
+# agent/CI harness), an earlier `adb shell cat /proc/partitions` silently
+# consumes the line meant for the later `read -rp "Type ERASE..."`
+# confirmation prompt, which then hits EOF and aborts under `set -e` with
+# NO error message at all -- looks exactly like the script just silently
+# quit right after printing the destructive-action banner. Every
+# `adb shell`/`adb get-state` call below that isn't the actual `dd`
+# stream redirects its own stdin from `/dev/null` for exactly this
+# reason.
+#
 # Also confirmed live: do NOT run TWRP's own e2fsck/resize2fs against a
 # raw image streamed onto a bigger partition. Its bundled e2fsprogs
 # (1.45.4, ~2019) can't even parse the `orphan_file` feature a modern
@@ -122,7 +135,7 @@ sd)
 twrp-sd)
 	: "${IMG:?pass IMG=<path to a raw ext4 .img, labelled $label> -- see the header above for how to build one per distro}"
 	[ -f "$IMG" ] || { echo "$IMG not found" >&2; exit 1; }
-	if ! adb get-state 2>/dev/null | grep -q recovery; then
+	if ! adb get-state </dev/null 2>/dev/null | grep -q recovery; then
 		echo "device is not in recovery (TWRP) mode -- aborting" >&2
 		exit 1
 	fi
@@ -131,13 +144,13 @@ twrp-sd)
 	# fall back to the whole disk if unpartitioned. Parsed on the PC
 	# side (not a remote awk one-liner) to dodge TWRP toybox awk regex
 	# quirks.
-	partitions=$(adb shell cat /proc/partitions | tr -d '\r')
+	partitions=$(adb shell cat /proc/partitions </dev/null | tr -d '\r')
 	sddev=$(echo "$partitions" | grep -oE 'mmcblk[0-9]+$' | head -1)
 	: "${sddev:?no mmcblk* device found in /proc/partitions -- is the card seated?}"
 	sdpart=$(echo "$partitions" | grep -oE "${sddev}p1\$" | head -1)
 	target_dev="/dev/block/${sdpart:-$sddev}"
 	echo "== SD card: /dev/block/$sddev, target partition: $target_dev =="
-	adb shell "cat /proc/partitions" | grep -E "$sddev"
+	adb shell "cat /proc/partitions" </dev/null | grep -E "$sddev"
 
 	cat >&2 <<EOF
 =========================  DESTRUCTIVE  =========================
@@ -150,7 +163,7 @@ EOF
 	[ "$a" = ERASE ] || { echo aborted; exit 1; }
 
 	echo "== rootfs image: $IMG ($(stat -c%s "$IMG") bytes) =="
-	adb shell "umount $target_dev 2>/dev/null; umount /external_sd 2>/dev/null; true"
+	adb shell "umount $target_dev 2>/dev/null; umount /external_sd 2>/dev/null; true" </dev/null
 	echo "== streaming image to $target_dev (several minutes over USB) =="
 	adb shell "dd of=$target_dev bs=64k" < "$IMG"
 	adb shell sync
@@ -175,7 +188,7 @@ userdata)
  to this PC.
 ===============================================================
 EOF
-	if ! adb get-state 2>/dev/null | grep -q recovery; then
+	if ! adb get-state </dev/null 2>/dev/null | grep -q recovery; then
 		echo "device is not in recovery (TWRP) mode -- aborting" >&2
 		exit 1
 	fi
@@ -183,7 +196,7 @@ EOF
 	[ "$a" = ERASE-USERDATA ] || { echo aborted; exit 1; }
 
 	echo "== rootfs image: $IMG ($(stat -c%s "$IMG") bytes) =="
-	adb shell 'umount /data 2>/dev/null; umount /dev/block/by-name/userdata 2>/dev/null; true'
+	adb shell 'umount /data 2>/dev/null; umount /dev/block/by-name/userdata 2>/dev/null; true' </dev/null
 	echo "== streaming image to /dev/block/by-name/userdata (this takes a while) =="
 	adb shell 'dd of=/dev/block/by-name/userdata bs=64k' < "$IMG"
 	adb shell sync
