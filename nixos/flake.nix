@@ -16,7 +16,7 @@
   #
   #   nix build ./nixos#rootfs-tar      # portable tarball (microSD path)
   #   nix build ./nixos#rootfs-image    # raw ext4 image (userdata path)
-  #   nix run   ./nixos#deploy -- ...   # scripts/deploy-nixos-rootfs.sh
+  #   nix run   ./nixos#deploy -- ...   # scripts/deploy-rootfs.sh (shared)
   #
   # ## Reproducibility, honestly
   #
@@ -131,10 +131,26 @@
       packages.${target} = products;
       packages.${host} = products;
 
+      # scripts/deploy-rootfs.sh is distro-agnostic (shared with Fedora/
+      # Debian) and takes an explicit TAR=/IMG= -- this wrapper is the
+      # NixOS-specific convenience of building the right one first and
+      # forwarding it, so `nix run ./nixos#deploy -- --i-understand-...
+      # twrp-sd` still Just Works without spelling out a nix build first.
       apps.${host}.deploy = {
         type = "app";
         program = toString (nixpkgs.legacyPackages.${host}.writeShellScript "deploy-nixos-rootfs" ''
-          exec bash "$(git rev-parse --show-toplevel)/scripts/deploy-nixos-rootfs.sh" "$@"
+          set -euo pipefail
+          repo_root="$(git rev-parse --show-toplevel)"
+          target=""
+          for a in "$@"; do
+            case "$a" in sd|twrp-sd|userdata) target="$a" ;; esac
+          done
+          extra=()
+          case "$target" in
+            sd) extra+=(TAR="$(nix build --impure --no-link --print-out-paths "$repo_root/nixos#rootfs-tar")") ;;
+            twrp-sd|userdata) extra+=(IMG="$(nix build --impure --no-link --print-out-paths "$repo_root/nixos#rootfs-image")") ;;
+          esac
+          exec bash "$repo_root/scripts/deploy-rootfs.sh" "$@" "${extra[@]}"
         '');
       };
 

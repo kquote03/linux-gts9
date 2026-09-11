@@ -109,16 +109,23 @@ which `../scripts/build-real-root-initramfs.sh`'s `/init` finds by label
 first (falling back to the old `mmcblkXp1` device-node list). The boot
 bundle is flashed separately with `../scripts/flash-boot-set.sh`.
 
+`scripts/deploy-rootfs.sh` is shared with the Fedora and Debian rootfs
+builders -- it just streams bytes to a partition and has no idea what's
+inside them. Pass `TAR=`/`IMG=` explicitly, or use `nix run
+./nixos#deploy` below, which builds the right one first.
+
 ```sh
 # microSD, written from THIS PC via a card reader (stock Android untouched)
-scripts/deploy-nixos-rootfs.sh --i-understand-this-writes-to-the-device sd DEV=/dev/sdX
+nix run ./nixos#deploy -- --i-understand-this-writes-to-the-device sd DEV=/dev/sdX
+# equivalently: scripts/deploy-rootfs.sh --i-understand-this-writes-to-the-device sd \
+#   TAR=$(nix build --impure --no-link --print-out-paths ./nixos#rootfs-tar) DEV=/dev/sdX
 
 # microSD, already seated in the tablet -- streamed over adb with the
 # tablet in TWRP (stock Android untouched; erases whatever was on that card)
-scripts/deploy-nixos-rootfs.sh --i-understand-this-writes-to-the-device twrp-sd
+nix run ./nixos#deploy -- --i-understand-this-writes-to-the-device twrp-sd
 
 # internal userdata (tablet in TWRP; ERASES stock Android /data)
-scripts/deploy-nixos-rootfs.sh --i-understand-this-writes-to-the-device userdata
+nix run ./nixos#deploy -- --i-understand-this-writes-to-the-device userdata
 ```
 
 **TWRP's bundled tools have real quirks**, confirmed live and worked

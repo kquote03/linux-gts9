@@ -1,40 +1,64 @@
 #!/usr/bin/env bash
-# Deploy the NixOS aarch64 rootfs (nixos/) to the SM-X716B, to one of
-# three targets:
+# Deploy ANY of this port's rootfs builds (Fedora, Debian, NixOS, ...) to
+# the SM-X716B, to one of three targets. Distro-agnostic: pass the built
+# artifact explicitly (TAR= a .tar.gz directory dump, or IMG= a raw ext4
+# image already labelled X716B_ROOT) -- this script only streams bytes to
+# a partition, it has no idea what's inside them.
 #
 #   sd       -- partition a microSD from THIS PC (in a reader) and unpack
 #               the rootfs tarball onto it. Stock Android on the
-#               tablet's eMMC is not touched. Low risk.
+#               tablet's eMMC is not touched. Low risk. Needs TAR=.
 #
 #   twrp-sd  -- the microSD is already in the tablet's own slot; stream
 #               the raw ext4 image onto its existing partition over adb
 #               with the tablet in TWRP. Reuses the partition as-is (no
 #               repartitioning) -- ERASES whatever rootfs/data is
 #               currently on that card, but stock Android's internal
-#               eMMC is untouched.
+#               eMMC is untouched. Needs IMG=.
 #
 #   userdata -- with the tablet in TWRP, dd the raw ext4 rootfs image over
 #               /dev/block/by-name/userdata. THIS ERASES STOCK ANDROID
-#               /data. A real internal install.
+#               /data. A real internal install. Needs IMG=.
 #
 # The boot bundle (boot/init_boot/vendor_boot/dtbo) is flashed separately
 # with scripts/flash-boot-set.sh -- all three deploy targets carry the
 # rootfs with filesystem label X716B_ROOT, which the bundle's initramfs
-# finds.
+# (scripts/build-real-root-initramfs.sh) finds by that label first,
+# regardless of which distro built it.
 #
 # Usage:
-#   scripts/deploy-nixos-rootfs.sh --i-understand-this-writes-to-the-device sd       DEV=/dev/sdX
-#   scripts/deploy-nixos-rootfs.sh --i-understand-this-writes-to-the-device twrp-sd
-#   scripts/deploy-nixos-rootfs.sh --i-understand-this-writes-to-the-device userdata
+#   scripts/deploy-rootfs.sh --i-understand-this-writes-to-the-device sd       TAR=out/x716b-rootfs.tar.gz DEV=/dev/sdX
+#   scripts/deploy-rootfs.sh --i-understand-this-writes-to-the-device twrp-sd  IMG=out/x716b-rootfs.img
+#   scripts/deploy-rootfs.sh --i-understand-this-writes-to-the-device userdata IMG=out/x716b-rootfs.img
 #
-# Env overrides: TAR=<path to rootfs .tar.gz>, IMG=<path to ext4 .img>
-# (default: built on demand via `nix build --impure ./nixos#...`).
+# Where to get TAR=/IMG= per distro:
+#   - NixOS:  nix build --impure ./nixos#rootfs-tar   (or #rootfs-image)
+#   - Fedora: scripts/build-fedora-rootfs.sh produces a rootfs directory;
+#             tar it, or run scripts/build-rootfs-image.sh against it for
+#             a raw .img.
+#   - Debian: scripts/build-debian-rootfs.sh produces a rootfs directory;
+#             same as Fedora above.
+#
+# For a raw ext4 image from a plain rootfs directory (Fedora/Debian, not
+# NixOS which builds its own via nixos/packages/rootfs-image.nix):
+#   scripts/build-rootfs-image.sh <rootfs-dir> <out.img> [size-margin-MiB]
 #
 # adb-over-stdin gotcha (confirmed live on this tablet's TWRP): its
 # toybox `dd` fails `read error: Bad address` on stdin at bs=1M or
 # larger when the input is the adb pipe (not a real file) -- a test
 # file round-tripped byte-for-byte at bs=64k but not at bs=1M/8M. Every
 # `adb shell dd ... < file` below uses bs=64k for exactly this reason.
+#
+# Also confirmed live: do NOT run TWRP's own e2fsck/resize2fs against a
+# raw image streamed onto a bigger partition. Its bundled e2fsprogs
+# (1.45.4, ~2019) can't even parse the `orphan_file` feature a modern
+# mke2fs writes ("has unsupported feature(s)") -- a false alarm, not
+# corruption, but the same antique resize2fs would likely mis-handle
+# those feature bits too. Let the rootfs itself grow to fill the
+# partition on first real boot instead -- NixOS's
+# `fileSystems."/".autoResize`, or the overlay's own
+# `gts9wifi-grow-rootfs.service` on Fedora/Debian (both already wired up
+# by their respective builders).
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -43,7 +67,7 @@ cd "$repo_root"
 label=X716B_ROOT
 
 usage() {
-	sed -n '2,30p' "$0" >&2
+	sed -n '2,40p' "$0" >&2
 	exit 1
 }
 
@@ -58,32 +82,25 @@ shift || true
 for kv in "$@"; do
 	case "$kv" in
 		DEV=*) DEV=${kv#DEV=} ;;
+		TAR=*) TAR=${kv#TAR=} ;;
+		IMG=*) IMG=${kv#IMG=} ;;
 		*) echo "unknown arg: $kv" >&2; usage ;;
 	esac
 done
 
-build() {
-	local attr=$1
-	if command -v nix >/dev/null; then
-		nix build --impure --no-link --print-out-paths "./nixos#$attr"
-	else
-		echo "nix not found and no explicit path given for $attr" >&2
-		exit 1
-	fi
-}
-
 case "$target" in
 sd)
+	: "${TAR:?pass TAR=<path to a rootfs .tar.gz> -- see the header above for how to build one per distro}"
+	[ -f "$TAR" ] || { echo "$TAR not found" >&2; exit 1; }
 	: "${DEV:?pass DEV=/dev/sdX (the spare card, will be ERASED)}"
 	[ -b "$DEV" ] || { echo "$DEV is not a block device" >&2; exit 1; }
 	case "$DEV" in /dev/sd[a-z]|/dev/mmcblk[0-9]|/dev/nvme[0-9]n[0-9]) ;; *)
 		echo "refusing: $DEV does not look like a whole-disk node" >&2; exit 1 ;;
 	esac
-	tar=${TAR:-$(build packages.x86_64-linux.rootfs-tar)}
-	echo "== rootfs tarball: $tar =="
+	echo "== rootfs tarball: $TAR =="
 
 	lsblk "$DEV" || true
-	read -rp "ERASE $DEV and write the NixOS rootfs to it? [type ERASE] " a
+	read -rp "ERASE $DEV and write this rootfs to it? [type ERASE] " a
 	[ "$a" = ERASE ] || { echo aborted; exit 1; }
 
 	sudo umount "${DEV}"* 2>/dev/null || true
@@ -96,13 +113,15 @@ sd)
 	mnt=$(mktemp -d)
 	sudo mount "$part" "$mnt"
 	echo "== unpacking rootfs (sudo tar) =="
-	sudo tar --numeric-owner -xzf "$tar" -C "$mnt"
+	sudo tar --numeric-owner -xzf "$TAR" -C "$mnt"
 	sync
 	sudo umount "$mnt"; rmdir "$mnt"
 	echo "== done. Card labelled $label. Now flash the boot bundle with scripts/flash-boot-set.sh =="
 	;;
 
 twrp-sd)
+	: "${IMG:?pass IMG=<path to a raw ext4 .img, labelled $label> -- see the header above for how to build one per distro}"
+	[ -f "$IMG" ] || { echo "$IMG not found" >&2; exit 1; }
 	if ! adb get-state 2>/dev/null | grep -q recovery; then
 		echo "device is not in recovery (TWRP) mode -- aborting" >&2
 		exit 1
@@ -122,7 +141,7 @@ twrp-sd)
 
 	cat >&2 <<EOF
 =========================  DESTRUCTIVE  =========================
- This writes the NixOS rootfs image directly over $target_dev,
+ This writes the rootfs image directly over $target_dev,
  ERASING whatever is currently on that microSD card. Stock
  Android's internal storage is not touched.
 ===============================================================
@@ -130,27 +149,21 @@ EOF
 	read -rp "Type ERASE to proceed: " a
 	[ "$a" = ERASE ] || { echo aborted; exit 1; }
 
-	img=${IMG:-$(build packages.x86_64-linux.rootfs-image)}
-	echo "== rootfs image: $img ($(stat -c%s "$img") bytes) =="
-
+	echo "== rootfs image: $IMG ($(stat -c%s "$IMG") bytes) =="
 	adb shell "umount $target_dev 2>/dev/null; umount /external_sd 2>/dev/null; true"
 	echo "== streaming image to $target_dev (several minutes over USB) =="
-	adb shell "dd of=$target_dev bs=64k" < "$img"
+	adb shell "dd of=$target_dev bs=64k" < "$IMG"
 	adb shell sync
-	echo "== NOT running TWRP's on-device e2fsck/resize2fs: confirmed live that its"
-	echo "   bundled e2fsprogs 1.45 (~2019) cannot even parse the superblock this"
-	echo "   image's modern mke2fs writes (\"has unsupported feature(s)\") -- a false"
-	echo "   alarm, not corruption, but the same antique resize2fs would likely"
-	echo "   mis-handle those feature bits too. fileSystems.\"/\".autoResize in"
-	echo "   nixos/modules/x716b-hardware.nix grows it on first real boot instead,"
-	echo "   using the matching e2fsprogs in the NixOS closure itself."
+	echo "== NOT running TWRP's on-device e2fsck/resize2fs -- see the header above."
 	echo "== done. Flash the boot bundle with scripts/flash-boot-set.sh, then reboot to system. =="
 	;;
 
 userdata)
+	: "${IMG:?pass IMG=<path to a raw ext4 .img, labelled $label> -- see the header above for how to build one per distro}"
+	[ -f "$IMG" ] || { echo "$IMG not found" >&2; exit 1; }
 	cat >&2 <<'EOF'
 =========================  DESTRUCTIVE  =========================
- This writes the NixOS rootfs image directly over
+ This writes the rootfs image directly over
  /dev/block/by-name/userdata and ERASES STOCK ANDROID /data
  (accounts, apps, internal storage). There is no undo.
 
@@ -169,22 +182,12 @@ EOF
 	read -rp "Type ERASE-USERDATA to proceed: " a
 	[ "$a" = ERASE-USERDATA ] || { echo aborted; exit 1; }
 
-	img=${IMG:-$(build packages.x86_64-linux.rootfs-image)}
-	echo "== rootfs image: $img ($(stat -c%s "$img") bytes) =="
-
+	echo "== rootfs image: $IMG ($(stat -c%s "$IMG") bytes) =="
 	adb shell 'umount /data 2>/dev/null; umount /dev/block/by-name/userdata 2>/dev/null; true'
 	echo "== streaming image to /dev/block/by-name/userdata (this takes a while) =="
-	# bs=64k, not a larger block: TWRP's toybox dd reading stdin from the adb
-	# pipe fails "read error: Bad address" at bs=1M+ (confirmed live) -- 64k
-	# round-trips a test file byte-for-byte. No conv=fsync for the same
-	# reason; a plain `sync` after covers it. The image already carries the
-	# X716B_ROOT label (nixos/modules/rootfs-image.nix's volumeLabel), so no
-	# on-device e2label -- TWRP's toybox doesn't have one anyway.
-	adb shell 'dd of=/dev/block/by-name/userdata bs=64k' < "$img"
+	adb shell 'dd of=/dev/block/by-name/userdata bs=64k' < "$IMG"
 	adb shell sync
-	echo "== NOT running TWRP's on-device e2fsck/resize2fs -- see the twrp-sd"
-	echo "   target's comment above; fileSystems.\"/\".autoResize grows it on"
-	echo "   first real boot using the NixOS closure's own e2fsprogs instead."
+	echo "== NOT running TWRP's on-device e2fsck/resize2fs -- see the header above."
 	echo "== done. Flash the boot bundle with scripts/flash-boot-set.sh, then reboot to system. =="
 	;;
 

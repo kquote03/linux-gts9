@@ -4003,3 +4003,134 @@ bring-up-fixes lists above are the authoritative record of what shipped
 this session; Task #20-style exhaustive feature-parity re-verification
 (BT pairing, Krita launch, `nixos-rebuild switch` end-to-end with a real
 edit) is future work, not blocking.
+
+### Session 14 — 2026-09-11 — Debian unstable rootfs (third distro), and a sandboxed-build-environment saga
+
+Third rootfs target: `scripts/build-debian-rootfs.sh`, Debian **unstable
+(sid)** aarch64, full KDE Plasma 6 desktop, snapshot.debian.org-pinned
+for real package-version reproducibility (a stronger guarantee than the
+Fedora builder's own, honestly non-pinned live dnf mirror). Debian is
+systemd + merged-`/usr`, same as Fedora, so the overlay step needed no
+translation at all — the hard part of this session was entirely about
+getting a working build *environment*, not the Debian-specific porting
+work itself. See `docs/distro-porting.md`'s new Debian section for the
+condensed technical summary; this entry is the blow-by-blow of how each
+fix was actually found.
+
+**chroot(2) is unconditionally blocked in this session's sandbox.**
+Forking `build-ubuntu-rootfs.sh`'s proven `unshare --user --mount` +
+real-`chroot` scaffold seemed like the obvious path, and stage 1
+(`debootstrap --foreign`, host-side unpack, no chroot needed) worked
+immediately. Stage 2 didn't: every `chroot "$rootdir" ...` invocation,
+even `chroot "$rootdir" /bin/true` with zero emulation involved, returned
+exit 255 with **zero output of any kind** — no error text, nothing.
+`strace`-ing it directly (not through the nested unshare) isolated it to
+`chroot(2)` itself returning a bare failure the shell couldn't even
+report — a container-level restriction on this specific syscall in this
+sandbox, the same general class as two restrictions already known from
+earlier sessions (whole-`/sys`/`/dev` bind-mounts, `mknod`), but this one
+had no narrower workaround — the whole execution mechanism had to
+change.
+
+**Fix: `proot`, not `chroot`.** `proot` reimplements chroot/bind-mount/
+binfmt semantics entirely in userspace via ptrace, needing neither
+`chroot(2)` nor `mount(2)` — confirmed live it runs real aarch64 code via
+qemu-user (`proot -r "$rootdir" -0 -q "$QEMU_AARCH64_STATIC" ...`)
+completely unprivileged. Getting there took several rounds:
+- The plain nixpkgs `qemu-user` package is dynamically linked and pulls
+  in an easy-to-break host `.so` closure (hit live: cascading "cannot
+  open shared object file" for `libp11-kit` then `libidn2`). The root
+  flake already had the fix on hand from the Fedora work:
+  `$QEMU_AARCH64_STATIC` (`commonEnv`), a genuinely static musl build —
+  just needed reusing here too.
+- The host's own registered `aarch64-linux` binfmt_misc interpreter
+  (a different, `-P`/argv0-preserving build) is NOT interchangeable with
+  proot's `-q` — confirmed live it mis-parses proot's own constructed
+  argv ("Error while loading -U: No such file or directory").
+  `$QEMU_AARCH64_STATIC` is the right tool for this job specifically.
+- nixpkgs's `debootstrap` derivation's `patchShebangs` pass rewrites the
+  `/debootstrap/debootstrap` template — meant to run **inside the
+  target** post-chroot, via the target's own `/bin/sh` — to the HOST's
+  own nix-store bash path regardless. Confirmed live
+  (`#!/nix/store/.../bash` on a file meant for guest execution); fixed
+  with one `sed` line. The same generated script also hardcodes an
+  absolute host nix-store path for `dpkg` (baked in from the host's own
+  dpkg at stage-1 time) — bound `/nix:/nix` into the guest via `proot -b`
+  rather than patch every such host-path leak individually.
+
+**qemu-user is flaky for early dpkg bootstrap, confirmed live and
+reproduced 3× in a row on a byte-identical rerun**: "double free or
+corruption" / "malloc(): corrupted top size" aborting a maintainer
+script mid-run, on the very first packages (dpkg/base-files/libc6).
+Nondeterministic — an identical invocation against a freshly
+re-extracted rootdir sometimes ran clean start to finish. Critically,
+`debootstrap --second-stage` is **not** safely re-runnable in place
+after such a crash (it writes its own minimal dpkg status bootstrap stub
+unconditionally at the top of the script — a second invocation against a
+half-crashed `$rootdir` corrupts `/var/lib/dpkg/status` further, not
+less, confirmed live: duplicate/malformed `Package: dpkg` stanzas). Fix:
+`stage1()` became a real function, and stage 2 retries from a **clean
+re-extraction** (cheap — host-side tar unpack, no emulation) rather than
+in place, bounded at 5 attempts.
+
+**A second, unrelated proot crash, much harder to pin down**: a real
+upstream proot bug, `path.c:547: compare_paths2: Assertion "length2 > 0"
+failed` (SIGABRT) — long-standing and still open upstream (termux/
+proot#123/#159, proot-me/proot#182), triggered by certain systemd
+tooling under ptrace. First hypothesis (systemd-sysusers crashing on
+*creating* a new user, safe once idempotent) was wrong — isolated
+reproduction showed sysusers' own log lines were just the last output
+flushed before the crash; extracting systemd's real postinst script
+(`dpkg-deb -e`) showed the actual next command was `systemd-tmpfiles
+--create <files>` (a `dh_installtmpfiles`-generated hook), confirmed by
+reproducing the crash directly with that exact command. Unlike sysusers,
+tmpfiles crashes **unconditionally** — re-verified live that pre-seeding
+everything from the host first does not stop the guest's own
+`--create` from crashing again immediately after. The eventual fix:
+divert `/usr/bin/systemd-tmpfiles` to a no-op stub (`dpkg-divert
+--local --rename`) for the whole package-install phase — the same
+`policy-rc.d`-style technique container pipelines already use to block
+service *starts* during installs — then run the real host-native
+`systemd-tmpfiles --root="$rootdir" --create` (`$SYSTEMD_TMPFILES_HOST`,
+new flake.nix env var, same pattern as `$QEMU_AARCH64_STATIC`) exactly
+once at the very end, after every package is already installed.
+`systemd-sysusers` genuinely doesn't need this — confirmed separately it
+only crashes on the create-new path, so a lighter host-side pre-seed
+(`$SYSTEMD_SYSUSERS_HOST`, used reactively in `run_in_chroot`'s existing
+retry loop) is enough there. Both host tools needed `run_in_ns`'s wide
+subuid/subgid mapping too: a plain unprivileged host invocation gets
+every `fchownat()` rejected outright ("Operation not permitted") since
+it can't really become root; the same mapped namespace stage 1 already
+needed makes those succeed for real. One correctness gap in each host
+tool, confirmed live and fixed/tolerated: `systemd-sysusers` doesn't
+consistently chase `--root` for the "nologin" shell keyword (writes a
+meaningless host nix-store path into the target's `/etc/passwd` — fixed
+with a `sed` pass); `systemd-tmpfiles` fails one ACL assignment on
+`/var/log/journal` with an unresolved/overflowed GID (harmless, the
+"adm" group's read access only).
+
+**Two ordinary Debian packaging gaps**, once past the emulation
+problems: `libqrtr-dev` (plain C reference library, providing
+`libqrtr.h`) is a real, separate package from `libqrtr-glib-dev` (GLib
+bindings only) — easy to miss since Fedora's single `qrtr-devel` covers
+both; missing it broke pd-mapper's build with `fatal error: libqrtr.h:
+No such file`. `libudev-dev`/`libsystemd-dev` ship `libudev.pc`/
+`libsystemd.pc` — meson's `dependency('udev')`/`dependency('systemd')`
+(the OLD pre-merge pkg-config names, still used by iio-sensor-proxy's
+and hexagonrpcd's own `meson.build` files) need `udev.pc`/`systemd.pc`
+symlinks Debian doesn't ship as an alias. hexagonrpcd's `meson.build`
+also installs its `.service` units under `get_option(libdir)/systemd/
+system` directly rather than through the systemd dependency's
+`systemdsystemunitdir` variable, landing them at the multiarch triplet
+path (`/usr/lib/aarch64-linux-gnu/systemd/system`) instead of systemd's
+real search path — confirmed live (`systemctl enable` couldn't find
+them) and fixed by relocating the three files after install.
+
+**Result**: a full clean run completes end to end — stage 1/2,
+snapshot-pinned base packages, vendor firmware + kernel modules, the
+device overlay, the full sensor/ADSP stack built from source, and
+`task-kde-desktop` (SDDM + Plasma 6 + Mesa/Vulkan drivers) — all with
+zero manual intervention, `rootfs directory ready` printed at the end.
+Not yet flashed to real hardware or committed — that's staged
+real-hardware validation and docs/commit, the same two steps every other
+rootfs on this port has gone through.
