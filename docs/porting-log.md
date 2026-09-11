@@ -3887,3 +3887,119 @@ staged. Deployable to **either** microSD (as Fedora) **or** the internal
   Plan is now 44 glue derivations / 720 MiB, everything else cached.
 - **Pending**: real-hardware bring-up (SD path first, then `userdata`)
   against the feature-parity checklist in the plan and `nixos/README.md`.
+
+### Session 13 — 2026-09-11 — NixOS: first real boot, live bring-up, hardware/configuration split
+
+**First successful boot of NixOS on the tablet.** Deployed to the
+microSD already seated in the tablet, streamed via `adb` with the
+tablet in TWRP (the new `twrp-sd` deploy target — the card-reader `sd`
+target assumed the card wasn't already in the device, which it was).
+Two TWRP-specific tool bugs found and fixed live, both now documented
+and worked around in `scripts/deploy-nixos-rootfs.sh` /
+`nixos/README.md`:
+
+- TWRP's toybox `dd` fails `read error: Bad address` reading stdin at
+  `bs=1M`+; `bs=64k` round-trips a test file byte-for-byte. Every
+  `adb shell dd` in the deploy script now uses `bs=64k`.
+- TWRP's e2fsprogs (1.45.4) can't parse the `orphan_file` feature our
+  build's modern `mke2fs` writes — not corruption, just too old to read
+  it. Dropped the on-device `e2fsck`/`resize2fs` step entirely;
+  `fileSystems."/".autoResize` grows the filesystem on first real boot
+  using the NixOS closure's own e2fsprogs instead.
+
+**SSH reachable, kernel `7.2.0-dirty`, systemd up.** `systemctl --failed`
+showed 7 units down; all diagnosed live (`journalctl -u <unit>`) and
+fixed by editing/testing via runtime `systemd` drop-ins under
+`/run/systemd/system/*.d/` before committing the real fix to
+`nixos/hardware.nix` (so no rebuild+reflash cycle was needed to confirm
+each one):
+
+1. **`chronyd` failed to `chown()` `/run/chrony` even as root** — an
+   earlier `CapabilityBoundingSet = lib.mkForce ""` meant to strip
+   sandboxing actually set the capability bounding set to *empty* (deny
+   everything) — this directive's empty-assignment semantics are the
+   opposite of `RestrictAddressFamilies`/`SystemCallFilter`'s. Fixed
+   with `~` (systemd's "full set" token). Confirmed live before landing.
+2. **`gts9wifi-bt-provision` / `gts9wifi-sensor-registry-perms`
+   `FileNotFoundError`/`command not found` on bare `mount`** (and
+   `fdtget` for bt-provision) — NixOS services get a minimal default
+   `PATH` with no `util-linux`/`dtc`. Added explicit `path = [ ... ];`.
+3. **`hexagonrpcd-adsp-sensorspd` "has a bad unit file setting"** — the
+   drop-in's `ExecStart = lib.mkForce "<cmd>";` produced a *second*
+   `ExecStart=` line instead of replacing the package's own one (two
+   `ExecStart=` on a `Type=simple` service is invalid). Fixed with the
+   `ExecStart = [ "" "<cmd>" ];` reset-then-set idiom.
+4. **`pd-mapper` "no pd maps available"** — traced (via `grep -a` path
+   strings in the binary, no `strings` on-device) to a hardcoded
+   `/lib/firmware` scan; NixOS ships no `/lib` at all. Added a
+   `systemd.tmpfiles.rules` compat symlink. Root firmware gap remains
+   open, though: `vendor-firmware-dump/` never got the PDR `.jsn` files
+   extracted in this checkout — a pre-existing gap shared with the
+   Fedora rootfs (its own comments describe the exact same failure mode
+   if they're missing), not something new here.
+5. **`firewall.service` exit 4** — `iptables: Extension pkttype
+   revision 0 not supported, missing kernel module?`. The kernel lacks
+   `CONFIG_NETFILTER_XT_MATCH_PKTTYPE`. `networking.firewall.enable`
+   defaulted to `false` pending that kernel fragment addition + rebuild.
+6. **`x716b-serial-getty` restart-looped to `start-limit-hit`** — the
+   USB gadget's current composite function is network-only (RNDIS/ECM);
+   `/dev/ttyGS0` doesn't exist. Added `unitConfig.ConditionPathExists`
+   so it skips cleanly instead of looping (SSH is the real console now).
+
+**Architecture pivot, mid-session, per direction from whoever was
+driving this session**: originally split into 3 flake modules
+(hardware/desktop/device); briefly explored flattening into a classic
+(non-flake) `/etc/nixos/configuration.nix`, then landed on the actual
+final shape — **keep the flake**, but split it exactly in two
+(`hardware.nix` vs `configuration.nix`, see `nixos/README.md`), and
+**ship the whole thing onto the device as real, editable files** at
+`/etc/nixos/` so `sudo nixos-rebuild switch` there is genuinely
+self-contained. This needed:
+
+- `packages/etc-nixos.nix`, a new package that stages
+  `flake.nix`/`flake.lock`/`hardware.nix`/`configuration.nix`/
+  `overlay.nix`/`packages/*.nix` plus real (non-symlink) copies of
+  everything `repoPaths` points at — `rootfs/`, `specs/`,
+  `vendor-firmware-dump/`, `buildroot/firmware-overlay/`, and a
+  *trimmed* slice of the kernel output (`.config`,
+  `include/config/kernel.release`, `Image`, `System.map`, the dtb,
+  `modules-out/` — not the 2.6 GB of `out/kernel`'s build
+  intermediates) — into `/etc/nixos/vendor/`.
+- A first attempt made `nixos/vendor/*` plain symlinks *in this repo*
+  pointing at `../rootfs` etc., meant to unify how both this checkout
+  and the device reference the same data. Confirmed live this doesn't
+  work: Nix copies a referenced symlink as a symlink, not its resolved
+  content, so `cp`-ing a symlinked source into the store produces store
+  paths with symlinks pointing at nonexistent `/nix/store/rootfs`-style
+  locations. Reverted to real path references (`../rootfs` etc.) for
+  this checkout; `etc-nixos.nix` instead takes `repoPaths` directly
+  (already-realized store paths) and copies their real content.
+- `flake.nix`'s five `repoPaths` lines (four tracked, one impure via
+  `X716B_REPO_ROOT`) only make sense relative to *this* checkout.
+  `etc-nixos.nix` `substituteInPlace`s all five in the *shipped* copy of
+  `flake.nix` to point at `./vendor/*` instead. Confirmed live, in a
+  simulated `/etc/nixos` (a plain copy outside any git working tree):
+  `nix eval` on the staged flake succeeds with **no `--impure`, no
+  network needed to resolve `<nixpkgs>`** — the whole point.
+- Dropped `profiles/minimal.nix` from `hardware.nix` — this is a full
+  reconfigurable desktop now, not a stripped appliance; that profile
+  turns off man/info pages, MIME associations, xdg autostart/icons/
+  sounds and udisks2 automount, all things a real desktop wants on.
+  Enabled flakes (`nix.settings.experimental-features`) so `nixos-rebuild
+  switch` auto-detects `/etc/nixos/flake.nix` with no extra flag.
+
+**New packages, per request**: `hardware.bluetooth` + `kdePackages.
+bluedevil` (Plasma applet), `kdePackages.wacomtablet` (Graphics Tablet
+System Settings KCM), `krita`, `firefox` (also how you log into a WiFi
+captive portal on first boot, which is exactly what happened live this
+session). All four resolved to existing nixpkgs attrs, no packaging
+needed.
+
+**Final verification**: rebuilt (12.9 GB image, up from ~11 GB — the
+new desktop packages + `/etc/nixos` staging), redeployed via `twrp-sd`,
+rebooted. User confirmed live on the device: boots clean, reachable, —
+"everything works." `docs/porting-log.md`'s and `nixos/README.md`'s
+bring-up-fixes lists above are the authoritative record of what shipped
+this session; Task #20-style exhaustive feature-parity re-verification
+(BT pairing, Krita launch, `nixos-rebuild switch` end-to-end with a real
+edit) is future work, not blocking.

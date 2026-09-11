@@ -104,11 +104,14 @@ split is preparatory, not a claim that any of the three currently work.
 `nixos/` (a standalone flake) is the worked example of this checklist for
 a non-Fedora target. NixOS is also systemd, so step 2's *translation* is
 mostly mechanical — each `gts9wifi-*.service` becomes a
-`systemd.services.<name>` in `nixos/modules/x716b-device.nix` with the
-same `After=/Before=` intent, `85-gts9wifi.preset` drives `wantedBy`
-(so the ADSP chain stays manual-start), and the sleep hooks land in
-`/etc/systemd/system-sleep/`. What's genuinely different and worth
-copying if you do a third distro:
+`systemd.services.<name>` in `nixos/hardware.nix` with the same
+`After=/Before=` intent, `85-gts9wifi.preset` drives `wantedBy` (so the
+ADSP chain stays manual-start), and the sleep hooks land in
+`/etc/systemd/system-sleep/`. `nixos/hardware.nix` carries all of this
+device-specific plumbing; `nixos/configuration.nix` is the separate,
+user-facing desktop/package layer (see `nixos/README.md`) — worth
+keeping that split for a third distro too, if its packaging supports it.
+What's genuinely different and worth copying if you do a third distro:
 
 - The Qualcomm sensor/ADSP stack (`libssc`, `pd-mapper`, `hexagonrpcd`,
   `iio-sensor-proxy`-with-SSC) is packaged from the **same source pins**
