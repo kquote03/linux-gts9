@@ -4358,3 +4358,37 @@ piping file content through `ssh '... | sudo -S tee ...'` silently
 truncates to nothing -- `sudo -S`'s own password read consumes the
 local pipe's only line before `tee` ever gets a chance to read the
 real content), then fixed properly in the script and rebuilt the image.
+
+**Session 14 addendum #4, same day -- "sound is broken".** Diagnosed
+live via `wpctl status`: WirePlumber correctly detected the card
+(`alsa_card.platform-sound`, device.nick "Samsung-Galaxy-Tab-S9-5G") but
+only ever exposed a fake "Dummy Output" sink -- no real sinks or
+sources at all. `alsa-ucm-conf` (confirmed via `dpkg -l`: "un", not
+installed) is the actual root cause: this device's UCM2 profile
+(shipped by this project's own overlay at `Qualcomm/sm8550/GTS9/*`)
+needs the *stock* package's shared ucm2 tree alongside it for
+WirePlumber's ALSA monitor to fully resolve the card's real route
+layout -- without it, UCM loading silently fails partway and
+WirePlumber falls back to the fake sink rather than erroring loudly.
+Installed live: confirmed no file collisions with this project's own
+overlay files (both trees share the same `/usr/share/alsa/ucm2`
+directory, different subpaths), and after a `systemctl --user restart
+pipewire pipewire-pulse wireplumber`, `wpctl status` immediately showed
+the real hardware -- "Built-in Audio Built-in speakers (4x CS35L45)" as
+the default sink, "Built-in digital microphones" as the default source,
+both matching this device's actual known hardware. No `ALSA_CONFIG_UCM2`
+env var needed here, unlike NixOS's `hardware.nix` -- Debian's FHS
+`/usr/share/alsa/ucm2` is already alsa-lib's real, hardcoded default
+search path (NixOS needs the env var purely because its own store-based
+layout has no such fixed path at all); just the missing package. Added
+`alsa-ucm-conf` to `base_packages` (audio is a core feature, not
+desktop-specific) and rebuilt the image.
+
+A separate, unrelated thing found while diagnosing this: the live
+device's `/etc/apt/sources.list` had somehow been rewritten to a live,
+unpinned `deb.debian.org` URL (timestamped from early in that same
+boot, not the original build) instead of this script's own pinned
+snapshot line -- root cause not identified (not reproduced by anything
+this session did deliberately), restored by hand to the correct pinned
+content. Worth watching for on a future boot, not chased further this
+session since it didn't affect the actual audio fix.

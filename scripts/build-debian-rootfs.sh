@@ -470,6 +470,29 @@ echo "== installing base packages (proper apt dependency resolution) =="
 # package names: NetworkManager/wpasupplicant (ath11k), bluez (hci_qca),
 # this project's established debug toolset (buildroot/configs/
 # x716_defconfig has the same list).
+#
+# alsa-ucm-conf: confirmed live, its absence is the actual root cause of
+# a "sound is broken" report -- this device's card (Qualcomm sm8550,
+# exposed as "Samsung-Galaxy-Tab-S9-5G") needs an ALSA UCM2 profile to
+# expose real sinks/sources at all; this project's own overlay
+# (rootfs/overlay-common/usr/share/alsa/ucm2/Qualcomm/sm8550/GTS9/*)
+# ships that device-specific profile, but without the *stock* alsa-
+# ucm-conf package's own shared ucm2 tree alongside it, WirePlumber's
+# ALSA monitor can't fully resolve it and silently falls back to a fake
+# "Dummy Output" sink with no real sinks/sources at all (confirmed live
+# via `wpctl status`). Installing alsa-ucm-conf merges its stock tree
+# into the same /usr/share/alsa/ucm2 directory our overlay already
+# populated -- confirmed live, no file collisions with our own
+# Qualcomm/sm8550/GTS9 files -- and after that, WirePlumber correctly
+# exposes the real hardware ("Built-in Audio Built-in speakers (4x
+# CS35L45)" / "Built-in digital microphones", matching this device's
+# known hardware) with no further configuration needed. The same
+# mechanism NixOS's hardware.nix handles via ALSA_CONFIG_UCM2 pointing
+# at a package-time merge of the two trees (see nixos/packages/
+# x716b-ucm.nix) -- Debian's FHS /usr/share/alsa/ucm2 already being the
+# real, default, hardcoded search path (unlike NixOS's store-based
+# layout) means no env var override is needed here at all, just the
+# missing package.
 base_packages="systemd-sysv sudo locales tzdata console-setup keyboard-configuration \
 network-manager wpasupplicant bluez \
 openssh-server \
@@ -477,7 +500,7 @@ e2fsprogs dosfstools parted \
 iputils-ping curl wget ca-certificates \
 nano less htop rsync unzip \
 usbutils pciutils ethtool i2c-tools strace tree iw tcpdump \
-chrony zram-tools alsa-utils device-tree-compiler kmod \
+chrony zram-tools alsa-utils alsa-ucm-conf device-tree-compiler kmod \
 dbus python3"
 
 run_in_chroot apt-get update
