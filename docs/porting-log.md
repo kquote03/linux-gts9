@@ -4259,3 +4259,76 @@ the greeter/desktop actually *renders* correctly on the physical panel
 is a visual check only the user can make -- everything checkable from
 this side (service state, theme presence, session files, ownership) is
 now correct.
+
+**Session 14 addendum #2, same day -- real device use, real bugs.** The
+user actually logged into the desktop on real hardware (confirmed by a
+`startplasma-wayland` session appearing live) and found four more
+things, each tested live against the running device before landing in
+the script:
+
+- **Touchscreen dead in the SDDM greeter.** The real touchscreen kernel
+  device (`fts1ba90a`, confirmed via `/proc/bus/input/devices` to have
+  correct ABS/touch event bits) was never the problem -- Xorg itself had
+  no input driver module for anything but the S Pen
+  (`xserver-xorg-input-wacom`, confirmed via `dpkg -l`). Neither
+  `xserver-xorg-core` nor `sddm` Depends *or* Recommends an actual touch/
+  generic input driver. Added `xserver-xorg-input-libinput`; confirmed
+  live via the Xorg log that it now loads and correctly tags `fts1ba90a`
+  as a TOUCHSCREEN device. This only matters for the *greeter* -- the
+  real Plasma session, once logged in, reads touch natively through
+  kwin-wayland's own libinput integration, no Xorg driver involved.
+  (Tried switching the greeter itself to Wayland instead, via
+  `DisplayServer=wayland` in `sddm.conf.d` -- SDDM's own example config
+  marks this "experimental", and confirmed live it genuinely fails to
+  start on this hardware, `SDDM::Auth::HELPER_DISPLAYSERVER_ERROR`
+  falling back to x11-user automatically, even though `kwin_wayland`
+  itself runs fine standalone. Not pursued further per explicit user
+  direction -- X11 greeter + Wayland session is the accepted answer.)
+- **Rootfs not actually using the whole SD card, despite
+  `gts9wifi-grow-rootfs.service`'s own stamp file claiming success.**
+  Confirmed live, the hard way: `sfdisk` genuinely grew the partition
+  table and `/sys/class/block/.../size` read back correctly moments
+  after boot, but `resize2fs`, called immediately after in the same
+  script run, still saw the OLD small size and silently no-op'd (exit 0,
+  no error -- resize2fs just grows the filesystem to whatever size it
+  currently believes the partition is). The stamp file still got
+  written, which then permanently skipped the retry on every later boot
+  too -- the card sat at 100% full (4.1G total) with the real partition
+  already at 238G. Fixed live on the device first (manual `resize2fs` +
+  clearing the stamp file, to relieve the full disk immediately), then
+  properly in `gts9wifi-grow-rootfs`: poll the live sysfs partition size
+  for up to ~10s after the rescan step and only proceed to `resize2fs`
+  once it actually matches what `sfdisk` just asked for, and verify the
+  filesystem's own block count actually grew afterward before writing
+  the stamp file -- if either check fails, log a warning and leave the
+  stamp file unwritten so the *next* boot retries instead of skipping
+  forever.
+- **No audio stack at all.** `base_packages` only ever had `alsa-utils`
+  (raw CLI tools, no session/routing daemon) -- confirmed live neither
+  `pipewire` nor `pulseaudio` was installed. Added `pipewire` +
+  `pipewire-pulse` (the PulseAudio-compatible socket most apps still
+  expect) + `pipewire-alsa` + `wireplumber` (pipewire's session/policy
+  manager -- without it pipewire has no policy engine and nothing finds
+  a working sink).
+- **No Display Configuration page in System Settings.** `kde-plasma-
+  desktop`'s minimal Depends closure does not include `kscreen`
+  (confirmed live via `dpkg -l`: only `libkscreen-data`, the plain
+  library, was present) -- added it explicitly.
+
+**A detour worth recording, not a script change**: the user asked for a
+global 200%/150%/125% UI scale via `QT_SCALE_FACTOR`/`GDK_SCALE` in
+`/etc/environment.d/`. Confirmed live this is the wrong mechanism for a
+*real Wayland* session specifically: Qt renders widgets at the forced
+scale while `kwin_wayland`'s own shell geometry (how much screen space
+it reserves for the panel/dock) is computed from its own native
+per-output Wayland scale protocol, completely independent of that env
+var -- the mismatch is exactly what produced a live-confirmed taskbar
+clipped in half at the bottom of the screen. (The SDDM *greeter* specifically
+doesn't have this problem -- it's a plain X11 session, where
+`QT_SCALE_FACTOR` is the normal, correct mechanism -- but per explicit
+user direction it was reverted too, back to 100%, once `kscreen` made
+the real fix -- setting scale through System Settings' own Display
+Configuration KCM, which negotiates the real per-output Wayland
+protocol value every client agrees on -- available.) Net result: this
+script ships no scale-forcing configuration of any kind; `kscreen` is
+the only change, and it's the enabler, not the fix itself.
