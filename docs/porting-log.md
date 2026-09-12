@@ -4332,3 +4332,29 @@ Configuration KCM, which negotiates the real per-output Wayland
 protocol value every client agrees on -- available.) Net result: this
 script ships no scale-forcing configuration of any kind; `kscreen` is
 the only change, and it's the enabler, not the fix itself.
+
+**Session 14 addendum #3, same day -- reflash exposed a SECOND grow-
+rootfs bug, distinct from addendum #2's.** Rebuilt the image with all of
+the above, redeployed via `twrp-sd` to the SAME microSD card, and the
+card was stuck at 4.2G/88% full again after boot -- but the live log
+this time showed something different: `disk 499744768s, partition ends
+at 499744735s, 0s free`. The *partition* was already sized to fill the
+whole disk -- correctly, not a bug -- because `deploy-rootfs.sh`'s
+`twrp-sd` target `dd`s the new filesystem image directly over the
+*existing* partition and never touches the partition table at all
+(documented behavior, "reuses the partition as-is"). A previous boot on
+this same card had already grown the partition table to fill the disk;
+re-flashing a freshly-built (small) image onto it left the partition
+large but the filesystem inside it small again. The script's
+`free_sectors` check (space *beyond* the partition) correctly found
+none -- but that is a different question from whether the filesystem
+already fills the *existing* partition, which addendum #2's fix never
+asked. Decoupled the two: `sfdisk`/rescan is still skipped when there's
+nothing to repartition, but `resize2fs` now always runs regardless,
+against whatever the current partition size already is. Fixed live on
+the device first (same manual `resize2fs` + stamp-clear as addendum #2,
+to relieve the full disk immediately, copied into place via `scp` since
+piping file content through `ssh '... | sudo -S tee ...'` silently
+truncates to nothing -- `sudo -S`'s own password read consumes the
+local pipe's only line before `tee` ever gets a chance to read the
+real content), then fixed properly in the script and rebuilt the image.
