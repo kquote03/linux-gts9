@@ -51,51 +51,73 @@ free_sectors=$(( disk_sectors - (part_start + part_sectors) - 33 ))
 log "$root_src is partition $part_num of $disk"
 log "disk ${disk_sectors}s, partition ends at $(( part_start + part_sectors ))s, ${free_sectors}s free"
 
+# Confirmed live: re-flashing a freshly-built (smaller) rootfs image onto a
+# card whose PARTITION TABLE a previous boot already grew to fill the disk
+# hits exactly this branch -- deploy-rootfs.sh's twrp-sd target dd's the new
+# filesystem image directly over the existing partition and never touches
+# the partition table at all, so the partition stays at whatever size a
+# prior boot last grew it to, while the freshly-dd'd filesystem inside it is
+# back to the small, just-built size. free_sectors (space *beyond* the
+# partition) is correctly ~0 here -- there is nothing left to repartition --
+# but that is a different question from whether the filesystem itself
+# already fills the *existing* partition, which it does not. Don't skip the
+# resize2fs step just because sfdisk has nothing to do; fall through to it
+# either way, only skipping the sfdisk/rescan dance.
+need_sfdisk=1
 if [ "$free_sectors" -lt "$MIN_FREE_SECTORS" ]; then
-	log "less than 64 MiB free; nothing worth doing"
-	mkdir -p "$(dirname "$STAMP")" && : > "$STAMP"
-	exit 0
+	log "less than 64 MiB free beyond the partition -- nothing to" \
+	    " repartition, but still checking whether the filesystem" \
+	    " itself already fills the existing partition"
+	need_sfdisk=0
 fi
 
-# ",+" keeps the start and takes every remaining sector.  sfdisk also relocates
-# the GPT backup header, which still sits where the smaller image ended - a
-# stale backup header at the end of a larger card makes different kernels
-# disagree about the layout and read the filesystems at the wrong offsets.
-log "growing partition $part_num to the end of $disk"
-echo ',+' | sfdisk --force --no-reread -N "$part_num" "$disk"
+if [ "$need_sfdisk" -eq 1 ]; then
+	# ",+" keeps the start and takes every remaining sector.  sfdisk also
+	# relocates the GPT backup header, which still sits where the smaller
+	# image ended - a stale backup header at the end of a larger card
+	# makes different kernels disagree about the layout and read the
+	# filesystems at the wrong offsets.
+	log "growing partition $part_num to the end of $disk"
+	echo ',+' | sfdisk --force --no-reread -N "$part_num" "$disk"
 
-# Tell the kernel about the new size without unmounting anything, then let udev
-# finish re-creating the /dev/disk/by-* symlinks it drops while doing so.
-partx -u "$disk" 2>/dev/null || partprobe "$disk" 2>/dev/null || true
-udevadm settle --timeout=30 2>/dev/null || true
+	# Tell the kernel about the new size without unmounting anything,
+	# then let udev finish re-creating the /dev/disk/by-* symlinks it
+	# drops while doing so.
+	partx -u "$disk" 2>/dev/null || partprobe "$disk" 2>/dev/null || true
+	udevadm settle --timeout=30 2>/dev/null || true
 
-# Confirmed live: partx -u/partprobe/udevadm settle reporting success here is
-# NOT proof the kernel's own block-device size for the CURRENTLY MOUNTED root
-# partition has actually caught up yet -- hit this exactly once, the hard way:
-# sfdisk had genuinely grown the partition table and /sys/class/block/.../size
-# read back correctly moments *after* boot, but resize2fs, called immediately
-# in this same script run, still saw the OLD small size and silently no-op'd
-# (exit 0, no error -- it just grows the filesystem to whatever size it
-# currently believes the partition is). The stamp file still got written,
-# which then permanently skipped every future boot's retry too. Rather than
-# trust the rescan step, poll the live sysfs size for up to ~10s and proceed
-# to resize2fs only once it actually matches what sfdisk just asked for (or
-# log a warning and continue anyway past the timeout -- growing is a
-# convenience, never a reason to fail the boot, same stance the .service's
-# own SuccessExitStatus=0 1 already takes for resize2fs itself).
-expected_part_sectors=$(( disk_sectors - part_start - 33 ))
-i=0
-while [ "$i" -lt 20 ]; do
-	cur_part_sectors=$(cat "/sys/class/block/$root_name/size" 2>/dev/null || echo 0)
-	[ "$cur_part_sectors" -ge "$expected_part_sectors" ] && break
-	i=$((i + 1))
-	sleep 0.5
-done
-if [ "$i" -ge 20 ]; then
-	log "WARNING: kernel still reports the old partition size after ~10s" \
-	    " of waiting ($cur_part_sectors/$expected_part_sectors sectors) --" \
-	    " resize2fs below may end up a no-op; a reboot will retry next time" \
-	    " since the stamp file is only written after a successful resize2fs"
+	# Confirmed live: partx -u/partprobe/udevadm settle reporting success
+	# here is NOT proof the kernel's own block-device size for the
+	# CURRENTLY MOUNTED root partition has actually caught up yet -- hit
+	# this exactly once, the hard way: sfdisk had genuinely grown the
+	# partition table and /sys/class/block/.../size read back correctly
+	# moments *after* boot, but resize2fs, called immediately in this
+	# same script run, still saw the OLD small size and silently no-op'd
+	# (exit 0, no error -- it just grows the filesystem to whatever size
+	# it currently believes the partition is). The stamp file still got
+	# written, which then permanently skipped every future boot's retry
+	# too. Rather than trust the rescan step, poll the live sysfs size
+	# for up to ~10s and proceed to resize2fs only once it actually
+	# matches what sfdisk just asked for (or log a warning and continue
+	# anyway past the timeout -- growing is a convenience, never a
+	# reason to fail the boot, same stance the .service's own
+	# SuccessExitStatus=0 1 already takes for resize2fs itself).
+	expected_part_sectors=$(( disk_sectors - part_start - 33 ))
+	i=0
+	while [ "$i" -lt 20 ]; do
+		cur_part_sectors=$(cat "/sys/class/block/$root_name/size" 2>/dev/null || echo 0)
+		[ "$cur_part_sectors" -ge "$expected_part_sectors" ] && break
+		i=$((i + 1))
+		sleep 0.5
+	done
+	if [ "$i" -ge 20 ]; then
+		log "WARNING: kernel still reports the old partition size after ~10s" \
+		    " of waiting ($cur_part_sectors/$expected_part_sectors sectors) --" \
+		    " resize2fs below may end up a no-op; a reboot will retry next time" \
+		    " since the stamp file is only written after a successful resize2fs"
+	fi
+else
+	expected_part_sectors="$part_sectors"
 fi
 
 log "growing the ext4 filesystem (online)"
@@ -109,9 +131,9 @@ resize2fs "$root_src"
 fs_blocks_after=$(dumpe2fs -h "$root_src" 2>/dev/null | awk -F: '/Block count/{gsub(/ /,"",$2); print $2}')
 if [ -n "$fs_blocks_after" ] && [ "$fs_blocks_after" -lt "$((expected_part_sectors / 8))" ]; then
 	log "WARNING: filesystem block count ($fs_blocks_after) still looks" \
-	    " far smaller than the grown partition -- NOT writing the stamp" \
-	    " file, so the next boot retries this instead of skipping it" \
-	    " permanently"
+	    " far smaller than the partition it should fill -- NOT writing" \
+	    " the stamp file, so the next boot retries this instead of" \
+	    " skipping it permanently"
 	exit 0
 fi
 
