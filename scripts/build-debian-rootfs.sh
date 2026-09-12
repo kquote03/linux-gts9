@@ -46,6 +46,16 @@
 #     -- that field exists to catch a *stale mirror*, not a *deliberately
 #     pinned* one.
 #
+# This pin is deliberately build-time-only, not something the shipped
+# image keeps. Reproducibility (this build, run again, always resolves
+# the same packages) and upgradability (a device someone actually uses
+# wants `apt upgrade` to mean something) are different goals that would
+# conflict if the same pin served both -- so right before this script's
+# own cleanup step, the shipped /etc/apt/sources.list gets switched to
+# the live Debian archive and the snapshot-specific apt.conf.d overrides
+# are removed outright. Every apt-get call in between, for the rest of
+# this script, still resolves against the frozen snapshot.
+#
 # ## Two-stage debootstrap + qemu-user emulation via proot (NOT chroot)
 #
 # Stage 1 (--foreign) unpacks .debs on the host, no target-arch execution
@@ -805,8 +815,8 @@ ln -sf /etc/systemd/system/x716b-serial-getty.service \
 	"$rootdir/etc/systemd/system/multi-user.target.wants/x716b-serial-getty.service"
 
 if [ "$desktop" = "kde" ]; then
-	echo "== desktop: minimal Wayland Plasma (kde-plasma-desktop, not" \
-	     " task-kde-desktop/kde-standard) =="
+	echo "== desktop: minimal Wayland Plasma, packages named explicitly" \
+	     " (no tasksel, no kde-plasma-desktop metapackage) =="
 	# A deliberately narrower target than an earlier attempt at this
 	# script's full tasksel selection (task-desktop + task-kde-desktop +
 	# task-laptop with Install-Recommends=true) -- confirmed live that
@@ -814,10 +824,21 @@ if [ "$desktop" = "kde" ]; then
 	# accessibility/orca, print-manager, Akonadi/PIM data for KMail/
 	# KOrganizer, ...) and took far too long to be worth it for what this
 	# device actually needs: a working, minimal Plasma session.
-	# kde-plasma-desktop is Debian's own minimal Plasma metapackage
-	# (Depends: kde-baseapps, plasma-desktop, plasma-workspace, udisks2,
-	# upower -- confirmed live via `apt-cache show`), a small fraction of
-	# kde-standard's closure.
+	#
+	# Rather than a metapackage (tasksel's task-kde-desktop, or even
+	# Debian's own minimal kde-plasma-desktop), this list spells out by
+	# name exactly what kde-plasma-desktop itself Depends on -- kde-
+	# baseapps, plasma-desktop, plasma-workspace, udisks2, upower
+	# (confirmed live via `apt-cache show kde-plasma-desktop`) -- plus
+	# konsole (not pulled in by any of those; confirmed live via `dpkg -l
+	# konsole` showing "un"/not-installed before this was added -- a
+	# minimal desktop with no terminal emulator at all is not actually
+	# usable). Installing the same names directly, instead of the
+	# metapackage that wraps them, resolves to the identical transitive
+	# closure either way (apt doesn't care which one asked) -- the point
+	# is this script's own install line is now the complete, legible
+	# source of truth for what's on this image, not a pointer to whatever
+	# kde-plasma-desktop happens to Depend on in the archive today.
 	#
 	# Wayland is the DEPENDS-level default, not something extra to ask
 	# for: plasma-workspace hard-Depends on kwin-wayland (confirmed live
@@ -912,7 +933,8 @@ if [ "$desktop" = "kde" ]; then
 	# live against the pinned snapshot the same way every other "not
 	# guessed ahead of time" package in this script is.
 	run_in_chroot apt-get install -y \
-		kde-plasma-desktop sddm sddm-theme-breeze \
+		kde-baseapps plasma-desktop plasma-workspace udisks2 upower \
+		konsole sddm sddm-theme-breeze \
 		mesa-vulkan-drivers libgl1-mesa-dri \
 		network-manager-tui bluedevil kde-config-tablet \
 		xserver-xorg-input-libinput plasma-keyboard \
@@ -950,6 +972,34 @@ echo "== lifting the systemd-tmpfiles diversion and running it for real" \
 rm -f "$rootdir/usr/bin/systemd-tmpfiles"
 run_in_chroot_once dpkg-divert --local --rename --remove /usr/bin/systemd-tmpfiles
 seed_tmpfiles
+
+echo "== switching the SHIPPED image to the live Debian archive (the" \
+     " snapshot pin was a build-time-only reproducibility mechanism) =="
+# Reproducibility and upgradability are different goals, deliberately
+# kept separate: every apt-get call ABOVE this line, for the whole rest
+# of this script, resolved against the fixed-timestamp snapshot (see the
+# header) so this build is reproducible run to run. But a device someone
+# actually uses wants the OPPOSITE property going forward -- the ability
+# to `apt update && apt upgrade` and get real fixes/new package versions,
+# not stay frozen at whatever was current when this image happened to be
+# built. So the shipped /etc/apt/sources.list points at the live archive
+# instead, written now, after every package this script itself installs
+# is already done.
+#
+# The whole apt.conf.d snapshot-pin file is removed outright here, not
+# just edited -- both of its knobs existed solely to support the
+# snapshot pin (Check-Valid-Until=false tolerates a deliberately "stale"
+# frozen Release file; Install-Recommends=false kept the build's own
+# package set from ballooning, confirmed live this was real and
+# necessary during earlier desktop-package work). Leaving either one
+# behind as a silent permanent policy on a system meant to otherwise
+# behave like a normal, upgradable Debian install would be a surprising,
+# undocumented behavior change for whoever actually uses this device --
+# removing the file restores completely standard Debian apt behavior.
+rm -f "$rootdir/etc/apt/apt.conf.d/99x716b-snapshot.conf"
+cat > "$rootdir/etc/apt/sources.list" <<EOF
+deb https://deb.debian.org/debian $suite main contrib non-free-firmware non-free
+EOF
 
 echo "== cleaning =="
 run_in_chroot apt-get clean
