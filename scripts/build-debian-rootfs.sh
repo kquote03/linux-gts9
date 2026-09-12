@@ -826,6 +826,64 @@ if [ "$desktop" = "kde" ]; then
 	# manager itself on Debian (confirmed live) -- network-manager is
 	# already in base_packages for the daemon/nmcli.
 	#
+	# xserver-xorg-input-libinput: confirmed live via `apt-cache depends
+	# sddm`/`xserver-xorg-core`, neither hard-Depends nor Recommends an
+	# actual input driver module -- the greeter's Xorg had no working
+	# touchscreen at all (only xserver-xorg-input-wacom for the S Pen,
+	# confirmed via `dpkg -l`; the touchscreen's own kernel input device,
+	# `fts1ba90a`, registers correctly -- `/proc/bus/input/devices`
+	# confirmed it has proper ABS/touch event bits -- it is purely an
+	# Xorg-side driver gap). This only affects the SDDM *greeter*: the
+	# real Plasma session, once logged in, is already Wayland (kwin-
+	# wayland is plasma-workspace's own hard Depends, confirmed above) and
+	# reads touch natively via libinput with no Xorg driver involved at
+	# all. Tried switching the greeter itself to Wayland too
+	# (DisplayServer=wayland in sddm.conf.d, which would make this
+	# package moot for the greeter) -- confirmed live that SDDM's own
+	# Wayland greeter support, marked "experimental" in its own example
+	# config, genuinely fails to start on this hardware
+	# (SDDM::Auth::HELPER_DISPLAYSERVER_ERROR, falling back to x11-user
+	# automatically) even though kwin_wayland itself runs fine standalone
+	# -- not pursued further per explicit user direction; X11-greeter +
+	# Wayland-session is the accepted middle ground.
+	#
+	# plasma-keyboard: already pulled in transitively by kde-plasma-
+	# desktop (confirmed live via `dpkg -l` before this was ever added
+	# explicitly) -- listed anyway so the dependency is intentional and
+	# documented, not incidental, matching the explicit ask. SDDM's own
+	# InputMethod=qtvirtualkeyboard is already the schema default
+	# (confirmed via `sddm --example-config`), so no extra sddm.conf.d
+	# override is needed for the greeter to try showing it -- this
+	# package is what makes that default actually have something to load.
+	#
+	# pipewire/pipewire-pulse/pipewire-alsa/wireplumber: confirmed live
+	# neither pipewire nor pulseaudio was installed at all -- base_packages
+	# above only ever had alsa-utils (raw ALSA CLI tools, no session/
+	# routing daemon). wireplumber is pipewire's session/policy manager
+	# (equivalent to what pulseaudio's own logic used to do) -- without
+	# it pipewire has no policy engine and most apps won't find a working
+	# audio sink. pipewire-pulse provides the PulseAudio-compatible socket
+	# most apps (including Electron/Chromium-based ones) still expect.
+	#
+	# kscreen: NOT pulled in by kde-plasma-desktop's own minimal Depends
+	# closure (confirmed live via `dpkg -l` -- only libkscreen-data, the
+	# plain library, was present) -- without it there is no "Display
+	# Configuration" page in System Settings at all, confirmed live (user
+	# report: "display settings are missing in kde"). This is also the
+	# *correct* way to set this device's display scale, confirmed live
+	# the hard way: forcing QT_SCALE_FACTOR/GDK_SCALE via environment.d
+	# for the real Wayland session conflicts with kwin_wayland's own
+	# native per-output Wayland scale protocol -- Qt renders widgets at
+	# the forced scale while the compositor reserves panel/dock screen
+	# space using its own (different) scale, which is what caused a
+	# live-confirmed clipped/cut-off taskbar. kscreen's own Display
+	# Configuration KCM sets the real Wayland-native per-output scale
+	# instead, which kwin_wayland and every client agree on through the
+	# protocol itself -- no mismatch. Per explicit user direction, no
+	# environment-variable-based scale forcing is shipped by this script
+	# at all (for either the greeter or the session) -- set it live via
+	# System Settings if and when you want it scaled.
+	#
 	# mesa-vulkan-drivers/libgl1-mesa-dri: real GPU-accelerated rendering
 	# (freedreno), not a software fallback -- confirm their exact names
 	# live against the pinned snapshot the same way every other "not
@@ -833,7 +891,10 @@ if [ "$desktop" = "kde" ]; then
 	run_in_chroot apt-get install -y \
 		kde-plasma-desktop sddm sddm-theme-breeze \
 		mesa-vulkan-drivers libgl1-mesa-dri \
-		network-manager-tui bluedevil kde-config-tablet
+		network-manager-tui bluedevil kde-config-tablet \
+		xserver-xorg-input-libinput plasma-keyboard \
+		pipewire pipewire-pulse pipewire-alsa wireplumber \
+		kscreen
 	run_in_chroot systemctl set-default graphical.target
 	run_in_chroot systemctl enable sddm.service
 fi
