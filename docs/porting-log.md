@@ -4392,3 +4392,45 @@ snapshot line -- root cause not identified (not reproduced by anything
 this session did deliberately), restored by hand to the correct pinned
 content. Worth watching for on a future boot, not chased further this
 session since it didn't affect the actual audio fix.
+
+**Session 14 addendum #5, same day -- decoupling build-time
+reproducibility from what the shipped image actually needs.** Two
+requests, both about the gap between "reproducible to build" and
+"pleasant to actually own":
+
+- The snapshot.debian.org pin (this session's whole reproducibility
+  story -- see above) is real and worth keeping for the *build*, but
+  shipping a frozen, `check-valid-until=no` archive pin permanently to
+  an end user's own device means `apt update && apt upgrade` silently
+  keeps re-resolving the same frozen 2026-09-01 snapshot forever --
+  exactly the opposite of what anyone actually using this tablet wants.
+  Fix: added a block right before the script's final `apt-get clean`,
+  after every package this script itself installs is already done,
+  that deletes `/etc/apt/apt.conf.d/99x716b-snapshot.conf` outright (not
+  edited -- both its knobs, `Check-Valid-Until=false` and `Install-
+  Recommends=false`, existed solely to support the pin) and rewrites
+  `/etc/apt/sources.list` to the live `deb.debian.org` archive. Build-
+  time reproducibility and shipped-image upgradability are different
+  goals that were accidentally sharing one file; they don't need to.
+- Separately, replaced the `kde-plasma-desktop` metapackage in the
+  desktop install line with its own Depends spelled out by name (`kde-
+  baseapps plasma-desktop plasma-workspace udisks2 upower`), plus added
+  `konsole` (confirmed live via `dpkg -l konsole`: not pulled in by
+  anything above -- a minimal desktop with no terminal emulator isn't
+  actually usable). Functionally identical closure either way -- apt
+  resolves the same packages whether asked for by the metapackage's
+  name or its own Depends list -- but now this script's own install
+  line is the complete, legible source of truth for what's on the image
+  instead of a pointer into whatever the archive's `kde-plasma-desktop`
+  happens to Depend on today.
+
+Both changes applied to the already-built `out/debian/rootfs` directly
+(installed `konsole`, removed the now-redundant `kde-plasma-desktop`
+package, rewrote `sources.list`, deleted the snapshot apt.conf.d file)
+rather than a full from-scratch rebuild, then repacked via `scripts/
+build-rootfs-image.sh` -- confirmed the installed-package count (1108)
+stayed in the same minimal-Plasma ballpark as before, not a regression
+back toward the ~1500-package tasksel bloat from earlier in this
+session. Real-hardware validation (reflash + boot + confirm `apt
+update`/upgrade and the desktop both still work) deferred to whenever
+the device is next rebooted to TWRP -- not yet done as of this entry.
