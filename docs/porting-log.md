@@ -4431,6 +4431,50 @@ rather than a full from-scratch rebuild, then repacked via `scripts/
 build-rootfs-image.sh` -- confirmed the installed-package count (1108)
 stayed in the same minimal-Plasma ballpark as before, not a regression
 back toward the ~1500-package tasksel bloat from earlier in this
-session. Real-hardware validation (reflash + boot + confirm `apt
-update`/upgrade and the desktop both still work) deferred to whenever
-the device is next rebooted to TWRP -- not yet done as of this entry.
+session.
+
+**Session 14 addendum #6, real-hardware validation of addendum #5,
+same day -- caught a bug in the live-patch, not the script.** Reflashed
+the repacked image via `twrp-sd`, rebooted to system, reached it over
+the USB gadget debug address (`172.16.42.1`, not `x716b.local` --
+mDNS isn't part of this device's SSH story) with the root password
+(`chpasswd` sets it to the build's `$username`, `x716b` by default).
+Confirmed: `/etc/apt/sources.list` is the live `deb.debian.org` archive,
+`apt.conf.d/` has no snapshot file left, `konsole` is installed and
+registered as `/etc/alternatives/x-terminal-emulator`,
+`kde-plasma-desktop` is gone, SDDM and `graphical.target` are both
+active, and the rootfs had already grown to the real 235 GB card
+(`gts9wifi-grow-rootfs`, both its fixes from earlier this session,
+working correctly again on a fresh reflash).
+
+Caught one real bug doing this, not in the script but in how the
+previous addendum patched the already-built `out/debian/rootfs` by
+hand: removing `kde-plasma-desktop` without re-running an `apt-get
+install` of its former Depends by name left `kde-baseapps`,
+`plasma-desktop`, `plasma-workspace`, `udisks2`, and `upower` all still
+marked **auto**-installed (`apt-mark showmanual` confirmed it) --
+nothing left depending on them once the metapackage was gone, so
+`apt-get autoremove --dry-run` showed it would delete the entire
+desktop, confirmed live with a full "Remv ..." list down to
+`plasma-workspace-data`. A genuinely fresh run of the script itself
+does NOT have this bug -- `apt-get install -y <names...>` always marks
+every explicitly named package manual, regardless of whether it asked
+for a metapackage or the metapackage's own Depends -- this was purely
+an artifact of patching an already-built tree by removing one package
+without reasserting the others. Fixed with `apt-mark manual
+kde-baseapps plasma-desktop plasma-workspace udisks2 upower` against
+both the live device and `out/debian/rootfs` (then repacked the image
+again); `apt-get autoremove --dry-run` came back clean (0 to remove)
+on both afterward.
+
+Three pre-existing, unrelated failed units observed via `systemctl
+--failed` (confirmed via their journals to be the same known gaps this
+log already documents, not caused by this session's apt/package
+changes): `pd-mapper.service` ("no pd maps available" -- the
+vendor-firmware-dump PDR `.jsn` gap the original Debian-target plan
+already flagged as pre-existing and not this task's job to fix),
+`gts9wifi-wait-sensor-proxy.service` (cascades from pd-mapper being
+down), and `x716b-serial-getty.service` (ttyGS0 not present this boot
+-- USB gadget console tty, host-side-dependent). Per the deleted task
+item for this session ("no need to verify apt update/upgrade against
+the real mirror"), that specific check was intentionally not run.
