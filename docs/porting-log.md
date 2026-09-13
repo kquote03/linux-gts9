@@ -4478,3 +4478,106 @@ down), and `x716b-serial-getty.service` (ttyGS0 not present this boot
 -- USB gadget console tty, host-side-dependent). Per the deleted task
 item for this session ("no need to verify apt update/upgrade against
 the real mirror"), that specific check was intentionally not run.
+
+## Session 15 — 2026-09-13 — Switching back to Fedora as the base for continued feature work
+
+User decision: Fedora (not Debian) is the base for future feature
+implementation going forward. Flashing it back turned into its own
+real investigation -- the existing `out/fedora/` GNOME build was not
+in the state its own artifacts implied, and three separate real bugs
+were found and fixed before it was trustworthy to boot.
+
+**Bug 1 -- the unpacked `out/fedora/rootfs-gnome` directory had drifted
+from its own tarball.** `pd-mapper`/`hexagonrpcd`/`ssccli` (the whole
+sensor/ADSP stack) were completely absent from the live directory on
+disk -- no binaries, no unit files, `systemctl is-enabled` reporting
+`not-found` -- despite `docs/porting-log.md`'s own Session 9 entry
+recording a real-hardware-confirmed GNOME boot with that exact stack
+present and `pd-mapper.service` merely failing (missing firmware, not
+missing entirely). Checked the actual deployable artifact instead of
+the drifted directory: `tar tzf out/fedora/x716b-fedora-44-gnome-
+rootfs.tar.gz` DOES have `./usr/bin/{pd-mapper,hexagonrpcd,ssccli}`.
+The unpacked directory must have been modified or partially cleaned
+sometime after the tarball was made and before this session. Fix:
+don't trust a possibly-stale unpacked directory -- extracted the
+tarball fresh into `out/fedora/rootfs-gnome-fresh` (inside the same
+`run_in_ns`-mapped namespace `scripts/build-rootfs-image.sh` already
+uses, so real ownership round-trips correctly) and worked from that
+instead. Confirmed clean: all three binaries present.
+
+**Bug 2 -- most of `build-fedora-rootfs.sh`'s own enable loop had
+silently failed at build time.** Auditing every unit that script's
+enable loop (`hexagonrpcd-adsp-rootpd`, `pd-mapper`, `gts9wifi-wait-
+sensor-proxy`, `gts9wifi-bt-provision`, `gts9wifi-panel-coldboot-
+recover`, `gts9wifi-grow-rootfs`, `gts9wifi-usb-net`, `gts9wifi-wifi-
+recover`, `gts9wifi-sensor-registry-perms`, `gts9wifi-x11-dir-fix.timer`,
+`gts9wifi-chronyd`, three `.mount` units) intends to enable, on the
+*drifted* directory, showed nearly all of them `disabled` and two
+`not-found` -- consistent with this project's own documented,
+accepted risk that qemu-user emulation is unreliable for systemd-heavy
+operations under `proot`/`run_in_ns chroot`, with each failure just
+swallowed by the loop's own `|| echo WARN` (a build-log line, easy to
+miss, apparently missed here). Re-audited the same list against the
+**fresh** extraction (pre-overlay-refresh) and found it fully correct
+-- every unit properly enabled. This confirms the fresh extraction (and
+its tarball) is the genuinely good build; whatever caused the on-disk
+`rootfs-gnome` directory's regression happened independently of the
+original build itself. Applied this session's shared-overlay fixes on
+top anyway (`cp -a rootfs/overlay-common/.` + `overlay-systemd/.`,
+matching `build-fedora-rootfs.sh`'s own application method exactly):
+picked up the `gts9wifi-grow-rootfs` race-condition fixes and the
+`gts9wifi-x11-dir-fix` restart-storm fix (Session 14, both apply here
+too -- confirmed live the storm bug's `.path` unit and its dangling
+`multi-user.target.wants` symlink were both still present pre-fix, now
+removed and replaced with the correct `.timer` enablement).
+
+**Bug 3 -- a real, previously-uncaught `/etc/fstab` label case
+mismatch.** `scripts/build-fedora-rootfs.sh` writes `LABEL=x716b-root`
+(lowercase) into the shipped fstab, but every actual image this
+project builds is labelled `X716B_ROOT` (uppercase) --
+`scripts/build-rootfs-image.sh`'s own `mke2fs -L X716B_ROOT`, matching
+every other distro's convention. ext4 labels are case-sensitive, so
+`systemd-remount-fs.service` (which re-applies fstab's `noatime,errors=
+remount-ro` options via its own label lookup, independent of how the
+initramfs found and mounted root in the first place) failed outright
+on every boot: `mount: /: can't find LABEL=x716b-root`. Root stayed
+mounted fine regardless (the initramfs's own `findfs LABEL=X716B_ROOT`
+already got that right, confirmed since `docs/porting-log.md`'s Session
+9 GNOME boot never even flagged this), but the fstab options were
+silently never actually applied. Confirmed live: fixed the case in
+`/etc/fstab`, `systemctl restart systemd-remount-fs.service` came back
+`active`, `mount | grep ' / '` showed `rw,noatime,errors=remount-ro`
+correctly applied. Fixed at the source (`build-fedora-rootfs.sh`'s
+heredoc) and in both `out/fedora/rootfs`/`rootfs-gnome` for consistency
+-- this bug has silently existed in every Fedora build this script has
+ever produced.
+
+**Full real-hardware validation after all three fixes**, same protocol
+as every other distro switch this project has done: reflashed via
+`twrp-sd`, rebooted, reached the tablet over the USB gadget address
+(`172.16.42.1`) — this time as the regular `x716b` user (Fedora's
+`sshd` defaults to `PermitRootLogin prohibit-password`, unlike Debian's
+explicit `PermitRootLogin yes`; the same build-set password works for
+the non-root account). Confirmed: `gts9wifi-grow-rootfs` grew the
+filesystem to the real 235 GB card correctly; `graphical.target` and
+`gdm.service` both reached `active`; WiFi associated to a real AP
+(`wlp1s0`, `Songo-5GHz`, real signal/channel info); Bluetooth
+controller up and correctly named "Samsung Galaxy Tab S9 5G"; the
+audio card registered correctly at the kernel level
+(`/proc/asound/cards`: `sm8550 - Samsung-Galaxy-Tab-S9-5G`, real PCM
+device nodes under `/dev/snd`) -- `aplay -l`/`wpctl status` showing
+nothing is expected and not a bug: nobody was logged into the GDM
+greeter's desktop session during this remote-SSH-only validation pass
+(only a plain SSH login session existed, no PipeWire/WirePlumber
+`--user` instance had started), so PipeWire's own device enumeration
+was never exercised -- the kernel-level card registration is the part
+this remote check can actually confirm. `systemctl --failed` showed
+`pd-mapper.service` and `gts9wifi-wait-sensor-proxy.service` (both
+pre-existing, documented: missing vendor PDR `.jsn` firmware files) and
+`logrotate.service` (`/var/log/sssd/*.log` glob against an always-empty
+directory since this device never runs `sssd` -- a stock Fedora
+packaging quirk, harmless, not investigated further as out of scope for
+this session).
+
+Fedora is now the confirmed-working, real-hardware-validated base this
+project continues feature work from, per explicit user direction.

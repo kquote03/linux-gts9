@@ -518,7 +518,7 @@ echo "== base system configuration =="
 # ext4 root, no separate /boot -- the kernel/DTB/initramfs live in the
 # Android boot chain, not on this filesystem (see this script's header).
 cat > "$rootdir/etc/fstab" <<'EOF'
-LABEL=x716b-root	/	ext4	defaults,noatime,errors=remount-ro	0 1
+LABEL=X716B_ROOT	/	ext4	defaults,noatime,errors=remount-ro	0 1
 EOF
 echo "x716b-fedora" > "$rootdir/etc/hostname"
 # SELINUX=disabled, not "permissive": kernel/config/config-x716.fragment
