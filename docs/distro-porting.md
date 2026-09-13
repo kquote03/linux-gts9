@@ -131,18 +131,38 @@ See `nixos/README.md`.
 
 ## Debian — the reference apt/dpkg port
 
-`scripts/build-debian-rootfs.sh` builds a Debian **unstable (sid)**
-aarch64 rootfs with a full KDE Plasma 6 desktop (`task-kde-desktop`,
-SDDM, GPU-accelerated Wayland). Debian is systemd + merged-`/usr` by sid,
-same as Fedora, so step 2's overlay application needs **no translation at
-all** — `cp -a rootfs/overlay-common/.` and `cp -a rootfs/overlay-
-systemd/.` verbatim, exactly like the Fedora builder.
+**Status: complete, real-hardware-validated** (feature parity with the
+Fedora/NixOS targets — WiFi/BT/audio/S Pen/charging/touch, minimal
+Plasma 6 Wayland desktop with SDDM, USB debug console, root-partition
+autogrow — every fix this log documents was re-verified live on this
+build too; see the Session 14 addenda in `docs/porting-log.md`).
 
-**Reproducibility**: both debootstrap and every `apt-get install` point
-at a fixed-timestamp `snapshot.debian.org` URL (`$DEBIAN_SNAPSHOT`), not
-the live rolling archive — re-running the script resolves the identical
-package set every time, a *stronger* guarantee than the Fedora builder's
-own (honestly non-pinned) live dnf mirror.
+`scripts/build-debian-rootfs.sh` builds a Debian **unstable (sid)**
+aarch64 rootfs with a minimal Plasma 6 Wayland desktop: the packages are
+named explicitly (`kde-baseapps plasma-desktop plasma-workspace udisks2
+upower konsole`, plus `sddm`/GPU/input/audio/network/bluetooth/tablet
+packages), not pulled in via `task-kde-desktop`/`kde-standard` (confirmed
+live that pulls ~1500 packages, far more than this device needs) or even
+Debian's own `kde-plasma-desktop` metapackage (same resulting closure
+either way, but naming the packages directly keeps the install line
+itself the legible source of truth instead of a pointer into whatever
+the metapackage resolves to today). Debian is systemd + merged-`/usr` by
+sid, same as Fedora, so step 2's overlay application needs **no
+translation at all** — `cp -a rootfs/overlay-common/.` and `cp -a
+rootfs/overlay-systemd/.` verbatim, exactly like the Fedora builder.
+
+**Reproducibility, split from upgradability**: both debootstrap and every
+`apt-get install` **during the build** point at a fixed-timestamp
+`snapshot.debian.org` URL (`$DEBIAN_SNAPSHOT`), not the live rolling
+archive — re-running the script resolves the identical package set every
+time, a *stronger* guarantee than the Fedora builder's own (honestly
+non-pinned) live dnf mirror. But that pin is a build-time-only mechanism:
+right before the final `apt-get clean`, the script rewrites the
+**shipped** image's `/etc/apt/sources.list` to the live `deb.debian.org`
+archive and deletes the snapshot-only `apt.conf.d` file (`Check-Valid-
+Until=false`/`Install-Recommends=false`, both pin-only knobs), so a real
+device running this image gets normal, upgradable `apt update`/`upgrade`
+behavior instead of staying frozen at the build's snapshot forever.
 
 What's genuinely new here, not just a copy of the Fedora/NixOS work:
 
