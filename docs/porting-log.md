@@ -4581,3 +4581,21 @@ this session).
 
 Fedora is now the confirmed-working, real-hardware-validated base this
 project continues feature work from, per explicit user direction.
+
+**Closing round: validated the fix itself, not just the live workaround.**
+The fstab confirmation above was against a live `sed` edit plus a manual
+`systemctl restart systemd-remount-fs.service` -- real, but not proof the
+*shipped image* (built from the corrected `build-fedora-rootfs.sh` heredoc)
+boots clean on its own. Repacked `out/fedora/rootfs-gnome` into a fresh
+image after the fix, reflashed via `twrp-sd`, and rebooted with zero manual
+intervention. Confirmed: `systemd-remount-fs.service` came up `active` on
+first boot this time (`mount | grep ' / '` showing `rw,noatime,errors=
+remount-ro` applied correctly, no live edit needed) -- the fix is correct at
+the source, not just patched around live. Re-confirmed everything else in
+the same pass: `gts9wifi-grow-rootfs` grew the filesystem to the real 235 GB
+card again, `graphical.target`/`gdm.service` both reached `active`, WiFi
+(`wlp1s0`) associated to a real AP, the Bluetooth controller was up, and
+`/proc/asound/cards` showed the `sm8550 - Samsung-Galaxy-Tab-S9-5G` card
+registered correctly. Only `pd-mapper.service` and `logrotate.service`
+remained in `systemctl --failed`, both the same pre-existing, documented,
+non-blocking gaps noted above.
