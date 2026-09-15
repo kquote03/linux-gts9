@@ -767,6 +767,67 @@ board-specific.
   an off-grid value fails outright. **measured** (see
   `docs/porting-log.md`'s Session 8 bisection).
 
+## Camera (Camera bring-up session) -- entirely unverified, no real hardware yet
+
+Unlike every other section in this file, nothing below is measured. Camera
+was previously out of scope entirely for this port (see `README.md` and
+`docs/porting-log.md`'s earlier "nothing here uses camera" notes); research
+established the risk profile has changed enough to attempt it, but no
+real-hardware test has happened yet. Full reasoning lives in
+`kernel/drivers/hi1337_gts9.c`'s own header comment; this section is the
+place to update once Phase 0 (real-hardware sensor ID / PHY-mode
+confirmation) actually happens.
+
+- **Devicetree topology (measured from this device's own stock downstream
+  source)**: `android_kernel_samsung_gts9/.../gts9_eur_openx_w00_r04.dts`
+  shows exactly one rear camera (autofocus, generic `qcom,cam-sensor` on
+  `csiphy-sd-index = 1`, CCI0, actuator+EEPROM on CCI1) and one front camera
+  (fixed-focus, same compatible on `csiphy-sd-index = 4`, CCI1) -- no
+  ultra-wide rear, no dual front, matching Samsung's published spec for the
+  non-Ultra Tab S9. This part is a real fact, not a guess.
+- **Sensor identity: HYPOTHESIS, not measured.** Qualcomm's camera stack
+  never encodes sensor model in devicetree -- both sensor nodes use the
+  fully generic `"qcom,cam-sensor"` compatible; identity is resolved at
+  runtime via an I2C chip-ID read. This port currently wires both cameras as
+  Hynix HI1337 (`kernel/drivers/hi1337_gts9.c`, forked from
+  `ubuntu-galaxy-tab-s9ultra`'s own hardware-validated driver for its
+  rear-main/front-main slots), on the strength of matching CSIPHY indices
+  (1 and 4) between this device's downstream tree and the Ultra's -- suggestive,
+  not conclusive. If real hardware identifies a different chip (the
+  downstream kernel's `cam_eeprom` directory also ships `hi847_otp.h`,
+  hinting HI847 isn't impossible either, though the Ultra's own AF-less
+  HI847 slot doesn't match this device's AF-equipped rear camera), the
+  driver/tables need replacing, not just tuning.
+- **CSI PHY link mode (D-PHY vs C-PHY): unconfirmed.** Wired here as plain
+  D-PHY (`clock-lanes`/`data-lanes`), matching the Ultra sibling's own real,
+  working config for the same reference-design family. Mainline CAMSS's
+  CSIPHY driver only implements D-PHY at all -- if real hardware turns out
+  to be C-PHY-wired, that camera is blocked on an in-review, unmerged
+  upstream patch series, not fixable by DT/driver changes here.
+- **GPIO/regulator wiring: borrowed by analogy, not measured.** Reset GPIOs
+  (70 rear, 117 front), front enable GPIO (17), the CCI1-master-1 pinctrl
+  pins (208/209), and both new PMIC rails
+  (`vreg_l4b_1p8`/`vreg_l1c_1p1` in `kernel/dts/sm8550-samsung-x716b.dts`)
+  are all copied from `ubuntu-galaxy-tab-s9uwifi`'s own DTS the same way
+  this file's other "unverified, borrowed by analogy" facts are (see the USB
+  Type-C stack entries above) -- with one specific added risk: this
+  device's own stock downstream DT names the rear/front `cam_vdig` rail
+  `pm_humu_l11`, which would collide with this board's own already-measured,
+  confirmed-working panel VDD rail (`vreg_l11b_1p2` -- see the display
+  entry above) if Samsung's numeric PMIC index mapped onto mainline's
+  die-letter+index convention the same way it does for `cam_vio`/`l4`. It
+  evidently doesn't (this board's panel is confirmed working on real
+  hardware at that exact rail), so camera VDIG was deliberately given a
+  different, unused rail (`vreg_l1c_1p1`, die `c`) instead of trusting the
+  downstream digit -- see that regulator's own DT comment for the full
+  reasoning. This is the single most likely thing to be wrong and worth
+  checking first if camera bring-up either fails to power on or regresses
+  the display.
+- **What's confirmed working**: the DT compiles cleanly (`dtc`, run locally
+  against the pinned mainline tree) and every phandle/label resolves --
+  syntactic correctness only, not proof anything on real silicon behaves as
+  wired.
+
 ## Open risks / unverified assumptions (carried into later phases)
 
 1. ~~Whether X716's ABL has the same DTB-append-to-kernel /

@@ -445,15 +445,27 @@ CONFIG_POWER_RESET_QCOM_PON=y
 # prior session. See docs/porting-log.md for the full debugging story.
 CONFIG_SECURITY_SELINUX=n
 
-# Explicitly NOT enabled here (see docs/hardware-facts.md non-goals):
-# camera, cellular modem remoteproc, hardware video decode (iris) --
-# gts9wifi-fedora's own reference doesn't ship these either (camera/
-# fingerprint confirmed absent from that project entirely; iris is
-# explicitly `❌` in their own README), so "same quality as the Wi-Fi
-# version" excludes them here too. GPU acceleration and audio DSP/
-# sensors, previously listed here as deferred, are no longer -- see the
-# Display/DRM block above and the ADSP/audio/sensors block above this
-# comment, both landed as part of the gts9wifi-fedora pivot.
+# Cellular modem remoteproc and hardware video decode (iris) remain
+# explicitly NOT enabled here (see docs/hardware-facts.md non-goals) --
+# gts9wifi-fedora's own reference doesn't ship these either, and cellular
+# is a permanent non-goal for this Wi-Fi-first port. Camera, previously
+# also listed here as out of scope, is not any more -- see the Camera
+# bring-up session entry in docs/porting-log.md and the new "Camera"
+# section in docs/hardware-facts.md.
+
+# Camera bring-up session: mainline CAMSS/CAMCC/CCI/flash-LED support for
+# this exact SoC is already turned on in config-mainline.aarch64
+# (CONFIG_VIDEO_QCOM_CAMSS, CONFIG_SM_CAMCC_8550, CONFIG_I2C_QCOM_CCI,
+# CONFIG_LEDS_QCOM_FLASH, all =m) -- only this board's own from-scratch
+# sensor/actuator drivers need adding here. Left as modules (=m), unlike
+# this fragment's boot-critical =y entries above: camera hardware loads
+# from a reachable rootfs post-boot, there's no chicken-and-egg problem
+# forcing it built-in the way there is for e.g. the TLMM pinctrl driver.
+# UNVERIFIED pending real hardware -- see kernel/drivers/hi1337_gts9.c's
+# own header and docs/hardware-facts.md's Camera section for exactly what
+# is and isn't confirmed yet.
+CONFIG_VIDEO_HI1337_GTS9=m
+CONFIG_VIDEO_DW9808_VCM=m
 
 # kernel/config/config-mainline.aarch64's new comprehensive base (vendored
 # from gts9wifi-fedora) defaults to full CONFIG_DEBUG_INFO=y (DWARF),

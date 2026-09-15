@@ -4599,3 +4599,92 @@ card again, `graphical.target`/`gdm.service` both reached `active`, WiFi
 registered correctly. Only `pd-mapper.service` and `logrotate.service`
 remained in `systemctl --failed`, both the same pre-existing, documented,
 non-blocking gaps noted above.
+
+## Session 16 — 2026-09-15 — Camera bring-up (front + back, targeting libcamera): devicetree + driver scaffolding, no real hardware yet
+
+Camera was previously ruled out of scope for this port (see the earlier
+"nothing here uses camera" notes above) on the assumption SM8550's ISP
+generation might be fundamentally unsupported upstream. Re-checked this
+session and found that's no longer true: mainline's
+`drivers/media/platform/qcom/camss` already has `qcom,sm8550-camss` fully
+landed (Titan-780-generation CSID/VFE code, `camcc-sm8550.c`), validated by
+Qualcomm's own reference boards (`sm8550-qrd.dts`), with
+`CONFIG_VIDEO_QCOM_CAMSS`/`CONFIG_SM_CAMCC_8550`/`CONFIG_I2C_QCOM_CCI`/
+`CONFIG_LEDS_QCOM_FLASH` already `=m` in this project's own
+`config-mainline.aarch64`. More importantly: `ubuntu-galaxy-tab-s9ultra/`
+(vendored in this same repo, SM-X910 Ultra, same SM8550 "gts9"
+reference-design family) already has a real, hardware-validated 4-camera
+libcamera + PipeWire pipeline -- the best possible template for this work.
+
+This device's own stock downstream devicetree
+(`android_kernel_samsung_gts9/.../gts9_eur_openx_w00_r04.dts`) shows exactly
+one rear camera (autofocus, `csiphy-sd-index = 1`, CCI0) and one front
+camera (fixed-focus, `csiphy-sd-index = 4`, CCI1) -- matching Samsung's
+published non-Ultra Tab S9 spec, and matching the *same* CSIPHY indices the
+Ultra sibling uses for its own real, working rear-main/front-main HI1337
+sensors. Qualcomm's camera stack never encodes sensor model in devicetree
+(both this device's sensor nodes use the generic `"qcom,cam-sensor"`
+compatible; identity is resolved at runtime via I2C chip-ID read), so which
+physical sensor this device actually has remains a real open question --
+this session wired both cameras as HI1337 on the strength of the matching
+CSIPHY indices, which is suggestive, not conclusive.
+
+**What landed this session** (all UNVERIFIED, no real hardware access this
+session -- see `docs/hardware-facts.md`'s new Camera section for the full
+caveat list):
+
+- `kernel/drivers/hi1337_gts9.c` + `hi1337_gts9_tables.h`: forked from the
+  Ultra sibling's own `hi1337_gts9u.c`/`hi1337_gts9u_tables.h` verbatim,
+  minus the front-ultrawide variant (no hardware for it on this device).
+  Register tables (global init + rear/front mode data) are reused as-is --
+  the global table is chip-specific Samsung GPL data, not device-specific,
+  but the mode tables were decoded from the *Ultra's* own sensor module
+  blobs, not this device's, so they're an explicit bet that X716B uses the
+  identical physical modules.
+- `kernel/drivers/dw9808_vcm.c`: copied verbatim from the Ultra sibling (a
+  plain, chip-generic VCM driver, no board-specific data) for the rear
+  camera's autofocus actuator.
+- `kernel/dts/sm8550-samsung-x716b.dts`: new `&camss`/`&cci0`/`&cci1` wiring,
+  two sensor nodes, one actuator node, one flash node, two new PMIC
+  regulators (`vreg_l4b_1p8` cam_vio, `vreg_l1c_1p1` cam_vdig), and a new
+  board-level CCI1-master-1 pinctrl state (`cci1_1_default`/`_sleep`,
+  GPIO208/209) that sm8550.dtsi's own `&cci1` node references but doesn't
+  provide -- caught by actually compiling the DT with `dtc` (see below), not
+  by inspection. One specific risk surfaced and deliberately avoided: this
+  device's downstream DT names the camera VDIG rail `pm_humu_l11`, which
+  would collide with this board's own already-measured, confirmed-working
+  panel VDD rail (`vreg_l11b_1p2`) if Samsung's numeric PMIC index mapped
+  onto mainline's die-letter+index convention the way it does for
+  `cam_vio`/`l4` -- it evidently doesn't, so camera VDIG was deliberately
+  routed to an unused rail (`vreg_l1c_1p1`, die `c`) instead of trusting the
+  downstream digit and risking a repeat of the Session 7 LDO14 touch-AVDD
+  board-wide crash.
+- `kernel/config/config-x716.fragment`: `CONFIG_VIDEO_HI1337_GTS9=m`,
+  `CONFIG_VIDEO_DW9808_VCM=m` (left as modules, unlike this fragment's
+  boot-critical `=y` entries -- camera loads from a reachable rootfs
+  post-boot).
+- `scripts/build-mainline-kernel.sh`: idempotent install/Kconfig/Makefile
+  staging for both new drivers into `drivers/media/i2c/`, following the
+  exact pattern already used for this project's other from-scratch drivers.
+
+**Verification done this session**: preprocessed the full board DTS with
+`cpp` and compiled it with `dtc` (both available locally via the Nix
+store) against the pinned mainline tree -- caught the missing
+`cci1_1_default`/`cci1_1_sleep` pinctrl labels as a hard error on the first
+pass, fixed, then confirmed a clean compile with zero errors (only
+pre-existing warnings unrelated to this change) and manually inspected the
+decompiled output to confirm `&camss`, both CCI buses, both sensor nodes,
+the actuator, and the flash LED controller all end up `status = "okay"`
+with every phandle resolved. This proves the devicetree is *syntactically*
+correct and self-consistent -- it proves nothing about real silicon.
+
+**Not done this session, deliberately** (per explicit user direction after
+being asked how to sequence Phase 0's real-hardware requirement): the
+libcamera/PipeWire/v4l2-relayd userspace packaging (Phase 3 of the plan)
+was not started, since it depends on Phase 0 confirming sensor identity and
+CSI PHY mode first, and doing that packaging work against an unconfirmed
+hypothesis would be premature. Next real step is real-hardware bring-up:
+read both sensors' chip-ID registers, confirm C-PHY vs D-PHY (mainline
+CAMSS's CSIPHY driver only implements D-PHY; a C-PHY sensor would be
+blocked on an in-review, unmerged upstream series), and confirm the GPIO/
+regulator wiring above -- see `docs/hardware-facts.md`'s Camera section.

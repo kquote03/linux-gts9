@@ -43,7 +43,7 @@ device.
 | Sensors (SSC: accelerometer, ambient light, etc.) | ⚠️ ADSP boots and the HexagonFS registry path is fixed, but the SSC QMI service itself doesn't publish (a real, likely upstream `hexagonrpcd` gap — see `docs/porting-log.md`) |
 | Suspend (s2idle) | ✅ |
 | GNOME desktop (Wayland, `gdm`) | ✅ real login screen confirmed on the physical panel |
-| Camera | ❌ no drivers (gts9wifi-fedora's own reference doesn't have this either) |
+| Camera | ⚠️ devicetree + forked HI1337/DW9808 drivers wired (rear AF + front FF, targeting libcamera), not yet flashed/tested on real hardware — sensor identity and CSI PHY mode are unverified hypotheses, see `docs/hardware-facts.md`'s Camera section |
 | Fingerprint | ❌ not present on the reference project this was ported from |
 | Hardware video decode (iris) | ❌ not sourced |
 | `/vendor` super partition (erofs) | ❌ needs a `make-dynpart-mappings` port neither project has done |

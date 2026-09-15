@@ -377,6 +377,56 @@ grep -q 'wacom-wez01-x716.o' "$ts_dir/Makefile" || \
 	printf 'obj-$(CONFIG_TOUCHSCREEN_WACOM_WEZ01_X716)\t+= wacom-wez01-x716.o\n' \
 		>> "$ts_dir/Makefile"
 
+echo "== installing camera sensor/actuator drivers into the kernel tree =="
+# HI1337 rear/front sensor + DW9808 rear-focus actuator (Camera bring-up
+# session): forked from ubuntu-galaxy-tab-s9ultra's own from-scratch
+# drivers for the same SM8550 "gts9" reference-design family -- see
+# kernel/drivers/hi1337_gts9.c's own header for the UNVERIFIED, pending-
+# real-hardware assumption this whole camera port currently rests on
+# (that X716B's rear-main/front-main modules are the identical HI1337
+# parts the Ultra uses, on the same CSIPHY indices). Same idempotent
+# install/Kconfig/Makefile staging pattern as the other from-scratch
+# drivers above; both land in drivers/media/i2c like any other mainline
+# sensor/lens driver, not in the board-driver directories above.
+i2c_media_dir=$kdir/drivers/media/i2c
+install -m 0644 "$drv/hi1337_gts9.c" "$i2c_media_dir/hi1337_gts9.c"
+install -m 0644 "$drv/hi1337_gts9_tables.h" "$i2c_media_dir/hi1337_gts9_tables.h"
+if ! grep -q 'VIDEO_HI1337_GTS9' "$i2c_media_dir/Kconfig"; then
+	sed -i '/^endif # VIDEO_DEV$/i \
+config VIDEO_HI1337_GTS9\
+\ttristate "Hynix HI1337 sensor support (Galaxy Tab S9 5G)"\
+\tdepends on I2C && VIDEO_DEV\
+\tselect MEDIA_CONTROLLER\
+\tselect V4L2_FWNODE\
+\tselect VIDEO_V4L2_SUBDEV_API\
+\thelp\
+\t  Hynix HI1337 rear-main/front-main camera sensor as fitted to\
+\t  the Galaxy Tab S9 5G (SM-X716B).\
+' "$i2c_media_dir/Kconfig"
+fi
+grep -q 'hi1337_gts9.o' "$i2c_media_dir/Makefile" || \
+	printf 'obj-$(CONFIG_VIDEO_HI1337_GTS9)\t+= hi1337_gts9.o\n' \
+		>> "$i2c_media_dir/Makefile"
+
+install -m 0644 "$drv/dw9808_vcm.c" "$i2c_media_dir/dw9808_vcm.c"
+if ! grep -q 'VIDEO_DW9808_VCM' "$i2c_media_dir/Kconfig"; then
+	sed -i '/^endif # VIDEO_DEV$/i \
+config VIDEO_DW9808_VCM\
+\ttristate "DW9808 lens voice coil support"\
+\tdepends on I2C && VIDEO_DEV\
+\tselect MEDIA_CONTROLLER\
+\tselect VIDEO_V4L2_SUBDEV_API\
+\thelp\
+\t  This is a driver for the DW9808 camera lens voice coil.\
+\t  DW9808 is a 10 bit DAC with 100mA output current sink,\
+\t  used as the rear-camera autofocus actuator on the Galaxy\
+\t  Tab S9 family.\
+' "$i2c_media_dir/Kconfig"
+fi
+grep -q 'dw9808_vcm.o' "$i2c_media_dir/Makefile" || \
+	printf 'obj-$(CONFIG_VIDEO_DW9808_VCM)\t+= dw9808_vcm.o\n' \
+		>> "$i2c_media_dir/Makefile"
+
 mkdir -p "$outdir"
 
 echo "== defconfig =="
