@@ -504,6 +504,9 @@ make -C "$kdir" "${make_args[@]}" INSTALL_MOD_PATH="$modules_out" modules_instal
 echo "== running depmod =="
 depmod -b "$modules_out" "$kernel_release"
 
+echo "== verifying camera Kconfig/module/devicetree wiring survived the build =="
+python3 "$repo_root/scripts/verify-camera-config.py" --kernel-out "$outdir"
+
 image=$outdir/arch/arm64/boot/Image
 dtb=$outdir/arch/arm64/boot/dts/qcom/$board_dtb
 moddir=$modules_out/lib/modules/$kernel_release
