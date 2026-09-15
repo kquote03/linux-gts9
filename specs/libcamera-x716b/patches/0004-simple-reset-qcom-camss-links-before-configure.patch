@@ -9,18 +9,29 @@ The simple pipeline already serializes cameras that share pads. Reset all
 mutable CAMSS links before enabling the selected path so switching cameras
 also works across independent PipeWire clients.
 
+X716B camera bring-up session: at the exact pinned commit
+(62d4bfc450798cbd57722fa349a245b93b11d1cd), CameraSensor::entity() is
+`virtual const MediaEntity *entity() const`, so ->device() resolves to
+MediaDevice's const overload and calling the non-const disableLinks() on it
+is a hard C++ error (discards qualifiers), not just a warning -Werror could
+be blamed for -- confirmed by a real build failure on this project's own
+Fedora rootfs build. A const_cast is needed to route around the const
+accessor to the same live, mutable MediaDevice the pipeline handler already
+holds non-const references to elsewhere (see locateSensors()).
+
 --- a/src/libcamera/pipeline/simple/simple.cpp
 +++ b/src/libcamera/pipeline/simple/simple.cpp
-@@ -764,6 +764,16 @@ int SimpleCameraData::setupLinks()
+@@ -764,6 +764,17 @@ int SimpleCameraData::setupLinks()
  {
  	int ret;
- 
+
 +	/* Qualcomm CAMSS sensors share receiver sink pads. Camera enumeration
 +	 * leaves the final sensor path enabled, which can make the first real
 +	 * configure fail with EBUSY. Cameras sharing those pads are serialized
 +	 * by this pipeline handler, so clear the graph before selecting one. */
 +	if (sensor_->entity()->device()->driver() == "qcom-camss") {
-+		ret = sensor_->entity()->device()->disableLinks();
++		ret = const_cast<MediaDevice *>(sensor_->entity()->device())
++			      ->disableLinks();
 +		if (ret < 0)
 +			return ret;
 +	}
