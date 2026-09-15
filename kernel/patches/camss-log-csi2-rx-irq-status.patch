@@ -1,0 +1,23 @@
+--- a/drivers/media/platform/qcom/camss/camss-csid-gen3.c
++++ b/drivers/media/platform/qcom/camss/camss-csid-gen3.c
+@@ -270,6 +270,20 @@
+ 	val = readl(csid->base + CSID_CSI2_RX_IRQ_STATUS);
+ 	writel(val, csid->base + CSID_CSI2_RX_IRQ_CLEAR);
+ 
++	/*
++	 * Camera bring-up session: this status register carries the CSI-2
++	 * receiver's own physical/protocol-layer error bits (lane sync loss,
++	 * CRC, etc.) but was read and cleared without ever being surfaced --
++	 * real hardware bring-up for the Galaxy Tab S9 5G (X716B) hit a rear
++	 * camera that identifies correctly over I2C/CCI and completes its
++	 * media-graph link, but then streams zero frames with no visible
++	 * error anywhere, and this was the one register in the whole CSID/
++	 * CSIPHY/VFE path already being read that could explain why, if only
++	 * it were logged. See docs/hardware-facts.md's Camera section.
++	 */
++	if (val)
++		dev_dbg_ratelimited(csid->camss->dev, "CSI2 Rx IRQ status: 0x%x\n", val);
++
+ 	buf_done_val = readl(csid->base + CSID_BUF_DONE_IRQ_STATUS);
+ 	writel(buf_done_val, csid->base + CSID_BUF_DONE_IRQ_CLEAR);
+ 

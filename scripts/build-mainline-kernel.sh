@@ -187,6 +187,16 @@ apply_unless 'consume_retained_sink_dfp' \
 apply_unless 'ath11k_mac_skip_legacy_wmm_params' \
 	drivers/net/wireless/ath/ath11k/mac.c ath11k-defer-wmm-params-until-vdev-started.patch
 
+# Camera bring-up session (real-hardware follow-up): mainline CAMSS reads
+# and clears the CSI-2 receiver's own physical/protocol-layer error status
+# register on every IRQ but never logs it -- the one register in the whole
+# CSID/CSIPHY/VFE path already being read that could explain why the rear
+# camera (confirmed correctly identified over I2C/CCI, media-graph link
+# confirmed complete) streams zero frames with no other visible error. See
+# docs/hardware-facts.md's Camera section and this patch's own header.
+apply_unless 'CSI2 Rx IRQ status' \
+	drivers/media/platform/qcom/camss/camss-csid-gen3.c camss-log-csi2-rx-irq-status.patch
+
 # Kbuild's LLVM=1 points HOSTCC/HOSTCXX at bare clang-unwrapped even when an
 # environment-exported override is present -- only a command-line-supplied
 # HOSTCC/HOSTCXX takes effect. Same is true of KCFLAGS (needed for

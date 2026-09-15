@@ -11,7 +11,20 @@ Description=Galaxy Tab S9 5G (X716B) V4L2 camera relays
 After=systemd-modules-load.service user@1000.service
 Requires=user@1000.service
 ConditionPathExists=/dev/video20
-StartLimitIntervalSec=0
+# Camera bring-up session (real-hardware follow-up): StartLimitIntervalSec=0
+# disabled systemd's own restart-rate-limiting entirely, which turned a
+# separate, still-open bug (the rear camera currently delivers zero frames)
+# into a real 5.4GB wireplumber OOM kill on real hardware -- every 2-second
+# restart re-drives the PipeWire libcamera SPA plugin's buffer alloc/
+# teardown path (which runs *inside* wireplumber's own process, since
+# WirePlumber dlopen()s this plugin directly) hundreds of times per hour
+# with no backoff, compounding whatever per-cycle leak exists into an OOM.
+# Cap it: 5 restarts per 60s, then stop and surface a failed unit instead
+# of silently hammering the same broken path forever. This is a real fix
+# regardless of whether the underlying leak itself also gets patched --
+# any future camera-stack failure mode would otherwise do the same thing.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
