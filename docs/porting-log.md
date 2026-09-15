@@ -4688,3 +4688,101 @@ read both sensors' chip-ID registers, confirm C-PHY vs D-PHY (mainline
 CAMSS's CSIPHY driver only implements D-PHY; a C-PHY sensor would be
 blocked on an in-review, unmerged upstream series), and confirm the GPIO/
 regulator wiring above -- see `docs/hardware-facts.md`'s Camera section.
+
+## Session 17 — 2026-09-15 — Camera bring-up, continued: real build verification, Fedora packaging, and the first real-hardware flash
+
+Picked up exactly where Session 16 left off (devicetree + drivers written
+but never actually compiled or run). This session ran the whole thing for
+real: local build verification, Fedora userspace packaging, and -- with
+the device confirmed available and the user's explicit go-ahead at each
+step -- an actual flash and real-hardware bring-up attempt.
+
+**Local build verification (no device needed).** Ran
+`scripts/build-mainline-kernel.sh` for real for the first time against the
+camera changes: it built clean, zero warnings, on the very first try.
+Added `scripts/verify-camera-config.py` (+ test sidecar) as a permanent
+build-time gate, mirroring `verify-wifi-firmware.py`'s existing convention.
+Also added the missing piece from Session 16's plan: `v4l2loopback` built
+out-of-tree against this exact kernel and signed with its own key (needed
+for the relay layer) -- found along the way that this dev machine's
+`kmod` lacks libcrypto, so `modinfo -F signer` (the verification approach
+copied from the Ultra sibling's own script) false-negatives on every
+signed module here, in-tree ones included; switched to checking for the
+kernel's own "~Module signature appended~" trailer string instead, which
+needs no crypto library to read.
+
+**Fedora userspace packaging.** Ported and wired in the Ultra sibling's
+libcamera/PipeWire/v4l2-relayd stack for Fedora
+(`specs/libcamera-x716b/`, `specs/pipewire-x716b/`, `specs/v4l2-relayd-x716b/`,
+`specs/v4l2loopback-x716b/`; runtime integration under
+`rootfs/overlay-common/`/`rootfs/overlay-systemd/`). Real end-to-end runs
+of `scripts/build-fedora-rootfs.sh` (GTS9_DESKTOP=gnome) found and fixed
+two genuine bugs no amount of static review would have caught:
+
+- A real C++ compile error in the ported "reset qcom-camss links before
+  configure" libcamera patch: at the exact pinned commit,
+  `CameraSensor::entity()` returns `const MediaEntity *`, so the patch's
+  call to the non-const `MediaDevice::disableLinks()` through it doesn't
+  compile (discards qualifiers, not just a warning). Fixed with a
+  `const_cast`, verified by recompiling just the affected object inside
+  the chroot before committing to a full rebuild.
+- `gts9-camera-relays.service` was being enabled before the device
+  overlay (which provides its unit file) got applied later in the same
+  script -- warned "unit not found" on the first real run. Moved the
+  `systemctl enable` call to after the overlay step.
+
+Also hit (and worked around with retries) several transient network
+failures actually running this repeatedly against real upstream
+mirrors/repos -- hardened all the source-fetch steps this session touched
+with `curl --retry`/a git-clone retry loop, since the alternative was
+re-running a 20+ minute build from scratch on every blip.
+
+**First real flash and hardware bring-up.** Device was available and the
+user confirmed proceeding at each step per `docs/boot-strategy.md`'s
+pre-flash checklist (fresh nandroid backup of boot/init_boot/vendor_boot/
+dtbo taken via `adb exec-out dd`, pulled and hash-verified, recorded in
+`docs/hardware-facts.md`, superseding the stale 2026-09-05 rollback
+point). Flashed the new rootfs to the SD card (`deploy-rootfs.sh
+twrp-sd`) and the boot bundle (`flash-boot-set.sh`), rebooted, and reached
+the device over real SSH on WiFi.
+
+Findings from the first real boot (full detail in
+`docs/hardware-facts.md`'s Camera section, not repeated here): the rear
+camera's HI1337 chip-ID read succeeded exactly
+(`model=0x1337 vendor=0x2000`) -- the sensor-identity hypothesis this
+whole port has rested on since Session 16 is now a measured fact, not a
+guess. The front camera's I2C reads failed outright (`-ENXIO`, a bus/
+address problem, not a wrong-chip mismatch). A real, useful discovery:
+qcom-camss's async notifier waits for *every* devicetree-referenced sensor
+to bind before finalizing any media links, so the front sensor's failure
+was silently blocking the rear sensor's own link too, even though the
+rear sensor had already identified successfully. Disabled the front
+sensor's devicetree node (`status = "disabled"`, dropped `&camss`'s
+`port@4`), rebuilt just the DTB, reflashed only `boot`/`vendor_boot` (a
+second explicit-confirmation flash, per the checklist's "every single
+flash, not just the first" rule), and confirmed on reboot: the rear
+sensor now shows a real, enabled media link to `msm_csiphy1`, and
+`cam -l` lists it correctly as "Internal back camera" with its tuning
+file auto-loaded.
+
+**Where it stands**: the rear camera identifies, links, and enumerates in
+libcamera correctly, but `cam --capture` never receives a single frame
+(confirmed hung past a 45 s on-device timeout, twice) -- the CCI/I2C
+control plane works perfectly while the CSI-2 data plane delivers
+nothing, which is exactly the signature this project's own research
+flagged as the leading risk going in: mainline CAMSS's CSIPHY driver only
+implements D-PHY, and this module's actual PHY mode was never
+independently confirmed, only assumed by analogy with the Ultra sibling.
+Not proven (a wrong link-frequency or lane count, also copied by analogy,
+would look identical), but the most likely explanation. A separate, real
+bug also surfaced independent of camera streaming: `wireplumber` was
+OOM-killed at 5.4 GB anon-rss shortly after the camera stack came up --
+needs its own investigation.
+
+Deliberately stopped the live hardware-iteration loop here rather than
+keep guessing at DT parameters blind: the next real step needs either
+CSIPHY-driver debug instrumentation (a kernel change, its own build/flash
+cycle) or hardware-level confirmation of the module's actual PHY mode,
+neither of which is a quick guess-and-reflash fix. Everything above is
+committed on the `camera-bringup` branch (not merged to `main`, per
+standing instruction for this work).

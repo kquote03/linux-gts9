@@ -30,6 +30,26 @@ cite this document instead of re-deriving these details.
 ## Last verified rollback point
 
 Fresh `boot`/`init_boot`/`vendor_boot`/`dtbo` backup taken directly via
+TWRP `adb exec-out dd` (not TWRP's own nandroid UI) on 2026-09-15,
+immediately before the camera bring-up session's first flash of this
+branch's boot images. Pulled off-device and hash-verified to match the
+on-device partitions exactly. Stored at
+`backups/2026-09-15-camera-bringup/` (gitignored — binary artifacts
+aren't committed). Supersedes the 2026-09-05 rollback point below, which
+is now stale (the device has been reflashed multiple times since,
+including the same-day 2026-09-15 reliability session's own
+boot-only backup at `backups/2026-09-15-reliability/`).
+
+| Partition | Size (bytes) | sha256 |
+|---|---|---|
+| `boot` | 100,663,296 | `63e5936e7bae4dc4ae388c7015f1b0275999634eeed38ab4c95cd1b590706df4` |
+| `init_boot` | 8,388,608 | `b3b3ae6c38719a133b1abe57d0bc87fee84635022f845352d90ce831e3806f14` |
+| `vendor_boot` | 100,663,296 | `3cc5c6efae1f9bfebe62b7ca7d090d6fd1ebece5f4b3cd3be2183b2c61be7b5f` |
+| `dtbo` | 16,777,216 | `c3d5dbce86a6829891a226573693c76424b527f7dc7af2479a8351b08b0aa97a` |
+
+### 2026-09-05 rollback point (superseded, kept for history)
+
+Fresh `boot`/`init_boot`/`vendor_boot`/`dtbo` backup taken directly via
 TWRP `dd` (not TWRP's own nandroid UI) on 2026-09-05, immediately before
 the first custom flash attempt. Pulled off-device and hash-verified to
 match the on-device dump exactly before the on-device tmpfs copy was
@@ -767,66 +787,116 @@ board-specific.
   an off-grid value fails outright. **measured** (see
   `docs/porting-log.md`'s Session 8 bisection).
 
-## Camera (Camera bring-up session) -- entirely unverified, no real hardware yet
+## Camera (Camera bring-up session)
 
-Unlike every other section in this file, nothing below is measured. Camera
-was previously out of scope entirely for this port (see `README.md` and
-`docs/porting-log.md`'s earlier "nothing here uses camera" notes); research
-established the risk profile has changed enough to attempt it, but no
-real-hardware test has happened yet. Full reasoning lives in
-`kernel/drivers/hi1337_gts9.c`'s own header comment; this section is the
-place to update once Phase 0 (real-hardware sensor ID / PHY-mode
-confirmation) actually happens.
+Real-hardware bring-up happened 2026-09-15 (kernel v7.2.0-dirty #85, this
+branch's own build). Genuine progress and one specific, real blocker were
+found -- not the "entirely unverified" state this section described before
+that session. See `docs/porting-log.md`'s Camera bring-up session entry for
+the full narrative; this section is the current state of the facts.
 
-- **Devicetree topology (measured from this device's own stock downstream
-  source)**: `android_kernel_samsung_gts9/.../gts9_eur_openx_w00_r04.dts`
-  shows exactly one rear camera (autofocus, generic `qcom,cam-sensor` on
-  `csiphy-sd-index = 1`, CCI0, actuator+EEPROM on CCI1) and one front camera
-  (fixed-focus, same compatible on `csiphy-sd-index = 4`, CCI1) -- no
-  ultra-wide rear, no dual front, matching Samsung's published spec for the
-  non-Ultra Tab S9. This part is a real fact, not a guess.
-- **Sensor identity: HYPOTHESIS, not measured.** Qualcomm's camera stack
-  never encodes sensor model in devicetree -- both sensor nodes use the
-  fully generic `"qcom,cam-sensor"` compatible; identity is resolved at
-  runtime via an I2C chip-ID read. This port currently wires both cameras as
-  Hynix HI1337 (`kernel/drivers/hi1337_gts9.c`, forked from
-  `ubuntu-galaxy-tab-s9ultra`'s own hardware-validated driver for its
-  rear-main/front-main slots), on the strength of matching CSIPHY indices
-  (1 and 4) between this device's downstream tree and the Ultra's -- suggestive,
-  not conclusive. If real hardware identifies a different chip (the
-  downstream kernel's `cam_eeprom` directory also ships `hi847_otp.h`,
-  hinting HI847 isn't impossible either, though the Ultra's own AF-less
-  HI847 slot doesn't match this device's AF-equipped rear camera), the
-  driver/tables need replacing, not just tuning.
-- **CSI PHY link mode (D-PHY vs C-PHY): unconfirmed.** Wired here as plain
-  D-PHY (`clock-lanes`/`data-lanes`), matching the Ultra sibling's own real,
-  working config for the same reference-design family. Mainline CAMSS's
-  CSIPHY driver only implements D-PHY at all -- if real hardware turns out
-  to be C-PHY-wired, that camera is blocked on an in-review, unmerged
-  upstream patch series, not fixable by DT/driver changes here.
-- **GPIO/regulator wiring: borrowed by analogy, not measured.** Reset GPIOs
-  (70 rear, 117 front), front enable GPIO (17), the CCI1-master-1 pinctrl
-  pins (208/209), and both new PMIC rails
-  (`vreg_l4b_1p8`/`vreg_l1c_1p1` in `kernel/dts/sm8550-samsung-x716b.dts`)
-  are all copied from `ubuntu-galaxy-tab-s9uwifi`'s own DTS the same way
-  this file's other "unverified, borrowed by analogy" facts are (see the USB
-  Type-C stack entries above) -- with one specific added risk: this
-  device's own stock downstream DT names the rear/front `cam_vdig` rail
-  `pm_humu_l11`, which would collide with this board's own already-measured,
-  confirmed-working panel VDD rail (`vreg_l11b_1p2` -- see the display
-  entry above) if Samsung's numeric PMIC index mapped onto mainline's
-  die-letter+index convention the same way it does for `cam_vio`/`l4`. It
-  evidently doesn't (this board's panel is confirmed working on real
-  hardware at that exact rail), so camera VDIG was deliberately given a
-  different, unused rail (`vreg_l1c_1p1`, die `c`) instead of trusting the
-  downstream digit -- see that regulator's own DT comment for the full
-  reasoning. This is the single most likely thing to be wrong and worth
-  checking first if camera bring-up either fails to power on or regresses
-  the display.
-- **What's confirmed working**: the DT compiles cleanly (`dtc`, run locally
-  against the pinned mainline tree) and every phandle/label resolves --
-  syntactic correctness only, not proof anything on real silicon behaves as
-  wired.
+### Rear camera: sensor identity CONFIRMED, streaming BLOCKED
+
+- **Sensor identity: CONFIRMED on real silicon.** `hi1337-gts9 10-0021:
+  rear-main model=0x1337 vendor=0x2000` -- an exact register-level match
+  against `HI1337_MODEL_ID`/`HI1337_VENDOR_ID`
+  (`kernel/drivers/hi1337_gts9.c`). The hypothesis that this device's rear
+  module is the same physical Hynix HI1337 part as the Ultra sibling's
+  rear-main slot is no longer a guess.
+- **CCI/I2C control plane: working.** Power sequencing, MCLK, and the CCI0
+  I2C transaction to read the chip-ID registers all succeed cleanly, with
+  no GPIO/regulator errors in `dmesg`. The `vreg_l1c_1p1`/`vreg_l4b_1p8`
+  regulator guesses and the rear reset-GPIO (70) are therefore now measured
+  facts for the rear camera, not analogies.
+- **Actuator (DW9808 VCM): probes and binds** (`dw9808-vcm 11-000c`,
+  PM runtime suspend/resume both succeed), but its `/dev/v4l-subdev31`
+  device node fails to open with `EINVAL` (confirmed with both `cam` and a
+  direct `v4l2-ctl --info`, not just a libcamera-side issue) -- libcamera
+  logs "Lens initialisation failed, lens disabled" and falls back to no AF
+  control. Root cause not yet found; a reasonable first guess is a mainline
+  v4l2-subdev-core behavior change around zero-pad lens subdevices between
+  whatever kernel version the Ultra sibling validated this driver against
+  and this project's pinned v7.2.0, but this is unconfirmed.
+- **Media graph link: only completes with the front sensor disabled.**
+  `media-ctl -p` initially showed the rear sensor registered but with
+  **0 links** to `msm_csiphy1`, even though its own chip-ID read had
+  already succeeded. Root cause: mainline qcom-camss's async fwnode
+  notifier only finalizes media links once *every* sensor endpoint
+  referenced in the devicetree has bound -- since the front sensor's probe
+  failed outright (see below), the notifier never completed, which blocked
+  the rear sensor's link too. Fixed by dropping `&camss`'s `port@4`
+  (front/csiphy4) and setting `hi1337_front`'s `status = "disabled"` in
+  `kernel/dts/sm8550-samsung-x716b.dts` -- confirmed on a reflash: the rear
+  sensor then showed a real, enabled link to `msm_csiphy1` at
+  `SGRBG10_1X10/4128x3096`, and got a working `/dev/v4l-subdev30` node.
+- **libcamera enumerates it correctly**: `cam -l` lists "Internal back
+  camera", loads `/usr/share/libcamera/ipa/simple/hi1337-gts9.yaml`
+  automatically (confirming the sensor-model-string-to-tuning-file lookup
+  this port depends on actually works), and configures the SoftISP input
+  path (`Input 4128x3096-GRBG-10-CSI2P stride 5168`).
+- **Real, unresolved blocker: zero frames delivered.** `cam -c 1
+  --capture=1` hangs indefinitely with no data (confirmed twice, including
+  under a 45 s on-device `timeout`, which fired with no frame captured).
+  No CSI/CSID/VFE-related messages appear in `dmesg` during the attempt
+  either way (silence is inconclusive -- this driver generation doesn't
+  seem to log routine stream start/stop). The control plane (CCI/I2C)
+  working perfectly while the data plane (MIPI CSI-2) delivers nothing is
+  exactly the failure signature this project's own research already
+  flagged as the leading risk: **mainline CAMSS's CSIPHY driver only
+  implements D-PHY**, wired here on the assumption this module uses D-PHY
+  by analogy with the Ultra sibling -- if this module is actually C-PHY,
+  the physical layer would never lock, exactly matching what was observed.
+  Not yet independently confirmed as the root cause (an incorrect
+  `link-frequencies` or lane count -- both also copied from the Ultra by
+  analogy -- would produce the identical symptom), and not fixable by
+  DT/driver changes alone if it is C-PHY: mainline has no C-PHY support in
+  this driver as of this session, only an in-review, unmerged patch
+  series. Next step for a future session: add debug instrumentation to the
+  CSIPHY driver to read back PHY lock/sync status directly, before
+  attempting more blind parameter changes.
+
+### Front camera: I2C communication fails outright, no chip-ID guess to make
+
+- Probe completes a full, error-free power-on sequence (~30 ms, matching
+  the driver's own sequencing delays) but **both chip-ID register reads
+  fail with `-ENXIO`** (`hi1337-gts9 12-0020: identity reads failed:
+  model=-6 vendor=-6`) -- a plain I2C bus communication failure, not a
+  "wrong chip responded" mismatch. No GPIO/regulator/CCI-level error
+  accompanies it.
+- This points at wrong I2C address, wrong CCI bus/master routing, or a
+  genuinely different (non-responding-to-HI1337-protocol) chip at that
+  slot -- not something to keep guessing at without either a bench i2cdetect
+  sweep of the front CCI bus or a real teardown/schematic reference for
+  this device's own front camera module.
+- Currently disabled in DT (`status = "disabled"` on `hi1337_front`,
+  `&camss`'s `port@4` dropped) specifically so it doesn't block the rear
+  camera's own media graph completion (see above) -- re-enabling is a
+  one-line revert once the real wiring is found.
+
+### Known separate bug: PipeWire/WirePlumber memory leak
+
+During this session's testing, `wireplumber` was OOM-killed on the device
+with **5.4 GB anon-rss** (`out_of_memory: Killed process ... task=wireplumber
+... anon-rss:5475220kB`) shortly after the camera stack came up --
+`gts9-camera-relays.service` and the ported PipeWire libcamera SPA plugin
+were both active at the time. This is a real, unresolved bug independent of
+the CSI streaming issue above (it happens even though `cam`'s own direct
+libcamera test runs in a completely separate process from WirePlumber) --
+likely in how WirePlumber's libcamera monitor (added via
+`rootfs/overlay-common/usr/share/wireplumber/main.lua.d/51-gts9-camera-
+backends.lua`) or the backported PipeWire SPA plugin patches interact with
+this exact PipeWire version. Needs its own investigation before the
+GNOME-Camera/PipeWire side of this feature can be trusted, independent of
+whether the CSI streaming issue above gets resolved.
+
+### Devicetree topology (measured from this device's own stock downstream source)
+
+`android_kernel_samsung_gts9/.../gts9_eur_openx_w00_r04.dts` shows exactly
+one rear camera (autofocus, generic `qcom,cam-sensor` on
+`csiphy-sd-index = 1`, CCI0, actuator+EEPROM on CCI1) and one front camera
+(fixed-focus, same compatible on `csiphy-sd-index = 4`, CCI1) -- no
+ultra-wide rear, no dual front, matching Samsung's published spec for the
+non-Ultra Tab S9.
 
 ## Open risks / unverified assumptions (carried into later phases)
 
