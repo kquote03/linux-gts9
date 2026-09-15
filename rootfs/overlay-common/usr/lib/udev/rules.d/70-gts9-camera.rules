@@ -1,0 +1,15 @@
+# Camera bring-up session. Adapted from ubuntu-galaxy-tab-s9ultra's own
+# real, working 70-gts9u-camera.rules (SM-X910 Ultra) -- trimmed from four
+# cameras to this device's two (no ultrawide rear/dual front).
+#
+# libcamera's software ISP allocates frame buffers through /dev/udmabuf.
+# The desktop user already belongs to video; expose the allocator to that
+# group and let logind grant an ACL to the active graphical session too.
+SUBSYSTEM=="misc", KERNEL=="udmabuf", GROUP="video", MODE="0660", TAG+="uaccess"
+
+# Stable human-readable aliases for the processed cameras. Applications still
+# discover the ordinary /dev/video20-21 nodes (see gts9-cameras.conf); these
+# links are for diagnostics/scripts and never expose the internal Qualcomm
+# ISP endpoints. ATTR{name} matches the card_label set by v4l2loopback.
+SUBSYSTEM=="video4linux", ATTR{name}=="X716B-Rear", SYMLINK+="gts9-camera/rear"
+SUBSYSTEM=="video4linux", ATTR{name}=="X716B-Front", SYMLINK+="gts9-camera/front"

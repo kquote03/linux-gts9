@@ -1,0 +1,9 @@
+# Camera bring-up session. Adapted verbatim from ubuntu-galaxy-tab-s9ultra's
+# own 71-gts9u-flashlight.rules -- this device shares the same PM8550/
+# PM8350C flash-LED class ("leds-qcom-flash") already enabled in
+# kernel/config/config-mainline.aarch64.
+#
+# Let desktop users in video control only continuous torch brightness.
+# Strobe, timeout and fault controls remain root-only for camera-stack
+# synchronisation.
+SUBSYSTEM=="leds", KERNEL=="white:flash", RUN+="/usr/libexec/gts9-flashlight-permissions %p"

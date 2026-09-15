@@ -501,7 +501,43 @@ modules_out=$outdir/modules-out
 rm -rf "$modules_out"
 make -C "$kdir" "${make_args[@]}" INSTALL_MOD_PATH="$modules_out" modules_install
 
-echo "== running depmod =="
+echo "== building v4l2loopback (out-of-tree, for the camera relay layer) =="
+# The application-facing half of the camera bridge (scripts/build-fedora-
+# rootfs.sh's libcamera/PipeWire/v4l2-relayd stack fans out onto its device
+# nodes). Built out-of-tree against this exact kernel and signed with its
+# own generated key, matching ubuntu-galaxy-tab-s9ultra's own build-
+# mainline-kernel.sh -- a DKMS package built inside the Fedora rootfs chroot
+# could not reproduce this kernel's exact module ABI or signing key, and
+# CONFIG_MODULE_SIG_ALL=y means every in-tree module above already carries
+# a real signature this one would otherwise conspicuously lack.
+v4l2loopback_commit=9ef83fb9bc88e8f841786753c362ac52c580defc
+loopback_tree=$outdir/v4l2loopback-src
+rm -rf -- "$loopback_tree"
+git clone --quiet https://github.com/v4l2loopback/v4l2loopback.git "$loopback_tree"
+git -C "$loopback_tree" checkout --quiet "$v4l2loopback_commit"
+git -C "$loopback_tree" apply \
+	"$repo_root/specs/v4l2loopback-x716b/patches/0001-backward-compatible-client-usage-event.patch" \
+	"$repo_root/specs/v4l2loopback-x716b/patches/0002-fix-buffer-queue-management.patch" \
+	"$repo_root/specs/v4l2loopback-x716b/patches/0003-preserve-output-queue-for-capture.patch"
+make -C "$kdir" "${make_args[@]}" -j"$(nproc)" M="$loopback_tree" modules
+loopback_moddir=$modules_out/lib/modules/$kernel_release/extra
+install -d "$loopback_moddir"
+install -m 0644 "$loopback_tree/v4l2loopback.ko" "$loopback_moddir/v4l2loopback.ko"
+test -f "$outdir/certs/signing_key.pem"
+test -f "$outdir/certs/signing_key.x509"
+"$outdir/scripts/sign-file" sha256 \
+	"$outdir/certs/signing_key.pem" "$outdir/certs/signing_key.x509" \
+	"$loopback_moddir/v4l2loopback.ko"
+# Checked via the trailer magic, not `modinfo -F signer`: this nix-shell's
+# kmod build lacks libcrypto (confirmed: `modinfo` shows `sig_id: PKCS#7`
+# but blank signer/sig_key/signature fields on every module here, including
+# ones signed by the kernel's own normal in-tree modules_install path), so
+# modinfo can detect a signature block but can't decode its fields on this
+# host. The kernel's own module-load verification uses its in-kernel crypto
+# API, not host kmod, so this is a build-host tooling gap, not a real
+# signing failure -- the trailer string is always appended verbatim
+# regardless of libcrypto and is what the kernel's own loader looks for.
+tail -c 64 "$loopback_moddir/v4l2loopback.ko" | grep -q '~Module signature appended~'
 depmod -b "$modules_out" "$kernel_release"
 
 echo "== verifying camera Kconfig/module/devicetree wiring survived the build =="
