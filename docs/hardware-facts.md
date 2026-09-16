@@ -30,15 +30,32 @@ cite this document instead of re-deriving these details.
 ## Last verified rollback point
 
 Fresh `boot`/`init_boot`/`vendor_boot`/`dtbo` backup taken directly via
+TWRP `adb exec-out dd` on 2026-09-16, immediately before this session's
+flash of the CSI2-IRQ-logging kernel + throttled-relay rootfs (the
+camera-bringup-continuation session). Pulled off-device and hash-verified
+to match the on-device partitions exactly. Stored at
+`backups/2026-09-16-camera-bringup/` (gitignored — binary artifacts
+aren't committed). Supersedes the 2026-09-15 rollback point below.
+
+| Partition | Size (bytes) | sha256 |
+|---|---|---|
+| `boot` | 100,663,296 | `e2915a58484096c028f35d0f7d5d3172f4992e4c313df123ec1c361ac4eddea5` |
+| `init_boot` | 8,388,608 | `0517e8be3ec2adeb2e0f62a1fc131b67f9e9abe56b8a177fb0a091cc7375d7b3` |
+| `vendor_boot` | 100,663,296 | `b377d9e8185a9b2458fa242ba30765f246a667a66b594e1183e5c8e725061848` |
+| `dtbo` | 16,777,216 | `bd7149dbc4c606da7510d5a65af4a7244b011f151282f52b8f513d5f7d984624` |
+
+### 2026-09-15 rollback point (superseded, kept for history)
+
+Fresh `boot`/`init_boot`/`vendor_boot`/`dtbo` backup taken directly via
 TWRP `adb exec-out dd` (not TWRP's own nandroid UI) on 2026-09-15,
 immediately before the camera bring-up session's first flash of this
 branch's boot images. Pulled off-device and hash-verified to match the
 on-device partitions exactly. Stored at
 `backups/2026-09-15-camera-bringup/` (gitignored — binary artifacts
-aren't committed). Supersedes the 2026-09-05 rollback point below, which
-is now stale (the device has been reflashed multiple times since,
-including the same-day 2026-09-15 reliability session's own
-boot-only backup at `backups/2026-09-15-reliability/`).
+aren't committed). Superseded the 2026-09-05 rollback point below, which
+was already stale by then (the device had been reflashed multiple times,
+including the same-day 2026-09-15 reliability session's own boot-only
+backup at `backups/2026-09-15-reliability/`).
 
 | Partition | Size (bytes) | sha256 |
 |---|---|---|
@@ -873,21 +890,56 @@ the full narrative; this section is the current state of the facts.
   camera's own media graph completion (see above) -- re-enabling is a
   one-line revert once the real wiring is found.
 
-### Known separate bug: PipeWire/WirePlumber memory leak
+### PipeWire/WirePlumber memory leak: confirmed, root cause narrowed, mitigated
 
-During this session's testing, `wireplumber` was OOM-killed on the device
-with **5.4 GB anon-rss** (`out_of_memory: Killed process ... task=wireplumber
-... anon-rss:5475220kB`) shortly after the camera stack came up --
-`gts9-camera-relays.service` and the ported PipeWire libcamera SPA plugin
-were both active at the time. This is a real, unresolved bug independent of
-the CSI streaming issue above (it happens even though `cam`'s own direct
-libcamera test runs in a completely separate process from WirePlumber) --
-likely in how WirePlumber's libcamera monitor (added via
-`rootfs/overlay-common/usr/share/wireplumber/main.lua.d/51-gts9-camera-
-backends.lua`) or the backported PipeWire SPA plugin patches interact with
-this exact PipeWire version. Needs its own investigation before the
-GNOME-Camera/PipeWire side of this feature can be trusted, independent of
-whether the CSI streaming issue above gets resolved.
+**Confirmed and reproduced twice on real hardware** (2026-09-15 and
+2026-09-16): `wireplumber` gets OOM-killed at **5.4 GB anon-rss** within
+minutes of the ported PipeWire libcamera SPA plugin
+(`/usr/lib64/spa-0.2/libcamera/libspa-libcamera.so`) becoming loadable.
+
+2026-09-16 session narrowed this decisively: the leak is **not** caused by
+`gts9-camera-relays.service`'s restart loop (that was throttled this same
+session, and was confirmed `inactive (dead)` -- not even running -- both
+times the leak reproduced) and **not** dependent on any application
+actively using the camera (it reproduced a second time with no camera app
+running at all, purely from WirePlumber's own background `monitor.libcamera`
+component). The real trigger is simpler and more severe than first
+suspected: **stock, unmodified Fedora WirePlumber config**
+(`/usr/share/wireplumber/wireplumber.conf`'s own default
+`wants = [ monitor.v4l2, monitor.libcamera ]` for the `hardware.video-capture`
+feature) loads this plugin unconditionally the moment it exists on disk --
+this project's own `rootfs/overlay-common/.../51-gts9-camera-backends.lua`
+only adds cosmetic node naming on top, it is not what enables the monitor.
+
+**Confirmed fix (live-tested)**: renaming the plugin file away
+(`libspa-libcamera.so` → `libspa-libcamera.so.disabled`) and restarting
+WirePlumber immediately and completely stops the leak -- memory stayed flat
+for the remainder of the session. `scripts/build-fedora-rootfs.sh` now
+installs the plugin pre-disabled (same `.so.disabled` suffix) by default,
+so future builds ship stable; the plugin is still built (so the work isn't
+wasted) and re-enabling is a one-line change once the underlying bug is
+actually fixed.
+
+**Leading suspect for the underlying bug, not yet fixed**: a real version
+gap this port introduced. The 7 backport patches
+(`specs/pipewire-x716b/patches/`) were written and validated (by the
+sibling `ubuntu-galaxy-tab-s9ultra` project, on real hardware, over
+multi-hour stress tests with no memory issue) against a PipeWire commit
+matching ~1.0.5. That sibling's own OS (Ubuntu Noble) ships stock PipeWire
+1.0.5 already -- same version by construction, with an explicit
+`Depends: pipewire (>= 1.0.5), pipewire (<< 1.1)` in its own package. This
+Fedora port instead loads that same patched plugin into **Fedora 44's
+stock PipeWire 1.6.8** (confirmed via embedded package metadata in the
+built rootfs) -- a 6-minor-version gap, with no equivalent guard. Prime
+suspect patch: `0005-libcamera-do-not-close-borrowed-buffer-fds.patch`,
+which removed the old defensive `close()` fallback and now depends
+entirely on `freeBuffers()` running on every negotiation/teardown path --
+an assumption that held for the exact core version it was validated
+against but may not hold against 1.6.8's actual SPA node lifecycle.
+**Not yet fixed** -- next step is auditing that patch's teardown-path
+assumptions against 1.6.8's real behavior, or building a complete
+version-pinned PipeWire (matching the sibling's implicit approach) instead
+of dropping the plugin into a much newer stock core.
 
 ### Devicetree topology (measured from this device's own stock downstream source)
 

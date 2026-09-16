@@ -512,8 +512,24 @@ if [ "$desktop" = "gnome" ]; then
 			-Dlibcamera=enabled \
 			-Dsession-managers=[]
 		meson compile -C "$d/build" spa-libcamera
+		# Camera bring-up session (real-hardware follow-up): installed
+		# *disabled* (.so.disabled, not .so) -- confirmed live on real
+		# hardware that the moment this plugin is loadable, stock Fedora
+		# WirePlumber config (wireplumber.conf, own default
+		# "wants = [ monitor.v4l2, monitor.libcamera ]" for
+		# hardware.video-capture) loads it unconditionally and it leaks
+		# without bound (wireplumber OOM-killed at 5.4GB anon-rss within
+		# a few minutes, reproduced twice, with the camera-relay service
+		# confirmed not even running -- not the relay restart loop, the
+		# plugin itself is the trigger). Leading suspect is the version
+		# gap between this PipeWire-1.0.5-era patch set and the actual
+		# stock Fedora PipeWire (1.6.8) -- see docs/hardware-facts.md,
+		# Camera section, for the full writeup. Built here regardless so
+		# the work is not wasted -- re-enabling (drop the .disabled
+		# suffix) is a one-line change once this is actually fixed and
+		# re-verified stable on real hardware.
 		install -Dm755 "$d/build/spa/plugins/libcamera/libspa-libcamera.so" \
-			/usr/lib64/spa-0.2/libcamera/libspa-libcamera.so
+			/usr/lib64/spa-0.2/libcamera/libspa-libcamera.so.disabled
 	'
 
 	echo "== building v4l2-relayd (relays libcamera onto v4l2loopback nodes) =="
