@@ -878,26 +878,66 @@ the full narrative; this section is the current state of the facts.
   automatically (confirming the sensor-model-string-to-tuning-file lookup
   this port depends on actually works), and configures the SoftISP input
   path (`Input 4128x3096-GRBG-10-CSI2P stride 5168`).
-- **Real, unresolved blocker: zero frames delivered.** `cam -c 1
-  --capture=1` hangs indefinitely with no data (confirmed twice, including
-  under a 45 s on-device `timeout`, which fired with no frame captured).
-  No CSI/CSID/VFE-related messages appear in `dmesg` during the attempt
-  either way (silence is inconclusive -- this driver generation doesn't
-  seem to log routine stream start/stop). The control plane (CCI/I2C)
-  working perfectly while the data plane (MIPI CSI-2) delivers nothing is
-  exactly the failure signature this project's own research already
-  flagged as the leading risk: **mainline CAMSS's CSIPHY driver only
-  implements D-PHY**, wired here on the assumption this module uses D-PHY
-  by analogy with the Ultra sibling -- if this module is actually C-PHY,
-  the physical layer would never lock, exactly matching what was observed.
-  Not yet independently confirmed as the root cause (an incorrect
-  `link-frequencies` or lane count -- both also copied from the Ultra by
-  analogy -- would produce the identical symptom), and not fixable by
-  DT/driver changes alone if it is C-PHY: mainline has no C-PHY support in
-  this driver as of this session, only an in-review, unmerged patch
-  series. Next step for a future session: add debug instrumentation to the
-  CSIPHY driver to read back PHY lock/sync status directly, before
-  attempting more blind parameter changes.
+- **Real, unresolved blocker: zero frames delivered -- now root-caused to
+  the physical layer with direct evidence, not inference.** `cam -c 1
+  --capture=1` (and a raw `v4l2-ctl --stream-mmap` directly on
+  `/dev/video0`, bypassing libcamera entirely) both hang indefinitely with
+  no data, confirmed repeatedly.
+
+  **2026-09-16 diagnostic session (`dev_info_ratelimited` CSID patch,
+  `46158ee`, plus live `ftrace` function-graph tracing across the whole
+  streaming call chain) produced the decisive evidence Phase J of the plan
+  called for:**
+  - `csid_isr`'s own new `CSID_CSI2_RX_IRQ_STATUS` log line **never
+    printed once** during any real capture attempt, at any point from
+    stream-on through the eventual timeout/teardown.
+  - `ftrace function_graph` on `csid_set_power`, `csid_set_stream`,
+    `csid_isr`, `csiphy_set_power`, `csiphy_set_stream`, `csiphy_isr`,
+    `vfe_set_power`, `vfe_set_stream`, `vfe_isr`, `vfe_isr_sof`,
+    `vfe_isr_reg_update`, `vfe_isr_wm_done`, and the sensor's own
+    `hi1337_set_stream`/`hi1337_power_on`/`hi1337_set_ctrl` confirms the
+    **entire software-side pipeline runs and reports success**: CSIPHY1
+    and CSID0 power on, the sensor's `hi1337_set_stream(1)` completes
+    (power-on sequencing plus the full `hi1337_global_regs` +
+    per-mode register table write over CCI, ~287 ms total -- large but
+    consistent with a real multi-hundred-entry I2C register table, not a
+    stall) and returns 0, CSID/CSIPHY are told to stream. **Then, for the
+    entire streaming window (12 s+, repeatedly), zero interrupts fire from
+    any of CSID, CSIPHY, or VFE.** `csid_isr` fired exactly once across
+    the whole test, during the earlier power-on reset-done sequence, not
+    during actual streaming.
+  - IRQ registration itself was independently verified correct:
+    `camss-csid.c`/`camss-csiphy.c` register both IRQs with
+    `IRQF_NO_AUTOEN` but `csid_set_power(true)`/`csiphy_set_power(true)`
+    correctly call `enable_irq()` and leave it enabled for the whole
+    session -- ruled out as a cause.
+  - `vfe_isr` for this driver generation (`camss-vfe-gen3.c`) is a
+    documented no-op stub by design ("bus done and RUP IRQ have been moved
+    to CSID from VFE" for Titan Gen3) -- its silence is expected, not
+    evidence of anything.
+  - This is the signature of a genuine CSI-2 physical-layer training
+    failure: the sensor's driver believes it started transmitting, but
+    CSIPHY never observes enough lane activity to generate even one
+    common-status interrupt, and CSID never sees a single valid packet
+    (not even an error one) to interrupt on. Software-side, every relevant
+    call succeeds -- there is no error return, no crash, no timeout inside
+    the driver stack itself to chase further with more logging.
+  - This does not yet distinguish between the two remaining explanations:
+    **(a)** this module is actually C-PHY, which mainline CAMSS's CSIPHY
+    driver cannot support at all (hard-rejected in `camss.c`, matching
+    this project's original leading risk), or **(b)** a still-wrong
+    lane-count/lane-mapping/link-frequency parameter (copied from the
+    Ultra sibling by analogy, and independently re-derived from downstream
+    source in an earlier session, but never confirmed against this
+    specific device's own schematic) preventing PHY lock even though it
+    is genuinely D-PHY. Distinguishing these needs either a logic
+    analyzer/scope on the physical MIPI lines, or a real C-PHY-capable
+    mainline driver to test against -- neither is available in-session.
+    **Recommendation:** treat this as requiring the previously-scoped,
+    open-ended mainline C-PHY backport (or hardware-level signal
+    verification) as its own follow-up effort; further blind parameter
+    changes or additional kernel-side logging are unlikely to add more
+    information than this session's `ftrace` evidence already provides.
 
 ### Front camera: I2C communication fails outright, no chip-ID guess to make
 

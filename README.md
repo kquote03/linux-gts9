@@ -43,7 +43,7 @@ device.
 | Sensors (SSC: accelerometer, ambient light, etc.) | ⚠️ ADSP boots and the HexagonFS registry path is fixed, but the SSC QMI service itself doesn't publish (a real, likely upstream `hexagonrpcd` gap — see `docs/porting-log.md`) |
 | Suspend (s2idle) | ✅ |
 | GNOME desktop (Wayland, `gdm`) | ✅ real login screen confirmed on the physical panel |
-| Camera | ⚠️ rear sensor confirmed on real hardware (HI1337 chip-ID match, links to CSIPHY, enumerates in libcamera as "Internal back camera"), but frame capture still doesn't deliver data — likely CSI PHY mode, not yet root-caused; front camera has an I2C bus/address problem, currently disabled; see `docs/hardware-facts.md`'s Camera section |
+| Camera | ⚠️ rear sensor confirmed on real hardware (HI1337 chip-ID match, links to CSIPHY, enumerates in libcamera as "Internal back camera"), but frame capture delivers zero data — `ftrace` evidence now shows the CSI-2 physical layer never produces a single interrupt during streaming while every software step succeeds, pointing at a PHY-level issue (C-PHY/D-PHY mismatch or a lane/frequency parameter) rather than a driver bug; needs a mainline C-PHY backport or hardware signal verification, not more DT tweaking. Front camera has an I2C bus/address problem, currently disabled. WirePlumber's PipeWire libcamera plugin had a real memory leak (OOM at 5.4GB), now shipped disabled by default as a mitigation. See `docs/hardware-facts.md`'s Camera section |
 | Fingerprint | ❌ not present on the reference project this was ported from |
 | Hardware video decode (iris) | ❌ not sourced |
 | `/vendor` super partition (erofs) | ❌ needs a `make-dynpart-mappings` port neither project has done |

@@ -4786,3 +4786,72 @@ cycle) or hardware-level confirmation of the module's actual PHY mode,
 neither of which is a quick guess-and-reflash fix. Everything above is
 committed on the `camera-bringup` branch (not merged to `main`, per
 standing instruction for this work).
+
+## Session 18 — 2026-09-16 — Camera bring-up, continued: three real-hardware blockers investigated and root-caused, one decisively
+
+Picked up exactly where Session 17 stopped: three concrete real-hardware
+blockers (rear camera zero-frame streaming, front camera I2C `-ENXIO`,
+`wireplumber` OOM at 5.4 GB), each investigated this session with
+dedicated research before any code changed. Full technical detail lives in
+`docs/hardware-facts.md`'s Camera section; this is the narrative.
+
+**PipeWire/WirePlumber leak — root cause narrowed and mitigated.**
+Real-hardware testing (triggered by watching the tablet's GNOME Camera app
+freeze it) proved the original hypothesis wrong: the leak reproduced
+*again*, twice, with `gts9-camera-relays.service` confirmed
+`inactive (dead)` and no camera app running at all — not the unthrottled
+relay restart loop this session's plan initially blamed. The real trigger
+is stock Fedora WirePlumber's own default config
+(`wireplumber.conf`'s `wants = [ monitor.v4l2, monitor.libcamera ]`),
+which loads the ported PipeWire libcamera SPA plugin unconditionally the
+moment it exists on disk. Confirmed the fix live on the running device
+(renaming the plugin file to `.so.disabled` stopped the leak immediately
+and memory stayed flat for the rest of the session), then made it the
+build default in `scripts/build-fedora-rootfs.sh`. The relay-restart-loop
+throttle (`StartLimitIntervalSec=60`/`StartLimitBurst=5`) still landed as
+a good defense-in-depth change, just not the actual root cause. The
+underlying bug (suspected: patch `0005-libcamera-do-not-close-borrowed-
+buffer-fds.patch` against a 6-minor-version-newer PipeWire than it was
+written for) remains unfixed but fully mitigated by shipping the plugin
+disabled.
+
+**Rear camera zero-frame streaming — root-caused to the physical layer,
+with direct evidence instead of inference.** Added a CSI2 Rx IRQ status
+log to `camss-csid-gen3.c`'s `csid_isr()` (`kernel/patches/camss-log-
+csi2-rx-irq-status.patch`). First attempt used `dev_dbg_ratelimited()`,
+which produced nothing on real hardware — traced to the kernel booting
+under lockdown mode, which blocks the debugfs write needed to turn a
+`dev_dbg` call site on at runtime (and no `dyndbg=` boot parameter was
+set). Switched to `dev_info_ratelimited()`, rebuilt, reflashed (second
+flash of the day, full pre-flash checklist each time: fresh backup, hash
+verification, explicit confirmation naming the exact partitions). Still
+nothing printed during a real capture attempt. Rather than guess again,
+installed `v4l-utils` on-device and used `ftrace`'s `function_graph`
+tracer (still available despite lockdown, unlike `dynamic_debug`) across
+the whole streaming call chain — `csid_set_power`/`_set_stream`, `csid_isr`,
+`csiphy_set_power`/`_set_stream`, `csiphy_isr`, `vfe_set_power`/`_set_stream`,
+`vfe_isr` and friends, and the sensor's own `hi1337_set_stream`. Result:
+every software-side step succeeds and returns 0 (including the sensor's
+own ~287 ms register-table write and mode-select), IRQs are correctly
+requested and enabled throughout, and then **zero interrupts fire from
+CSID, CSIPHY, or VFE for the entire streaming window** — `csid_isr` fired
+exactly once, during power-on reset, never again once actual streaming
+was commanded. This is the direct evidence the previous session's plan
+asked for before deciding between "CSI-2 physical layer genuinely failing"
+and "problem is elsewhere in the software stack": it points squarely at
+the former. Doesn't yet distinguish a C-PHY/D-PHY mismatch from a still-
+wrong lane/frequency parameter, since neither is visible from software
+alone, but rules out every driver-stack-level explanation this session
+could think to check. Recommendation going forward: this needs either the
+open-ended mainline C-PHY backport already scoped as its own future
+effort, or physical signal verification — not more blind parameter
+changes or kernel logging, which this session's evidence suggests won't
+add anything further.
+
+**Front camera** — not reached this session; the device dropped off both
+USB and the network link partway through the rear-camera diagnostic work
+and did not reliably reconnect before time ran out. Still disabled in DT,
+unchanged from Session 17.
+
+Everything above is committed on the `camera-bringup` branch (not merged
+to `main`, per standing instruction for this work).
