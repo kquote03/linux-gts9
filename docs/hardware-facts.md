@@ -31,6 +31,33 @@ cite this document instead of re-deriving these details.
 
 Fresh `boot`/`init_boot`/`vendor_boot`/`dtbo` backup taken directly via
 TWRP `adb exec-out dd` on 2026-09-16, immediately before this session's
+flash of the `dev_info_ratelimited`-corrected CSI2-IRQ-logging kernel
+(the camera-bringup-continuation session, second flash of the day).
+Pulled off-device and hash-verified to match the on-device partitions
+exactly. Stored at `backups/2026-09-16-camera-bringup-2/` (gitignored —
+binary artifacts aren't committed). Supersedes the same-day
+`backups/2026-09-16-camera-bringup/` rollback point below (this one
+reflects the device's actual current state — the CSI2-logging kernel
+whose real-hardware `dev_dbg` output was found to be silent, one flash
+later than the previous rollback point's underlying content).
+
+| Partition | Size (bytes) | sha256 |
+|---|---|---|
+| `boot` | 100,663,387 | `e2e3b9e322e3ff14bfcffe5c1d4c95fb3a76395cb9e4be51515acf49038680cd` |
+| `init_boot` | 8,388,696 | `58f6884941321f5e51d9aa30735f927df3f8820bbfcc0acd062964ee15a49a4f` |
+| `vendor_boot` | 100,663,387 | `079e63475e17b9b3b2e39a3e1cdd62489cbcb0cf6d67853499cb71b6f00bce4a` |
+| `dtbo` | 16,777,304 | `13786dd7b9ae8f5a53b7b699d929908deea9d9a0bc1f7fc8d0a50a69745004d8` |
+
+Note: the raw partition sizes are ~88-91 bytes larger than the flashed
+`.img` files' own sizes (100,663,296 / 8,388,608 / 100,663,296 /
+16,777,216 respectively) — this is the fixed block-device partition size,
+not corruption; `adb exec-out dd` reads the whole partition, which is
+padded slightly beyond the image actually written into it.
+
+### 2026-09-16 rollback point, first flash of the day (superseded, kept for history)
+
+Fresh `boot`/`init_boot`/`vendor_boot`/`dtbo` backup taken directly via
+TWRP `adb exec-out dd` on 2026-09-16, immediately before this session's
 flash of the CSI2-IRQ-logging kernel + throttled-relay rootfs (the
 camera-bringup-continuation session). Pulled off-device and hash-verified
 to match the on-device partitions exactly. Stored at
