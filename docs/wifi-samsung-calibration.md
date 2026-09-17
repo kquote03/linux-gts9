@@ -215,6 +215,12 @@ lands in `/sys/class/devcoredump/` and must be copied out within
 
 ## Open follow-ups
 
+- The September 2026 reliability pass found that an existing Fedora rootfs
+  could still contain the community firmware set even when the boot ramdisk
+  carried Samsung's HSP2.0 files. Rootfs and initramfs builders now verify
+  all four exact Samsung files and reject stale `firmware-2.bin*` overrides;
+  see `docs/reliability-2026-09.md`. The Pixel 6 personal-hotspot reboot
+  still needs a controlled real-hardware reproduction.
 - A controlled same-position / same-band / same-AP A/B to pin the exact
   throughput delta (tonight's samples were real but across different
   bands/APs/positions).

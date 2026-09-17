@@ -36,6 +36,12 @@ margin_mib=${3:-1024}
 [ -d "$rootdir" ] || { echo "$rootdir is not a directory" >&2; exit 1; }
 command -v mke2fs >/dev/null || { echo "mke2fs not found -- run inside 'nix develop'" >&2; exit 1; }
 
+# Repacking an old Fedora directory must not silently reintroduce the old
+# calibration after resume, even when the kernel/initramfs is up to date.
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+python3 "$repo_root/scripts/verify-wifi-firmware.py" \
+	--firmware-dir "$rootdir/usr/lib/firmware"
+
 myuid=$(id -u)
 mygid=$(id -g)
 subuid_base=$(awk -F: -v u="$(id -un)" '$1==u{print $2}' /etc/subuid | head -1)

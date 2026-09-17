@@ -255,6 +255,17 @@ in
   # Ported gts9wifi-* services (85-gts9wifi.preset)  #
   ####################################################
 
+  systemd.timers.gts9wifi-wait-sensor-proxy = {
+    wantedBy = [ "timers.target" ];
+    conflicts = [ "sleep.target" ];
+    before = [ "sleep.target" ];
+    timerConfig = {
+      OnBootSec = "30s";
+      AccuracySec = "1s";
+      Unit = "gts9wifi-wait-sensor-proxy.service";
+    };
+  };
+
   systemd.services = {
 
     # --- enabled by the preset ---
@@ -316,11 +327,30 @@ in
     gts9wifi-wait-sensor-proxy = oneshot {
       desc = "Recover Qualcomm SSC and start the desktop sensor proxy";
       exec = "${lx}/gts9wifi-sensors-resume";
+      wantedBy = [ ];
       unitExtra = {
-        after = [ "gts9wifi-panel-coldboot-recover.service" "hexagonrpcd-adsp-sensorspd.service" ];
-        before = [ "display-manager.service" ];
+        after = [ "gts9wifi-panel-coldboot-recover.service" ];
+        conflicts = [ "sleep.target" ];
+        before = [ "sleep.target" ];
       };
-      extra.serviceConfig = { ExecStartPre = "${pkgs.coreutils}/bin/sleep 2"; TimeoutStartSec = 210; };
+      extra.serviceConfig = { RemainAfterExit = false; TimeoutStartSec = 45; TimeoutStopSec = 5; };
+    };
+
+    gts9wifi-resume = {
+      description = "Restore USB host and SSC after system sleep";
+      wantedBy = [ "sleep.target" ];
+      before = [ "sleep.target" ];
+      unitConfig.StopWhenUnneeded = true;
+      serviceConfig = {
+        Type = "oneshot";
+        RemainAfterExit = true;
+        ExecStart = "${pkgs.coreutils}/bin/true";
+        ExecStop = [
+          "-${lx}/gts9wifi-usb-host-resume"
+          "${pkgs.systemd}/bin/systemctl start --no-block gts9wifi-wait-sensor-proxy.service"
+        ];
+        TimeoutStopSec = 10;
+      };
     };
 
     # --- manual-start (NOT in the preset enable list) ---
@@ -329,14 +359,14 @@ in
       description = "Boot the ADSP remoteproc once the rootfs firmware is reachable";
       wantedBy = [ ]; # manual: the ADSP start can hang / reset the SoC
       after = [ "local-fs.target" "gts9wifi-panel-coldboot-recover.service" ];
+      requires = [ "gts9wifi-panel-coldboot-recover.service" ];
       serviceConfig = {
         Type = "oneshot";
         RemainAfterExit = true;
-        TimeoutStartSec = 45;
-        ExecStartPre = "${pkgs.coreutils}/bin/sleep 25";
+        TimeoutStartSec = 10;
         ExecStart = "${pkgs.runtimeShell} -c \"grep -q running /sys/class/remoteproc/remoteproc0/state || echo start > /sys/class/remoteproc/remoteproc0/state\"";
         # remoteproc start returns before fastrpc probes; wait for it.
-        ExecStartPost = "${pkgs.runtimeShell} -c 'i=0; while [ $i -lt 60 ] && [ ! -e /dev/fastrpc-adsp ]; do ${pkgs.coreutils}/bin/sleep 1; i=$((i+1)); done'";
+        ExecStartPost = "${pkgs.runtimeShell} -c 'i=0; while [ $i -lt 5 ] && [ ! -e /dev/fastrpc-adsp ]; do ${pkgs.coreutils}/bin/sleep 1; i=$((i+1)); done; test -e /dev/fastrpc-adsp'";
       };
     };
 
@@ -372,6 +402,8 @@ in
       wantedBy = lib.mkForce [ ];
       requires = [ "gts9wifi-adsp-boot.service" ];
       after = [ "gts9wifi-adsp-boot.service" "pd-mapper.service" ];
+      unitConfig.Conflicts = [ "" "sleep.target" ];
+      unitConfig.Before = [ "" "sleep.target" ];
       serviceConfig = {
         ExecStart = [ "" "${x.hexagonrpcd}/bin/hexagonrpcd -f /dev/fastrpc-adsp -d adsp -s -R ${x.hexagonfs}/share/qcom/sm8550/Samsung/gts9-5g" ];
         Restart = lib.mkForce "no";

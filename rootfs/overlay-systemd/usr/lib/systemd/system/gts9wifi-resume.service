@@ -1,0 +1,18 @@
+[Unit]
+Description=Restore USB host and SSC after system sleep
+# sleep.target precedes the kernel sleep operation and is stopped once the
+# sleep transaction is finished. Reverse stop ordering makes ExecStop run
+# after wake, without starting conflicting units from inside systemd-sleep.
+Before=sleep.target
+StopWhenUnneeded=yes
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/true
+ExecStop=-/usr/libexec/gts9wifi-usb-host-resume
+ExecStop=/usr/bin/systemctl start --no-block gts9wifi-wait-sensor-proxy.service
+TimeoutStopSec=10
+
+[Install]
+WantedBy=sleep.target

@@ -163,7 +163,9 @@ static void sm5714_usbpd_cc_resync_work(struct work_struct *work)
  * interrupt path never reported it: in a healthy attach/detach cycle it stays
  * silent and costs one i2c read.
  *
- * The work is deferrable, so an idle, unplugged tablet is never woken for it.
+ * The timer is deferrable, but that alone does not freeze its worker during
+ * system suspend. Use system_freezable_wq for both CC workers so neither
+ * regmap I2C access nor a TCPM resync races the QUP controller's suspend.
  */
 static void sm5714_usbpd_cc_watch_work(struct work_struct *work)
 {
@@ -191,7 +193,7 @@ static void sm5714_usbpd_cc_watch_work(struct work_struct *work)
 	sm->watch_saw_attach = attached;
 
 again:
-	queue_delayed_work(system_dfl_wq, &sm->cc_watch_work,
+	queue_delayed_work(system_freezable_wq, &sm->cc_watch_work,
 			   msecs_to_jiffies(SM5714_CC_WATCH_MS));
 }
 
@@ -954,12 +956,12 @@ static int sm5714_usbpd_probe(struct i2c_client *client)
 	 * negotiation.  Keep the fallback, but move it beyond the normal PD and
 	 * altmode discovery window.
 	 */
-	mod_delayed_work(system_dfl_wq, &sm->cc_resync_work,
+	mod_delayed_work(system_freezable_wq, &sm->cc_resync_work,
 			 msecs_to_jiffies(sm->retained_dock_reset ? 3000 :
 					  1500));
 	/* Start the attach watchdog after that first resync has settled, so the
 	 * two never race over the same edge. */
-	queue_delayed_work(system_dfl_wq, &sm->cc_watch_work,
+	queue_delayed_work(system_freezable_wq, &sm->cc_watch_work,
 			   msecs_to_jiffies(5000));
 	dev_info(dev, "SM5714 USB Type-C/PD controller registered\n");
 	return 0;

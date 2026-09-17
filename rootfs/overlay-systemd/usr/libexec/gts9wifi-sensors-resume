@@ -1,26 +1,36 @@
 #!/bin/sh
 # SPDX-License-Identifier: MIT
 #
-# The upstream hexagonrpcd sensorspd unit intentionally conflicts with
-# suspend.target and is stopped before deep sleep.  Restart both the FastRPC
+# Our hexagonrpcd sensorspd drop-in conflicts with sleep.target and is
+# stopped before deep sleep. Restart both the FastRPC
 # bridge after resume and wait until SSC accepts a fresh client.  libssc 0.4.4
 # cannot reconnect an existing QMI client after SSC is power-collapsed, so the
 # proxy must then be restarted.  The board's Mutter package deliberately
 # reclaims accelerometer access whenever a new SensorProxy owner appears.
 set -eu
 
+# Missing PD maps cannot be repaired by polling SSC for minutes. Starting
+# pd-mapper is harmless if already active, and gives a recovered installation
+# another chance without restarting a live mapper used by audio.
+if [ ! -r /lib/firmware/qcom/sm8550/adsps.jsn ] ||
+   ! timeout -k 1 5 systemctl start pd-mapper.service ||
+   ! systemctl is-active --quiet pd-mapper.service; then
+	echo "gts9wifi-sensors-resume: PD maps/mapper unavailable; skipping SSC discovery" >&2
+	exit 1
+fi
+
 # A service may still be marked active after a platform PM test while its
 # FastRPC/QMI client is stale.  A restart is cheap and gives SSC one clean
 # attachment both at boot and after a real resume.
-systemctl restart hexagonrpcd-adsp-sensorspd.service
+timeout -k 1 10 systemctl restart hexagonrpcd-adsp-sensorspd.service
 
 attempt=0
-while [ "$attempt" -lt 45 ]; do
+while [ "$attempt" -lt 3 ]; do
 	attempt=$((attempt + 1))
-	output=$(timeout 4 ssccli --sensor accelerometer --timeout 2 2>&1 || true)
+	output=$(timeout -k 1 4 ssccli --sensor accelerometer --timeout 2 2>&1 || true)
 	if printf '%s\n' "$output" |
 	   grep -q 'Accelerometer sensor measurement:'; then
-		systemctl restart iio-sensor-proxy.service
+		timeout -k 1 5 systemctl restart iio-sensor-proxy.service
 		echo "gts9wifi-sensors-resume: SSC ready after attempt $attempt; restarted SensorProxy for a fresh QMI client"
 		exit 0
 	fi

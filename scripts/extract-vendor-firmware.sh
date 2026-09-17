@@ -145,6 +145,12 @@ adb shell "ls /mnt_apnhlos/image/adsp.mdt /mnt_apnhlos/image/adsp.b* \
 	adb pull "$remote" "$outdir/firmware/qcom-sm8550/" >/dev/null
 done
 echo "pulled $(ls "$outdir/firmware/qcom-sm8550" | wc -l) adsp PIL firmware + PDR registry files"
+for map in adspr.jsn adsps.jsn adspua.jsn cdspr.jsn; do
+	[ -s "$outdir/firmware/qcom-sm8550/$map" ] || {
+		echo "Missing PDR map $map after extraction; firmware set is incomplete" >&2
+		exit 1
+	}
+done
 echo "-- HexagonFS payload (dsp/adsp) --"
 adb pull /mnt_dsp/adsp "$outdir/hexagonfs/dsp/" 2>&1 | tail -3
 adb shell "umount /mnt_apnhlos /mnt_dsp 2>/dev/null; rmdir /mnt_apnhlos /mnt_dsp 2>/dev/null" || true

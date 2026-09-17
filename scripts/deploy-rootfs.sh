@@ -135,6 +135,7 @@ sd)
 twrp-sd)
 	: "${IMG:?pass IMG=<path to a raw ext4 .img, labelled $label> -- see the header above for how to build one per distro}"
 	[ -f "$IMG" ] || { echo "$IMG not found" >&2; exit 1; }
+	python3 "$repo_root/scripts/verify-wifi-firmware.py" --fedora-image "$IMG"
 	if ! adb get-state </dev/null 2>/dev/null | grep -q recovery; then
 		echo "device is not in recovery (TWRP) mode -- aborting" >&2
 		exit 1
@@ -174,6 +175,7 @@ EOF
 userdata)
 	: "${IMG:?pass IMG=<path to a raw ext4 .img, labelled $label> -- see the header above for how to build one per distro}"
 	[ -f "$IMG" ] || { echo "$IMG not found" >&2; exit 1; }
+	python3 "$repo_root/scripts/verify-wifi-firmware.py" --fedora-image "$IMG"
 	cat >&2 <<'EOF'
 =========================  DESTRUCTIVE  =========================
  This writes the rootfs image directly over
