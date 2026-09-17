@@ -65,8 +65,10 @@ mkdir -p "$fwdir"
 if [ -d "$repo_root_for_fw/buildroot/firmware-overlay/lib/firmware" ]; then
 	cp -a "$repo_root_for_fw/buildroot/firmware-overlay/lib/firmware/." "$fwdir/"
 else
-	echo "WARNING: buildroot/firmware-overlay not built -- run scripts/fetch-ath11k-firmware.sh first" >&2
+	echo "Missing device firmware overlay; refusing an incomplete initramfs" >&2
+	exit 1
 fi
+python3 "$repo_root/scripts/verify-wifi-firmware.py" --firmware-dir "$fwdir"
 mkdir -p "$fwdir/qcom"
 vfw="$repo_root_for_fw/vendor-firmware-dump/firmware"
 for f in a740_zap.mdt a740_zap.b00 a740_zap.b01 a740_zap.b02 a740_sqe.fw gmu_gen70200.bin; do

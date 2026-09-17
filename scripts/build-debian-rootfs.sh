@@ -945,12 +945,16 @@ if [ "$desktop" = "kde" ]; then
 fi
 
 echo "== enabling services =="
+rm -f "$rootdir/etc/systemd/system/multi-user.target.wants/gts9wifi-wait-sensor-proxy.service" \
+	"$rootdir/etc/systemd/system-sleep/gts9wifi-sensors-resume" \
+	"$rootdir/etc/systemd/system-sleep/gts9wifi-usb-host-resume"
 for unit in \
 	NetworkManager bluetooth chrony ssh \
 	hexagonrpcd-adsp-rootpd \
 	pd-mapper \
 	gts9wifi-bt-provision \
-	gts9wifi-wait-sensor-proxy \
+	gts9wifi-wait-sensor-proxy.timer \
+	gts9wifi-resume \
 	gts9wifi-panel-coldboot-recover \
 	gts9wifi-grow-rootfs \
 	gts9wifi-usb-net gts9wifi-wifi-recover gts9wifi-sensor-registry-perms \

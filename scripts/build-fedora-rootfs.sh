@@ -526,11 +526,18 @@ echo "== staging this project's own firmware (WiFi/BT/GPU) =="
 # comments in kernel/dts/sm8550-samsung-x716b.dts).
 fwdir="$rootdir/usr/lib/firmware"
 mkdir -p "$fwdir/qcom" "$fwdir/qca"
+# Fedora's linux-firmware may use hw2.1 -> hw2.0. Give this board its own
+# directory so staging never overwrites the distro's generic hw2.0 set.
+if [ -L "$fwdir/ath11k/WCN6855/hw2.1" ]; then
+	rm "$fwdir/ath11k/WCN6855/hw2.1"
+fi
 if [ -d "$repo_root/buildroot/firmware-overlay/lib/firmware" ]; then
 	cp -a "$repo_root/buildroot/firmware-overlay/lib/firmware/." "$fwdir/"
 else
-	echo "    WARN: buildroot/firmware-overlay not built -- run scripts/fetch-ath11k-firmware.sh first" >&2
+	echo "Missing device firmware overlay; refusing to ship generic calibration" >&2
+	exit 1
 fi
+python3 "$repo_root/scripts/verify-wifi-firmware.py" --firmware-dir "$fwdir"
 vfw="$repo_root/vendor-firmware-dump/firmware"
 # a740_sqe.fw added Session 9 after a real-hardware dmesg capture showed
 # it -- not the zap-shader files -- was the one actually missing: "Direct
@@ -560,6 +567,12 @@ echo "== staging ADSP PIL firmware + HexagonFS payload + AudioReach topology =="
 # the real partition/filesystem findings and the topology reuse story.
 mkdir -p "$fwdir/qcom/sm8550"
 adspfw="$repo_root/vendor-firmware-dump/firmware/qcom-sm8550"
+for map in adspr.jsn adsps.jsn adspua.jsn cdspr.jsn; do
+	[ -s "$adspfw/$map" ] || {
+		echo "Missing $adspfw/$map; extract the device's PDR maps before building" >&2
+		exit 1
+	}
+done
 if [ -d "$adspfw" ] && [ -n "$(ls -A "$adspfw" 2>/dev/null)" ]; then
 	# Whole directory, not an `adsp*` glob: that glob happened to catch
 	# adspr.jsn/adsps.jsn/adspua.jsn (they start with "adsp") but silently
@@ -623,6 +636,10 @@ cp -a "$repo_root/rootfs/overlay-common/." "$rootdir/"
 cp -a "$repo_root/rootfs/overlay-systemd/." "$rootdir/"
 # WirePlumber 0.5 uses the replacement SPA-JSON camera rules.
 rm -f "$rootdir/usr/share/wireplumber/main.lua.d/51-gts9-camera-backends.lua"
+# Old overlays installed hooks in a directory Fedora systemd never reads.
+# The sleep.target-bound gts9wifi-resume service replaces them.
+rm -f "$rootdir/etc/systemd/system-sleep/gts9wifi-sensors-resume" \
+	"$rootdir/etc/systemd/system-sleep/gts9wifi-usb-host-resume"
 
 echo "== base system configuration =="
 # fstab by LABEL, not UUID/device path -- matches this project's own
@@ -759,10 +776,12 @@ run_chroot /usr/bin/systemctl mask rmtfs.service >/dev/null 2>&1 || true
 #    with (we never carried those carveouts, unlike a stock Android boot
 #    chain would) -- the memory this script reclaims on gts9wifi-fedora's
 #    boot images was never wasted on ours, so there's nothing for it to do.
+rm -f "$rootdir/etc/systemd/system/multi-user.target.wants/gts9wifi-wait-sensor-proxy.service"
 for unit in \
 	hexagonrpcd-adsp-rootpd \
 	pd-mapper \
-	gts9wifi-wait-sensor-proxy \
+	gts9wifi-wait-sensor-proxy.timer \
+	gts9wifi-resume \
 	gts9wifi-bt-provision \
 	gts9wifi-panel-coldboot-recover \
 	gts9wifi-grow-rootfs \

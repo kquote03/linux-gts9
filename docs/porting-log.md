@@ -4968,3 +4968,40 @@ OOM mitigation. A bounded test of the rebuilt plugin published
 `IsCameraPresent=true`. Normal activation remains gated on the full memory
 and streaming tests and permanent power correction. No working GNOME
 capture is claimed from discovery alone.
+
+## Session 20 — 2026-09-15 to 2026-09-17 — WiFi firmware consistency, suspend ordering, and boot latency
+
+Returned to the outstanding reliability work after the camera sessions. The
+deployed Fedora image had stale community ath11k files even though the
+Samsung HSP2.0 set was present in the boot ramdisk. Replaced the live
+`WCN6855/hw2.1` set with the exact Samsung AMSS, board, M3, and regulatory
+database files, then rebooted and exercised normal boot and several suspend
+cycles. Firmware loads now consistently report the Samsung HSP2.0 build;
+three real 25 MiB HTTPS downloads on a 5 GHz guest AP measured 112.7–117.8
+Mbit/s with both RX chains at approximately -41 dBm. This validates the
+calibration and packaging path, but the Pixel 6 personal-hotspot reboot has
+not yet been reproduced under a controlled capture, so it remains open.
+
+Recovered the four missing Qualcomm ADSP PD-map JSON files from the device's
+read-only vendor firmware mount and committed them to the shared firmware
+source. `pd-mapper` now finds its maps; SSC still fails later in
+`hexagonrpcd`, so sensor publication is not claimed fixed.
+
+Measured graphical-target boot time fell from roughly 148 seconds to 35
+seconds after moving sensor discovery off the graphical boot transaction,
+starting ADSP only after panel cold-boot recovery, and replacing the
+unbounded boot service with a timer plus bounded recovery attempts. The old
+`/etc/systemd/system-sleep` wrappers were inert on Fedora and were removed.
+Resume ordering is now represented by `gts9wifi-resume.service` on
+`sleep.target`, which runs the USB host resume helper after kernel resume and
+queues sensor recovery without holding up suspend. A timed deep-sleep cycle
+and subsequent manual cycle resumed normally; USB gadget re-enumeration still
+needs a separate investigation.
+
+The SM5714 CC watch and initial resync work was moved to
+`system_freezable_wq` after the pre-change kernel log showed an I2C transfer
+from that workqueue while the controller was suspended. The rebuilt kernel
+and refreshed Fedora image are staged and verified offline; no partition was
+written during this session. Long-duration deep-sleep validation and the
+controlled Pixel-hotspot test remain acceptance gates for the next hardware
+boot.

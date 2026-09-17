@@ -1,0 +1,25 @@
+{
+  "method": "read-only SSH from stable Fedora, sudo dd status=none",
+  "partitions": {
+    "vendor_boot": {
+      "device": "/dev/sda24",
+      "size": 100663296,
+      "sha256": "256039eec1b2fb7567713e427c436ef221ddb4f4ebf544d48f900515df9b8ad5"
+    },
+    "init_boot": {
+      "device": "/dev/sda22",
+      "size": 8388608,
+      "sha256": "0517e8be3ec2adeb2e0f62a1fc131b67f9e9abe56b8a177fb0a091cc7375d7b3"
+    },
+    "dtbo": {
+      "device": "/dev/sda30",
+      "size": 16777216,
+      "sha256": "bd7149dbc4c606da7510d5a65af4a7244b011f151282f52b8f513d5f7d984624"
+    },
+    "boot": {
+      "device": "/dev/sda21",
+      "size": 100663296,
+      "sha256": "1576195bd0cc6e9bafbf549bcd893b4a10edc4086f351ec92a3675a07a41377c"
+    }
+  }
+}

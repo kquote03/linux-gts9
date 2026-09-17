@@ -66,6 +66,11 @@ for f in "$kernel_image" "$init_boot_ramdisk" "$vendor_ramdisk_src" "$board_dtb"
 	fi
 done
 
+# Both archives can supply firmware before switch_root. Validate each so a
+# stale vendor archive cannot override a corrected generic archive.
+python3 "$repo_root/scripts/verify-wifi-firmware.py" --allow-no-wifi \
+	--initramfs "$init_boot_ramdisk" --initramfs "$vendor_ramdisk_src"
+
 # Samsung's boot chain expects the generic/vendor ramdisks in legacy LZ4
 # framing, not gzip -- confirmed by ubuntu-galaxy-tab-s9ultra's own script
 # comment: "stock uses the legacy LZ4 stream format... a gzip generic

@@ -30,7 +30,7 @@ device.
 | GPU (Adreno 740) | ✅ real zap/GMU firmware, GNOME renders on it |
 | Touchscreen (ST fts1ba90a) | ✅ |
 | S Pen digitizer (Wacom wez01) | ✅ confirmed on hardware, tracks correctly across display rotations (see `docs/s-pen-orientation.md`) |
-| Wi-Fi (QCA6490 / ath11k) | ⚠️ associates and passes real traffic, but throughput is far below stock Android on the same network/position -- three real fixes landed (power-save default, chip-identity/regulator correctness, WLAN_EN cold-reset), each independently confirmed on hardware, none moved the throughput ceiling; likely a genuine antenna/RF hardware characteristic at this point, not a software bug -- see `docs/porting-log.md` |
+| Wi-Fi (QCA6490 / ath11k) | ⚠️ Samsung factory firmware/calibration restores both RX chains and measured 113–118 Mbit/s downloads on 5 GHz. Rootfs/initramfs firmware consistency is checked during packaging. Pixel 6 hotspot reboot remains under investigation — see `docs/reliability-2026-09.md`. |
 | Bluetooth | ✅ HCI up, real BT keyboard + touchpad HID input confirmed working on hardware |
 | Speakers (4× CS35L45 on PRIMARY MI2S) | ✅ both stereo channels confirmed audible by ear |
 | DMIC capture (LPASS VA macro) | ⚠️ wired in DTS, not yet tested with a real recording |
@@ -41,7 +41,7 @@ device.
 | USB host mode, Type-C PD, docks | ✅ confirmed on hardware — real USB-C hub enumerated fully (`docs/porting-log.md`) |
 | USB-C DisplayPort altmode | ⚠️ wired in DTS, not tested with a physical dock |
 | Sensors (SSC: accelerometer, ambient light, etc.) | ⚠️ ADSP boots and the HexagonFS registry path is fixed, but the SSC QMI service itself doesn't publish (a real, likely upstream `hexagonrpcd` gap — see `docs/porting-log.md`) |
-| Suspend (s2idle) | ✅ |
+| Suspend (deep) | ⚠️ short and ~11-minute sleeps resumed; extended-sleep reboot remains under investigation. A confirmed USB-C I²C suspend race is fixed in source and awaits flashed-kernel validation; see `docs/reliability-2026-09.md`. |
 | GNOME desktop (Wayland, `gdm`) | ✅ real login screen confirmed on the physical panel |
 | Camera | ⚠️ Rear captures at ~30 fps with a temporary GPIO15 power override; brighter lighting produces images, but quality and autofocus remain unresolved. The corrected GPIO15 supply is built, awaiting flash. The rebuilt SPA plugin exposes the rear camera to GNOME’s portal in a bounded test; normal activation remains disabled pending memory/streaming validation. Front remains disabled pending shared-rail voltage validation. See `docs/hardware-facts.md`. |
 | Fingerprint | ❌ not present on the reference project this was ported from |

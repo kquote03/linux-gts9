@@ -2,30 +2,21 @@
 # boot and strips enablement from anything without a preset entry, which is
 # how the first Fedora boot silently lost the whole device stack.
 #
-# The ADSP chain (hexagonrpcd-adsp-sensorspd + its Required
-# gts9wifi-adsp-boot) is deliberately NOT enabled: the ADSP start can hang or
-# reset the SoC (per the pmOS port) and doing it concurrently with
-# panel-coldboot-recover's pm_test suspend froze the board outright.  Start
-# it manually, one unit at a time.
-#
-# X716B pivot: this project's own gts9wifi-fedora-derived build script's
-# unit-enable loop and this same upstream preset file both ALSO listed
-# `gts9wifi-adsp-boot.service` as `enable`d, directly contradicting their
-# own stated intent right above (and gts9wifi-adsp-boot.service's own "Not
-# enabled by default" comment) -- a real inconsistency in the upstream
-# reference, not something to replicate. Left out here; likewise
-# `gts9wifi-mem-reclaim.service` is removed outright (script deleted, see
-# docs/porting-log.md -- targets Samsung-downstream-only reserved-memory
-# carveout names this project's mainline board DTB never carried), and
-# `vendor.mount`/`gts9wifi-android-parts.service` stay out (need a
-# dynamic-partition dm-mapping tool neither project has ported; nothing
-# this port's feature set needs requires the full /vendor erofs mount).
+# Sensor discovery starts from a timer, outside the graphical boot chain,
+# and pulls in sensorspd/ADSP after panel recovery. Those two services are
+# not independently enabled: ADSP startup concurrent with the panel's PM
+# test previously froze this board. gts9wifi-resume restarts discovery after
+# sleep; neither the timer nor discovery is allowed to run during sleep.
+# Removed reference-only units (mem-reclaim, vendor.mount, android-parts)
+# remain excluded; see docs/porting-log.md.
 enable sshd.service
 enable NetworkManager.service
 enable hexagonrpcd-adsp-rootpd.service
 enable pd-mapper.service
 enable gts9wifi-bt-provision.service
-enable gts9wifi-wait-sensor-proxy.service
+disable gts9wifi-wait-sensor-proxy.service
+enable gts9wifi-wait-sensor-proxy.timer
+enable gts9wifi-resume.service
 enable gts9wifi-panel-coldboot-recover.service
 enable gts9wifi-grow-rootfs.service
 enable gts9wifi-usb-net.service

@@ -1,0 +1,12 @@
+[Unit]
+Description=Discover optional SSC sensors outside the desktop boot transaction
+Conflicts=sleep.target
+Before=sleep.target
+
+[Timer]
+OnBootSec=30s
+AccuracySec=1s
+Unit=gts9wifi-wait-sensor-proxy.service
+
+[Install]
+WantedBy=timers.target

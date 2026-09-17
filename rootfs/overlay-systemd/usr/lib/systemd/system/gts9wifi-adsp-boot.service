@@ -1,14 +1,17 @@
 [Unit]
 Description=Boot the ADSP remoteproc once the rootfs firmware is reachable
 After=local-fs.target
+Requires=gts9wifi-panel-coldboot-recover.service
+After=gts9wifi-panel-coldboot-recover.service
 
 [Service]
 Type=oneshot
-ExecStartPre=/bin/sleep 25
+# The panel PM test must finish before ADSP starts. A fixed sleep neither
+# expresses that dependency nor guarantees it on a slow boot.
 ExecStart=/bin/sh -c "grep -q running /sys/class/remoteproc/remoteproc0/state || echo start > /sys/class/remoteproc/remoteproc0/state"
-TimeoutStartSec=45
+TimeoutStartSec=10
 RemainAfterExit=yes
 
-# Not enabled by default: the ADSP start can hang or reset the SoC.
+# Pulled in by sensorspd, after panel recovery; not separately enabled.
 [Install]
 WantedBy=multi-user.target

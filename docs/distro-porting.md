@@ -42,12 +42,15 @@ cover:
 
 - `usr/lib/systemd/system/**`, `usr/lib/systemd/system-preset/**` — unit
   files and the enablement preset.
-- `etc/systemd/**` — drop-ins (`*.service.d/`), sleep hooks
-  (`system-sleep/`), `journald.conf.d`, `logind.conf.d`.
+- `etc/systemd/**` — drop-ins (`*.service.d/`), `journald.conf.d`,
+  `logind.conf.d`. Suspend recovery is expressed as the ordered
+  `gts9wifi-resume.service` stop action on `sleep.target`; the old
+  `system-sleep/` wrappers are intentionally absent because Fedora does not
+  search that source-tree path for this overlay.
 - `etc/tmpfiles.d/**` — `systemd-tmpfiles`' own convention.
-- The 3 `usr/libexec/gts9wifi-*` scripts that call `systemctl` directly
+- The `usr/libexec/gts9wifi-*` scripts that call `systemctl` directly
   (`gts9wifi-bt-revive`, `gts9wifi-wait-sensor-proxy`,
-  `gts9wifi-sensors-resume`) — these encode systemd-specific *behavior*
+  `gts9wifi-sensors-resume`, and the resume helper) — these encode systemd-specific *behavior*
   (restarting a named unit), not just systemd-specific *placement*, so
   they don't belong in the common layer even though they're plain shell.
 
@@ -68,11 +71,10 @@ cover:
    - The 3 `systemctl`-calling scripts need their `systemctl restart
      <unit>` calls translated to your init system's own service-restart
      command.
-   - `system-sleep/` hooks need your init system's own suspend/resume
-     hook mechanism (elogind's own hook directory, a `pm-utils` script,
-     etc.) — see `gts9wifi-sensors-resume`'s and
-     `gts9wifi-usb-host-resume`'s hook files for what each needs to do at
-     `pre`/`post`.
+   - Preserve the suspend ordering encoded by `gts9wifi-resume.service`:
+     stop the USB host helper only after the kernel resumes, then queue the
+     bounded sensor recovery outside the suspend transaction. An init system
+     without systemd needs its own equivalent post-resume hook.
    - The system-preset's enable/disable list documents *why* each unit
      is or isn't auto-started (some are deliberately manual-start-only —
      read those comments before blindly enabling everything).

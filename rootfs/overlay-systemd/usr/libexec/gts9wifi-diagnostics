@@ -1,0 +1,66 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Run as root before/after a reproduction. The optional second argument
+# watches for devcoredumps for N seconds; stop with Ctrl-C after a failure.
+# Dumps can contain network traffic: keep the resulting directory private.
+set -eu
+umask 077
+out=${1:-/var/log/gts9wifi-diagnostics/$(date +%Y%m%d-%H%M%S)}
+watch_seconds=${2:-0}
+case "$watch_seconds" in ''|*[!0-9]*) echo "watch duration must be seconds" >&2; exit 2;; esac
+mkdir -p "$out"
+out=$(cd "$out" && pwd)
+
+snapshot()
+{
+	uname -a
+	cat /proc/sys/kernel/random/boot_id /proc/cmdline /sys/power/mem_sleep
+	cat /sys/module/ath11k/parameters/skip_legacy_wmm_params
+	cat /sys/module/firmware_class/parameters/path
+	sha256sum /lib/firmware/ath11k/WCN6855/hw2.1/*.bin
+	for device in /sys/class/net/*; do
+		[ -d "$device/phy80211" ] || continue
+		iface=${device##*/}
+		iw dev "$iface" link
+		iw dev "$iface" station dump
+		iw dev "$iface" get power_save
+	done
+	iw reg get
+	cat /sys/kernel/debug/suspend_stats /sys/kernel/debug/wakeup_sources
+	for battery in /sys/class/power_supply/*/uevent; do cat "$battery"; done
+	systemctl --failed --no-pager
+	systemd-analyze critical-chain display-manager.service
+	systemd-analyze blame
+}
+
+snapshot > "$out/state.txt" 2>&1 || true
+dmesg > "$out/dmesg.txt" 2>&1 || true
+journalctl -b -o short-monotonic --no-pager > "$out/journal.txt" 2>&1 || true
+journalctl -b -1 -k --no-pager > "$out/previous-kernel.txt" 2>&1 || true
+mkdir -p "$out/pstore"
+cp -a /sys/fs/pstore/. "$out/pstore/" 2>/dev/null || true
+echo "Diagnostics: $out"
+
+# Keep log capture alive independently of the network used to reproduce.
+# Invoke through systemd-run when the SSH connection may disappear.
+if [ "$watch_seconds" -gt 0 ]; then
+	journalctl -kf -o short-monotonic > "$out/kernel-follow.txt" 2>&1 &
+	log_pid=$!
+	trap 'kill "$log_pid" 2>/dev/null || true' EXIT
+	trap 'exit 0' INT TERM
+fi
+elapsed=0
+while :; do
+	for dump in /sys/class/devcoredump/devcd*/data; do
+		[ -r "$dump" ] || continue
+		name=$(basename "$(dirname "$dump")")
+		[ ! -e "$out/$name.bin" ] || continue
+		if timeout -k 1 10 cat "$dump" > "$out/$name.partial"; then
+			mv "$out/$name.partial" "$out/$name.bin"
+			sync
+		fi
+	done
+	[ "$elapsed" -lt "$watch_seconds" ] || break
+	sleep 1
+	elapsed=$((elapsed + 1))
+done
