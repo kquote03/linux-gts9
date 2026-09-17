@@ -309,6 +309,23 @@ dnf_install install \
 	libqmi-devel protobuf-c-devel qrtr-devel xz-devel \
 	python3-devel python3-protobuf
 
+if [ "$desktop" = "gnome" ]; then
+	echo "== installing native build dependencies (for the camera stack below) =="
+	# libcamera (C++, needs gcc-c++ unlike the C-only builds above) and the
+	# PipeWire libcamera SPA plugin. Package names are Fedora's standard
+	# ones (not independently verified against live Fedora 44 aarch64 repo
+	# metadata from this dev machine -- see docs/porting-log.md's Camera
+	# bring-up session entry for why -- so a wrong name here is expected to
+	# surface as a real, fixable dnf error on the next run, not silently
+	# break anything).
+	dnf_install install \
+		gcc-c++ autoconf automake libtool autoconf-archive \
+		python3-pyyaml python3-jinja2 python3-ply \
+		gnutls-devel libyaml-devel libdrm-devel libjpeg-turbo-devel \
+		libtiff-devel libevent-devel boost-devel elfutils-devel \
+		gstreamer1-devel gstreamer1-plugins-base-devel pipewire-devel rpm-build dnf5-plugins
+fi
+
 echo "== building libssc 0.4.4 (not in Fedora) =="
 # Same source gts9wifi-fedora's own script and the postmarketOS port before
 # it use -- provides libssc.so + ssccli, needed by iio-sensor-proxy's
@@ -317,7 +334,7 @@ run_chroot /usr/bin/bash -c '
 	set -eu
 	export HOME=/root
 	d=$(mktemp -d)
-	curl -sfL "https://codeberg.org/DylanVanAssche/libssc/archive/v0.4.4.tar.gz" \
+	curl --retry 3 --retry-delay 3 --retry-connrefused -sfL "https://codeberg.org/DylanVanAssche/libssc/archive/v0.4.4.tar.gz" \
 		| tar xz -C "$d" --strip-components=1
 	meson setup "$d/build" "$d" -Dprefix=/usr -Db_lto=true
 	meson compile -C "$d/build"
@@ -331,7 +348,7 @@ run_chroot /usr/bin/bash -c '
 	set -eu
 	export HOME=/root
 	d=$(mktemp -d)
-	curl -sfL "https://github.com/andersson/pd-mapper/archive/refs/tags/v1.1.tar.gz" \
+	curl --retry 3 --retry-delay 3 --retry-connrefused -sfL "https://github.com/andersson/pd-mapper/archive/refs/tags/v1.1.tar.gz" \
 		| tar xz -C "$d" --strip-components=1
 	make -C "$d" prefix=/usr
 	make -C "$d" install prefix=/usr
@@ -396,15 +413,109 @@ if [ "$desktop" = "gnome" ]; then
 		set -eu
 		export HOME=/root
 		d=$(mktemp -d)
-		curl -sfL "https://gitlab.freedesktop.org/hadess/iio-sensor-proxy/-/archive/3.9/iio-sensor-proxy-3.9.tar.gz" \
+		curl --retry 3 --retry-delay 3 --retry-connrefused -sfL "https://gitlab.freedesktop.org/hadess/iio-sensor-proxy/-/archive/3.9/iio-sensor-proxy-3.9.tar.gz" \
 			| tar xz -C "$d" --strip-components=1
 		patch -d "$d" -p1 < /tmp/iio-sensor-proxy-patches/notify-slow-sensor-discovery.patch
 		meson setup "$d/build" "$d" -Dprefix=/usr -Dssc-support=enabled
 		meson compile -C "$d/build"
 		meson install --no-rebuild -C "$d/build"
 	'
+
+	# Camera bring-up session: libcamera/PipeWire/v4l2-relayd for the two
+	# HI1337 cameras wired in kernel/dts/sm8550-samsung-x716b.dts. Ported
+	# from ubuntu-galaxy-tab-s9ultra's own real, hardware-validated
+	# scripts/build-camera-packages.sh (SM-X910 Ultra, same libcamera/
+	# PipeWire commits and patch series -- only the tuning-file name and
+	# --libdir differ, since this project installs straight into the
+	# chroot rather than building .deb packages, and Fedora uses lib64,
+	# not a Debian multiarch triplet).
+	#
+	# Fedora's Workstation group may pull in its own libcamera (too old for
+	# the simple pipeline + software ISP this device needs -- the whole
+	# reason this gets built from source at all, same reasoning as
+	# iio-sensor-proxy above). Drop just the rpmdb entry, not a real
+	# `dnf remove`, for the same cascading-removal reason as above.
+	run_chroot /usr/bin/rpm -e --nodeps libcamera libcamera-tools libcamera-ipa \
+		2>/dev/null || true
+
+	echo "== building libcamera (simple pipeline + software ISP for HI1337) =="
+	mkdir -p "$rootdir/tmp/libcamera-patches"
+	cp "$repo_root/specs/libcamera-x716b/patches/"*.patch "$rootdir/tmp/libcamera-patches/"
+	cp "$repo_root/specs/libcamera-x716b/tuning/hi1337-gts9.yaml" "$rootdir/tmp/libcamera-patches/"
+	run_chroot /usr/bin/bash -c '
+		set -eu
+		export HOME=/root
+		d=$(mktemp -d)
+		for attempt in 1 2 3; do
+			git clone --quiet https://gitlab.freedesktop.org/camera/libcamera.git "$d/src" && break
+			[ "$attempt" = 3 ] && exit 1
+			rm -rf "$d/src"
+			sleep 5
+		done
+		cd "$d/src"
+		git checkout --quiet 62d4bfc450798cbd57722fa349a245b93b11d1cd
+		for p in /tmp/libcamera-patches/*.patch; do
+			git apply "$p"
+		done
+		meson setup "$d/build" . \
+			--prefix=/usr \
+			--libdir=lib64 \
+			-Dpipelines=simple \
+			-Dipas=simple \
+			-Dgstreamer=disabled \
+			-Dcam=enabled \
+			-Dcam-output-kms=disabled \
+			-Dcam-output-sdl2=disabled \
+			-Dqcam=disabled \
+			-Ddocumentation=disabled \
+			-Dtest=false \
+			-Dlc-compliance=disabled \
+			-Dpycamera=disabled \
+			-Dv4l2=false \
+			-Dtracing=disabled \
+			-Dsoftisp-gpu=disabled
+		meson compile -C "$d/build"
+		meson install --no-rebuild -C "$d/build"
+		install -Dm644 /tmp/libcamera-patches/hi1337-gts9.yaml \
+			/usr/share/libcamera/ipa/simple/hi1337-gts9.yaml
+	'
+
+	echo "== building the libcamera SPA plugin from the installed Fedora PipeWire SRPM =="
+	mkdir -p "$rootdir/tmp/pipewire-spec"
+	cp -a "$repo_root/specs/pipewire-x716b/." "$rootdir/tmp/pipewire-spec/"
+	cp "$repo_root/scripts/build-fedora-camera-spa.sh" "$rootdir/tmp/build-fedora-camera-spa.sh"
+	run_chroot /usr/bin/bash /tmp/build-fedora-camera-spa.sh /tmp/pipewire-spec
+
+	echo "== building v4l2-relayd (relays libcamera onto v4l2loopback nodes) =="
+	# Not packaged for Fedora at all (Ubuntu/Launchpad-specific); autotools,
+	# not meson, matching its own upstream build system.
+	mkdir -p "$rootdir/tmp/v4l2-relayd-patches"
+	cp "$repo_root/specs/v4l2-relayd-x716b/patches/"*.patch "$rootdir/tmp/v4l2-relayd-patches/"
+	run_chroot /usr/bin/bash -c '
+		set -eu
+		export HOME=/root
+		d=$(mktemp -d)
+		for attempt in 1 2 3; do
+			git clone --quiet https://git.launchpad.net/ubuntu/+source/v4l2-relayd "$d/src" && break
+			[ "$attempt" = 3 ] && exit 1
+			rm -rf "$d/src"
+			sleep 5
+		done
+		cd "$d/src"
+		git checkout --quiet 80e8f54563f624fe2f80a954af8cce27cc3a9636
+		for p in /tmp/v4l2-relayd-patches/*.patch; do
+			git apply "$p"
+		done
+		NOCONFIGURE=1 ./autogen.sh
+		./configure --prefix=/usr
+		make -j"$(nproc)"
+		make install
+	'
 fi
-rm -rf "$rootdir/tmp/hexagonrpcd-patches" "$rootdir/tmp/iio-sensor-proxy-patches"
+rm -rf "$rootdir/tmp/hexagonrpcd-patches" "$rootdir/tmp/iio-sensor-proxy-patches" \
+	"$rootdir/tmp/libcamera-patches" "$rootdir/tmp/pipewire-spec" \
+	"$rootdir/tmp/build-fedora-camera-spa.sh" \
+	"$rootdir/tmp/v4l2-relayd-patches"
 
 echo "== staging this project's own firmware (WiFi/BT/GPU) =="
 # Reuses the exact files this project already extracted from this
@@ -510,6 +621,8 @@ echo "== applying device overlay =="
 # handful of libexec scripts that call systemctl directly).
 cp -a "$repo_root/rootfs/overlay-common/." "$rootdir/"
 cp -a "$repo_root/rootfs/overlay-systemd/." "$rootdir/"
+# WirePlumber 0.5 uses the replacement SPA-JSON camera rules.
+rm -f "$rootdir/usr/share/wireplumber/main.lua.d/51-gts9-camera-backends.lua"
 
 echo "== base system configuration =="
 # fstab by LABEL, not UUID/device path -- matches this project's own
@@ -587,6 +700,7 @@ run_chroot /usr/bin/bash -c "echo 'root:${build_user}' | chpasswd"
 # container): populate the home directory explicitly instead of trusting
 # useradd -m's skel copy to finish.
 run_chroot /usr/sbin/useradd -M -G wheel -s /usr/bin/bash "$build_user" || true
+run_chroot /usr/sbin/usermod -a -G video "$build_user"
 run_chroot /usr/bin/bash -c "mkdir -p /home/${build_user} && cp -a /etc/skel/. /home/${build_user}/ && chown -R 1000:1000 /home/${build_user}"
 run_chroot /usr/bin/bash -c "echo '${build_user}:${build_user}' | chpasswd"
 
@@ -597,6 +711,14 @@ if [ "$desktop" = "gnome" ]; then
 	run_chroot /usr/bin/systemctl set-default graphical.target >/dev/null 2>&1 || true
 	run_chroot /usr/bin/firewall-offline-cmd --add-service=ssh >/dev/null 2>&1 \
 		|| echo "    WARN: could not allow ssh in the firewall" >&2
+	# Camera bring-up session: must come after the device overlay above
+	# (rootfs/overlay-systemd/usr/lib/systemd/system/gts9-camera-relays.service),
+	# not alongside the libcamera/PipeWire/v4l2-relayd build block earlier
+	# in this script -- the unit file doesn't exist in the chroot until the
+	# overlay is copied in, confirmed live (first attempt enabled it too
+	# early and warned "unit not found").
+	run_chroot /usr/bin/systemctl enable gts9-camera-relays.service >/dev/null 2>&1 \
+		|| echo "    WARN: unit not found: gts9-camera-relays.service" >&2
 fi
 for unit in sshd NetworkManager bluetooth; do
 	run_chroot /usr/bin/systemctl enable "$unit" >/dev/null 2>&1 \

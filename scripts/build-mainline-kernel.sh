@@ -187,6 +187,16 @@ apply_unless 'consume_retained_sink_dfp' \
 apply_unless 'ath11k_mac_skip_legacy_wmm_params' \
 	drivers/net/wireless/ath/ath11k/mac.c ath11k-defer-wmm-params-until-vdev-started.patch
 
+# Camera bring-up session (real-hardware follow-up): mainline CAMSS reads
+# and clears the CSI-2 receiver's own physical/protocol-layer error status
+# register on every IRQ but never logs it -- the one register in the whole
+# CSID/CSIPHY/VFE path already being read that could explain why the rear
+# camera (confirmed correctly identified over I2C/CCI, media-graph link
+# confirmed complete) streams zero frames with no other visible error. See
+# docs/hardware-facts.md's Camera section and this patch's own header.
+apply_unless 'CSI2 Rx IRQ status' \
+	drivers/media/platform/qcom/camss/camss-csid-gen3.c camss-log-csi2-rx-irq-status.patch
+
 # Kbuild's LLVM=1 points HOSTCC/HOSTCXX at bare clang-unwrapped even when an
 # environment-exported override is present -- only a command-line-supplied
 # HOSTCC/HOSTCXX takes effect. Same is true of KCFLAGS (needed for
@@ -377,6 +387,56 @@ grep -q 'wacom-wez01-x716.o' "$ts_dir/Makefile" || \
 	printf 'obj-$(CONFIG_TOUCHSCREEN_WACOM_WEZ01_X716)\t+= wacom-wez01-x716.o\n' \
 		>> "$ts_dir/Makefile"
 
+echo "== installing camera sensor/actuator drivers into the kernel tree =="
+# HI1337 rear/front sensor + DW9808 rear-focus actuator (Camera bring-up
+# session): forked from ubuntu-galaxy-tab-s9ultra's own from-scratch
+# drivers for the same SM8550 "gts9" reference-design family -- see
+# kernel/drivers/hi1337_gts9.c's own header for the UNVERIFIED, pending-
+# real-hardware assumption this whole camera port currently rests on
+# (that X716B's rear-main/front-main modules are the identical HI1337
+# parts the Ultra uses, on the same CSIPHY indices). Same idempotent
+# install/Kconfig/Makefile staging pattern as the other from-scratch
+# drivers above; both land in drivers/media/i2c like any other mainline
+# sensor/lens driver, not in the board-driver directories above.
+i2c_media_dir=$kdir/drivers/media/i2c
+install -m 0644 "$drv/hi1337_gts9.c" "$i2c_media_dir/hi1337_gts9.c"
+install -m 0644 "$drv/hi1337_gts9_tables.h" "$i2c_media_dir/hi1337_gts9_tables.h"
+if ! grep -q 'VIDEO_HI1337_GTS9' "$i2c_media_dir/Kconfig"; then
+	sed -i '/^endif # VIDEO_DEV$/i \
+config VIDEO_HI1337_GTS9\
+\ttristate "Hynix HI1337 sensor support (Galaxy Tab S9 5G)"\
+\tdepends on I2C && VIDEO_DEV\
+\tselect MEDIA_CONTROLLER\
+\tselect V4L2_FWNODE\
+\tselect VIDEO_V4L2_SUBDEV_API\
+\thelp\
+\t  Hynix HI1337 rear-main/front-main camera sensor as fitted to\
+\t  the Galaxy Tab S9 5G (SM-X716B).\
+' "$i2c_media_dir/Kconfig"
+fi
+grep -q 'hi1337_gts9.o' "$i2c_media_dir/Makefile" || \
+	printf 'obj-$(CONFIG_VIDEO_HI1337_GTS9)\t+= hi1337_gts9.o\n' \
+		>> "$i2c_media_dir/Makefile"
+
+install -m 0644 "$drv/dw9808_vcm.c" "$i2c_media_dir/dw9808_vcm.c"
+if ! grep -q 'VIDEO_DW9808_VCM' "$i2c_media_dir/Kconfig"; then
+	sed -i '/^endif # VIDEO_DEV$/i \
+config VIDEO_DW9808_VCM\
+\ttristate "DW9808 lens voice coil support"\
+\tdepends on I2C && VIDEO_DEV\
+\tselect MEDIA_CONTROLLER\
+\tselect VIDEO_V4L2_SUBDEV_API\
+\thelp\
+\t  This is a driver for the DW9808 camera lens voice coil.\
+\t  DW9808 is a 10 bit DAC with 100mA output current sink,\
+\t  used as the rear-camera autofocus actuator on the Galaxy\
+\t  Tab S9 family.\
+' "$i2c_media_dir/Kconfig"
+fi
+grep -q 'dw9808_vcm.o' "$i2c_media_dir/Makefile" || \
+	printf 'obj-$(CONFIG_VIDEO_DW9808_VCM)\t+= dw9808_vcm.o\n' \
+		>> "$i2c_media_dir/Makefile"
+
 mkdir -p "$outdir"
 
 echo "== defconfig =="
@@ -451,8 +511,47 @@ modules_out=$outdir/modules-out
 rm -rf "$modules_out"
 make -C "$kdir" "${make_args[@]}" INSTALL_MOD_PATH="$modules_out" modules_install
 
-echo "== running depmod =="
+echo "== building v4l2loopback (out-of-tree, for the camera relay layer) =="
+# The application-facing half of the camera bridge (scripts/build-fedora-
+# rootfs.sh's libcamera/PipeWire/v4l2-relayd stack fans out onto its device
+# nodes). Built out-of-tree against this exact kernel and signed with its
+# own generated key, matching ubuntu-galaxy-tab-s9ultra's own build-
+# mainline-kernel.sh -- a DKMS package built inside the Fedora rootfs chroot
+# could not reproduce this kernel's exact module ABI or signing key, and
+# CONFIG_MODULE_SIG_ALL=y means every in-tree module above already carries
+# a real signature this one would otherwise conspicuously lack.
+v4l2loopback_commit=9ef83fb9bc88e8f841786753c362ac52c580defc
+loopback_tree=$outdir/v4l2loopback-src
+rm -rf -- "$loopback_tree"
+git clone --quiet https://github.com/v4l2loopback/v4l2loopback.git "$loopback_tree"
+git -C "$loopback_tree" checkout --quiet "$v4l2loopback_commit"
+git -C "$loopback_tree" apply \
+	"$repo_root/specs/v4l2loopback-x716b/patches/0001-backward-compatible-client-usage-event.patch" \
+	"$repo_root/specs/v4l2loopback-x716b/patches/0002-fix-buffer-queue-management.patch" \
+	"$repo_root/specs/v4l2loopback-x716b/patches/0003-preserve-output-queue-for-capture.patch"
+make -C "$kdir" "${make_args[@]}" -j"$(nproc)" M="$loopback_tree" modules
+loopback_moddir=$modules_out/lib/modules/$kernel_release/extra
+install -d "$loopback_moddir"
+install -m 0644 "$loopback_tree/v4l2loopback.ko" "$loopback_moddir/v4l2loopback.ko"
+test -f "$outdir/certs/signing_key.pem"
+test -f "$outdir/certs/signing_key.x509"
+"$outdir/scripts/sign-file" sha256 \
+	"$outdir/certs/signing_key.pem" "$outdir/certs/signing_key.x509" \
+	"$loopback_moddir/v4l2loopback.ko"
+# Checked via the trailer magic, not `modinfo -F signer`: this nix-shell's
+# kmod build lacks libcrypto (confirmed: `modinfo` shows `sig_id: PKCS#7`
+# but blank signer/sig_key/signature fields on every module here, including
+# ones signed by the kernel's own normal in-tree modules_install path), so
+# modinfo can detect a signature block but can't decode its fields on this
+# host. The kernel's own module-load verification uses its in-kernel crypto
+# API, not host kmod, so this is a build-host tooling gap, not a real
+# signing failure -- the trailer string is always appended verbatim
+# regardless of libcrypto and is what the kernel's own loader looks for.
+tail -c 64 "$loopback_moddir/v4l2loopback.ko" | grep -q '~Module signature appended~'
 depmod -b "$modules_out" "$kernel_release"
+
+echo "== verifying camera Kconfig/module/devicetree wiring survived the build =="
+python3 "$repo_root/scripts/verify-camera-config.py" --kernel-out "$outdir"
 
 image=$outdir/arch/arm64/boot/Image
 dtb=$outdir/arch/arm64/boot/dts/qcom/$board_dtb

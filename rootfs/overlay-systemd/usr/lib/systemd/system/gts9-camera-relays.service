@@ -1,0 +1,31 @@
+[Unit]
+# Camera bring-up session. Adapted from ubuntu-galaxy-tab-s9ultra's own
+# ubuntu-gts9u-camera-relays.service, simplified: the Ultra project needs a
+# dynamic desktop-user-detection mechanism (ubuntu-gts9u-desktop-user)
+# because Ubuntu's installer creates the account interactively on first
+# boot, after the image is built. This project's Fedora build creates a
+# single, fixed user (x716b, uid 1000 -- scripts/build-fedora-rootfs.sh's
+# own `useradd -M ... "$build_user"` + `chown -R 1000:1000`) at image-build
+# time, so User=/XDG_RUNTIME_DIR can just be hardcoded here instead.
+Description=Galaxy Tab S9 5G (X716B) V4L2 camera relays
+After=systemd-modules-load.service user@1000.service
+Requires=user@1000.service
+ConditionPathExists=/dev/video20
+# Bound retries on input/plugin failures. Idle enumeration reproduced the
+# WirePlumber OOM with relays stopped; restart limiting is additional protection.
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=x716b
+SupplementaryGroups=video
+Environment=XDG_RUNTIME_DIR=/run/user/1000
+ExecStart=/usr/libexec/gts9-camera-relays
+ExecStartPost=+/usr/libexec/gts9-camera-udev-refresh
+Restart=always
+RestartSec=2
+TimeoutStartSec=15
+
+[Install]
+WantedBy=graphical.target

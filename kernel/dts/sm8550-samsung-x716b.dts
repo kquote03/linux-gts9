@@ -33,6 +33,7 @@
 
 /dts-v1/;
 
+#include <dt-bindings/leds/common.h>
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
 #include <dt-bindings/regulator/qcom,rpmh-regulator.h>
 #include <dt-bindings/usb/pd.h>
@@ -113,6 +114,17 @@
 					  * revision this board's touchscreen node below is
 					  * already sourced from). See docs/porting-log.md's
 					  * gts9wifi-fedora pivot entry. */
+
+	/* Stock X716B RCAM_LDO_EN is GPIO15. Share ownership with the lens. */
+	rear_cam_vio: rear-camera-vio-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "rear_cam_vio";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		vin-supply = <&vreg_l4b_1p8>;
+		gpio = <&tlmm 15 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
 
 	aliases {
 		serial0 = &uart7; /* measured: same MMIO address (0xa9c000) as X716
@@ -365,6 +377,23 @@
 		};
 
 		/*
+		 * Camera VIO (Camera bring-up session). Downstream decodes this
+		 * device's own rear/front camera "cam_vio" regulator-names entry
+		 * as "pm_humu_l4" -- index 4 matches this die's own LDO4 exactly,
+		 * and the sibling X910 Ultra port independently uses this same
+		 * physical rail (vreg_l4b_1p8) for its own camera modules' VDDIO,
+		 * so this index/value is reasonably high-confidence, unlike the
+		 * VDIG rail below. Shared between both sensors and the rear
+		 * actuator, matching the Ultra's own topology.
+		 */
+		vreg_l4b_1p8: ldo4 {
+			regulator-name = "vreg_l4b_1p8";
+			regulator-min-microvolt = <1800000>;
+			regulator-max-microvolt = <1800000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+
+		/*
 		 * microSD card power rails. Tried 2026-09-05 (Session 4) for
 		 * persistent SD-card-based logging, then reverted the same
 		 * session out of caution to bisect an unrelated regression --
@@ -579,6 +608,23 @@
 		};
 	};
 
+	regulators-1 {
+		compatible = "qcom,pm8550vs-rpmh-regulators";
+		qcom,pmic-id = "c";
+
+		/*
+		 * Stock rear cam_vdig resolves to pm_v6c_l1 (PM8550VS-C L1).
+		 * Front uses pm_humu_l11 instead; reconcile its shared panel
+		 * voltage before enabling that sensor.
+		 */
+		vreg_l1c_1p1: ldo1 {
+			regulator-name = "vreg_l1c_1p1";
+			regulator-min-microvolt = <1104000>;
+			regulator-max-microvolt = <1104000>;
+			regulator-initial-mode = <RPMH_REGULATOR_MODE_HPM>;
+		};
+	};
+
 	regulators-2 {
 		compatible = "qcom,pm8550vs-rpmh-regulators";
 		qcom,pmic-id = "d";
@@ -771,6 +817,35 @@
  */
 &tlmm {
 	gpio-reserved-ranges = <36 4>;
+
+	/*
+	 * CCI1 master 1 (the front camera's I2C pair), Camera bring-up
+	 * session. Not a cam1/cam2/cam4/cam5-style SoC pinctrl default (those
+	 * live in sm8550.dtsi itself; this one doesn't), so it must be board-
+	 * defined -- `dtc` confirms sm8550.dtsi's own &cci1 node references
+	 * cci1_1_default/cci1_1_sleep without providing them itself. Borrowed
+	 * by analogy from the sibling X910 Ultra port's own real, working
+	 * pinctrl state for the exact same node
+	 * (kernel/dts/sm8550-samsung-gts9uwifi.dts:1018-1031,
+	 * ubuntu-galaxy-tab-s9ultra), same GPIO208/209 pair and "aon_cci"
+	 * function -- likely the common SM8550 reference-design pinout this
+	 * board's own overlay never needed to override, but UNVERIFIED for
+	 * X716B specifically.
+	 */
+	cci1_1_default: cci1-1-default-state {
+		pins = "gpio208", "gpio209";
+		function = "aon_cci";
+		drive-strength = <4>;
+		bias-pull-up;
+	};
+
+	cci1_1_sleep: cci1-1-sleep-state {
+		pins = "gpio208", "gpio209";
+		function = "aon_cci";
+		drive-strength = <4>;
+		bias-disable;
+		input-enable;
+	};
 };
 
 &uart7 {
@@ -2074,6 +2149,169 @@
 
 	zap-shader {
 		firmware-name = "qcom/a740_zap.mdt";
+	};
+};
+
+/*
+ * Cameras (Camera bring-up session). UNVERIFIED HYPOTHESIS pending real
+ * hardware -- see docs/hardware-facts.md's Camera section and
+ * kernel/drivers/hi1337_gts9.c's own header for the full caveat. Summary:
+ * this device's own stock downstream devicetree
+ * (android_kernel_samsung_gts9/.../gts9_eur_openx_w00_r04.dts) shows
+ * exactly one rear camera (autofocus, generic "qcom,cam-sensor" on
+ * csiphy-sd-index 1, CCI0) and one front camera (fixed-focus, same
+ * compatible on csiphy-sd-index 4, CCI1) -- matching Samsung's published
+ * spec for the non-Ultra Tab S9 (no ultra-wide rear, no dual front, unlike
+ * the sibling X910 Ultra). Qualcomm's camera stack never encodes sensor
+ * model in devicetree (identity is resolved at runtime via I2C chip-ID
+ * read), so which physical sensor this actually is remains a real
+ * open question -- this wiring assumes it's the same Hynix HI1337 part as
+ * the Ultra's own real, hardware-validated rear-main/front-main modules
+ * (same CSIPHY indices in both trees is the strongest available evidence,
+ * not proof). GPIO numbers and CCI/regulator topology below are borrowed
+ * by analogy from that sibling port
+ * (ubuntu-galaxy-tab-s9ultra/kernel/dts/sm8550-samsung-gts9uwifi.dts),
+ * the same way this file already borrows GPIO numbers elsewhere (e.g. the
+ * USB Type-C stack above) pending independent confirmation. CSIPHY link
+ * mode is D-PHY in this device's decoded stock descriptors. Physical lane
+ * mapping and frame delivery still require hardware validation.
+ */
+&camss {
+	status = "okay";
+	/* Shared PHY rails this file already proves out for USB/UFS/PCIe below. */
+	vdda-phy-supply = <&vreg_l1e_0p88>;
+	vdda-pll-supply = <&vreg_l3e_1p2>;
+
+	/*
+	 * port@4 (front, csiphy4) deliberately NOT wired here for now --
+	 * real-hardware bring-up (2026-09-15) confirmed the rear sensor's
+	 * chip-ID read succeeds (model=0x1337 vendor=0x2000, exact HI1337
+	 * match) but the front sensor's I2C reads fail outright (-ENXIO on
+	 * both registers, after a clean power-on sequence with no GPIO/
+	 * regulator errors -- so probably a wrong I2C address/bus routing,
+	 * not a wrong-chip guess). Because qcom-camss's async fwnode notifier
+	 * only finalizes media links once *every* referenced sensor endpoint
+	 * has bound, the still-unmatched front endpoint was blocking the
+	 * already-working rear sensor's link too (confirmed: both showed
+	 * "0 link" in `media-ctl -p` while front's node was present but
+	 * unprobed). Dropping port@4 here (while leaving hi1337_front's own
+	 * node below intact, just status=disabled) lets rear's link complete
+	 * independently. Re-add once front's real wiring is found -- see
+	 * docs/hardware-facts.md's Camera section.
+	 */
+	ports {
+		port@1 {
+			csiphy1_hi1337_rear_ep: endpoint {
+				clock-lanes = <4>;
+				data-lanes = <0 1 2 3>;
+				remote-endpoint = <&hi1337_rear_ep>;
+			};
+		};
+	};
+};
+
+&cci0 {
+	status = "okay";
+};
+
+&cci0_i2c1 {
+	hi1337_rear: camera@21 {
+		compatible = "hynix,hi1337-gts9-rear";
+		reg = <0x21>;
+		clocks = <&camcc CAM_CC_MCLK2_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK2_CLK>;
+		assigned-clock-rates = <19200000>;
+		vddio-supply = <&rear_cam_vio>;
+		vdig-supply = <&vreg_l1c_1p1>;
+		reset-gpios = <&tlmm 70 GPIO_ACTIVE_LOW>;
+		pinctrl-0 = <&cam2_default>;
+		pinctrl-1 = <&cam2_sleep>;
+		pinctrl-names = "default", "sleep";
+		orientation = <1>;
+		rotation = <90>;
+		lens-focus = <&rear_focus>;
+
+		port {
+			hi1337_rear_ep: endpoint {
+				clock-lanes = <4>;
+				data-lanes = <0 1 2 3>;
+				link-frequencies = /bits/ 64 <360200000>;
+				remote-endpoint = <&csiphy1_hi1337_rear_ep>;
+			};
+		};
+	};
+};
+
+&cci1 {
+	status = "okay";
+	pinctrl-0 = <&cci1_0_default &cci1_1_default>;
+	pinctrl-1 = <&cci1_0_sleep &cci1_1_sleep>;
+
+	cci1_i2c1: i2c-bus@1 {
+		reg = <1>;
+		clock-frequency = <1000000>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+	};
+};
+
+&cci1_i2c0 {
+	rear_focus: lens@c {
+		compatible = "dongwoon,dw9808-vcm";
+		reg = <0x0c>;
+		vcc-supply = <&rear_cam_vio>;
+	};
+};
+
+&cci1_i2c1 {
+	hi1337_front: camera@21 {
+		/* Keep disabled until front VDIG/panel voltage sharing is validated.
+		 * Restore both graph endpoints together.
+		 */
+		status = "disabled";
+		compatible = "hynix,hi1337-gts9-front";
+		/* X716 vendor front and front_full descriptors use slaveAddress 0x42. */
+		reg = <0x21>;
+		clocks = <&camcc CAM_CC_MCLK4_CLK>;
+		assigned-clocks = <&camcc CAM_CC_MCLK4_CLK>;
+		assigned-clock-rates = <19200000>;
+		vddio-supply = <&vreg_l4b_1p8>;
+		/* Stock front VDIG is the panel's L11B; voltage remains unresolved. */
+		vdig-supply = <&vreg_l11b_1p2>;
+		enable-gpios = <&tlmm 17 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&tlmm 117 GPIO_ACTIVE_LOW>;
+		pinctrl-0 = <&cam4_default>;
+		pinctrl-1 = <&cam4_sleep>;
+		pinctrl-names = "default", "sleep";
+		orientation = <0>;
+		rotation = <270>;
+
+		/*
+		 * port/endpoint dropped along with &camss's port@4 above --
+		 * DTC resolves phandle references regardless of a disabled
+		 * status, so a remote-endpoint pointing at the now-removed
+		 * csiphy4_hi1337_front_ep label would fail to compile.
+		 */
+	};
+};
+
+/*
+ * Rear dual-channel flash, PM8550 SID 1 (Samsung calls this die PM8350C).
+ * Channel assignment (led-sources 1,2) and limits copied from the Ultra
+ * sibling port's own real, working flash node -- same reasoning as the
+ * rest of this block: unverified for X716B specifically, conservative
+ * limits while bring-up is validated.
+ */
+&pm8550_flash {
+	status = "okay";
+
+	led-0 {
+		function = LED_FUNCTION_FLASH;
+		color = <LED_COLOR_ID_WHITE>;
+		led-sources = <1>, <2>;
+		led-max-microamp = <300000>;
+		flash-max-microamp = <1000000>;
+		flash-max-timeout-us = <500000>;
 	};
 };
 

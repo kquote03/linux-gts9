@@ -1,0 +1,16 @@
+#!/bin/sh
+# Camera bring-up session. Adapted from ubuntu-galaxy-tab-s9ultra's own
+# ubuntu-gts9u-camera-udev-refresh, trimmed to this device's two v4l2loopback
+# nodes (20/21, see gts9-cameras.conf).
+#
+# With exclusive_caps=1 the nodes initially advertise output-only. The relay
+# opens its producer side immediately, after which a change event makes udev,
+# Chrome and sandbox rules cache the final capture capability.
+set -eu
+
+sleep 2
+for node in 20 21; do
+	[ -e "/sys/class/video4linux/video$node" ] || exit 1
+	udevadm trigger --action=change "/sys/class/video4linux/video$node"
+done
+udevadm settle

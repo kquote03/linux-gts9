@@ -4599,3 +4599,372 @@ card again, `graphical.target`/`gdm.service` both reached `active`, WiFi
 registered correctly. Only `pd-mapper.service` and `logrotate.service`
 remained in `systemctl --failed`, both the same pre-existing, documented,
 non-blocking gaps noted above.
+
+## Session 16 — 2026-09-15 — Camera bring-up (front + back, targeting libcamera): devicetree + driver scaffolding, no real hardware yet
+
+Camera was previously ruled out of scope for this port (see the earlier
+"nothing here uses camera" notes above) on the assumption SM8550's ISP
+generation might be fundamentally unsupported upstream. Re-checked this
+session and found that's no longer true: mainline's
+`drivers/media/platform/qcom/camss` already has `qcom,sm8550-camss` fully
+landed (Titan-780-generation CSID/VFE code, `camcc-sm8550.c`), validated by
+Qualcomm's own reference boards (`sm8550-qrd.dts`), with
+`CONFIG_VIDEO_QCOM_CAMSS`/`CONFIG_SM_CAMCC_8550`/`CONFIG_I2C_QCOM_CCI`/
+`CONFIG_LEDS_QCOM_FLASH` already `=m` in this project's own
+`config-mainline.aarch64`. More importantly: `ubuntu-galaxy-tab-s9ultra/`
+(vendored in this same repo, SM-X910 Ultra, same SM8550 "gts9"
+reference-design family) already has a real, hardware-validated 4-camera
+libcamera + PipeWire pipeline -- the best possible template for this work.
+
+This device's own stock downstream devicetree
+(`android_kernel_samsung_gts9/.../gts9_eur_openx_w00_r04.dts`) shows exactly
+one rear camera (autofocus, `csiphy-sd-index = 1`, CCI0) and one front
+camera (fixed-focus, `csiphy-sd-index = 4`, CCI1) -- matching Samsung's
+published non-Ultra Tab S9 spec, and matching the *same* CSIPHY indices the
+Ultra sibling uses for its own real, working rear-main/front-main HI1337
+sensors. Qualcomm's camera stack never encodes sensor model in devicetree
+(both this device's sensor nodes use the generic `"qcom,cam-sensor"`
+compatible; identity is resolved at runtime via I2C chip-ID read), so which
+physical sensor this device actually has remains a real open question --
+this session wired both cameras as HI1337 on the strength of the matching
+CSIPHY indices, which is suggestive, not conclusive.
+
+**What landed this session** (all UNVERIFIED, no real hardware access this
+session -- see `docs/hardware-facts.md`'s new Camera section for the full
+caveat list):
+
+- `kernel/drivers/hi1337_gts9.c` + `hi1337_gts9_tables.h`: forked from the
+  Ultra sibling's own `hi1337_gts9u.c`/`hi1337_gts9u_tables.h` verbatim,
+  minus the front-ultrawide variant (no hardware for it on this device).
+  Register tables (global init + rear/front mode data) are reused as-is --
+  the global table is chip-specific Samsung GPL data, not device-specific,
+  but the mode tables were decoded from the *Ultra's* own sensor module
+  blobs, not this device's, so they're an explicit bet that X716B uses the
+  identical physical modules.
+- `kernel/drivers/dw9808_vcm.c`: copied verbatim from the Ultra sibling (a
+  plain, chip-generic VCM driver, no board-specific data) for the rear
+  camera's autofocus actuator.
+- `kernel/dts/sm8550-samsung-x716b.dts`: new `&camss`/`&cci0`/`&cci1` wiring,
+  two sensor nodes, one actuator node, one flash node, two new PMIC
+  regulators (`vreg_l4b_1p8` cam_vio, `vreg_l1c_1p1` cam_vdig), and a new
+  board-level CCI1-master-1 pinctrl state (`cci1_1_default`/`_sleep`,
+  GPIO208/209) that sm8550.dtsi's own `&cci1` node references but doesn't
+  provide -- caught by actually compiling the DT with `dtc` (see below), not
+  by inspection. One specific risk surfaced and deliberately avoided: this
+  device's downstream DT names the camera VDIG rail `pm_humu_l11`, which
+  would collide with this board's own already-measured, confirmed-working
+  panel VDD rail (`vreg_l11b_1p2`) if Samsung's numeric PMIC index mapped
+  onto mainline's die-letter+index convention the way it does for
+  `cam_vio`/`l4` -- it evidently doesn't, so camera VDIG was deliberately
+  routed to an unused rail (`vreg_l1c_1p1`, die `c`) instead of trusting the
+  downstream digit and risking a repeat of the Session 7 LDO14 touch-AVDD
+  board-wide crash.
+- `kernel/config/config-x716.fragment`: `CONFIG_VIDEO_HI1337_GTS9=m`,
+  `CONFIG_VIDEO_DW9808_VCM=m` (left as modules, unlike this fragment's
+  boot-critical `=y` entries -- camera loads from a reachable rootfs
+  post-boot).
+- `scripts/build-mainline-kernel.sh`: idempotent install/Kconfig/Makefile
+  staging for both new drivers into `drivers/media/i2c/`, following the
+  exact pattern already used for this project's other from-scratch drivers.
+
+**Verification done this session**: preprocessed the full board DTS with
+`cpp` and compiled it with `dtc` (both available locally via the Nix
+store) against the pinned mainline tree -- caught the missing
+`cci1_1_default`/`cci1_1_sleep` pinctrl labels as a hard error on the first
+pass, fixed, then confirmed a clean compile with zero errors (only
+pre-existing warnings unrelated to this change) and manually inspected the
+decompiled output to confirm `&camss`, both CCI buses, both sensor nodes,
+the actuator, and the flash LED controller all end up `status = "okay"`
+with every phandle resolved. This proves the devicetree is *syntactically*
+correct and self-consistent -- it proves nothing about real silicon.
+
+**Not done this session, deliberately** (per explicit user direction after
+being asked how to sequence Phase 0's real-hardware requirement): the
+libcamera/PipeWire/v4l2-relayd userspace packaging (Phase 3 of the plan)
+was not started, since it depends on Phase 0 confirming sensor identity and
+CSI PHY mode first, and doing that packaging work against an unconfirmed
+hypothesis would be premature. Next real step is real-hardware bring-up:
+read both sensors' chip-ID registers, confirm C-PHY vs D-PHY (mainline
+CAMSS's CSIPHY driver only implements D-PHY; a C-PHY sensor would be
+blocked on an in-review, unmerged upstream series), and confirm the GPIO/
+regulator wiring above -- see `docs/hardware-facts.md`'s Camera section.
+
+## Session 17 — 2026-09-15 — Camera bring-up, continued: real build verification, Fedora packaging, and the first real-hardware flash
+
+Picked up exactly where Session 16 left off (devicetree + drivers written
+but never actually compiled or run). This session ran the whole thing for
+real: local build verification, Fedora userspace packaging, and -- with
+the device confirmed available and the user's explicit go-ahead at each
+step -- an actual flash and real-hardware bring-up attempt.
+
+**Local build verification (no device needed).** Ran
+`scripts/build-mainline-kernel.sh` for real for the first time against the
+camera changes: it built clean, zero warnings, on the very first try.
+Added `scripts/verify-camera-config.py` (+ test sidecar) as a permanent
+build-time gate, mirroring `verify-wifi-firmware.py`'s existing convention.
+Also added the missing piece from Session 16's plan: `v4l2loopback` built
+out-of-tree against this exact kernel and signed with its own key (needed
+for the relay layer) -- found along the way that this dev machine's
+`kmod` lacks libcrypto, so `modinfo -F signer` (the verification approach
+copied from the Ultra sibling's own script) false-negatives on every
+signed module here, in-tree ones included; switched to checking for the
+kernel's own "~Module signature appended~" trailer string instead, which
+needs no crypto library to read.
+
+**Fedora userspace packaging.** Ported and wired in the Ultra sibling's
+libcamera/PipeWire/v4l2-relayd stack for Fedora
+(`specs/libcamera-x716b/`, `specs/pipewire-x716b/`, `specs/v4l2-relayd-x716b/`,
+`specs/v4l2loopback-x716b/`; runtime integration under
+`rootfs/overlay-common/`/`rootfs/overlay-systemd/`). Real end-to-end runs
+of `scripts/build-fedora-rootfs.sh` (GTS9_DESKTOP=gnome) found and fixed
+two genuine bugs no amount of static review would have caught:
+
+- A real C++ compile error in the ported "reset qcom-camss links before
+  configure" libcamera patch: at the exact pinned commit,
+  `CameraSensor::entity()` returns `const MediaEntity *`, so the patch's
+  call to the non-const `MediaDevice::disableLinks()` through it doesn't
+  compile (discards qualifiers, not just a warning). Fixed with a
+  `const_cast`, verified by recompiling just the affected object inside
+  the chroot before committing to a full rebuild.
+- `gts9-camera-relays.service` was being enabled before the device
+  overlay (which provides its unit file) got applied later in the same
+  script -- warned "unit not found" on the first real run. Moved the
+  `systemctl enable` call to after the overlay step.
+
+Also hit (and worked around with retries) several transient network
+failures actually running this repeatedly against real upstream
+mirrors/repos -- hardened all the source-fetch steps this session touched
+with `curl --retry`/a git-clone retry loop, since the alternative was
+re-running a 20+ minute build from scratch on every blip.
+
+**First real flash and hardware bring-up.** Device was available and the
+user confirmed proceeding at each step per `docs/boot-strategy.md`'s
+pre-flash checklist (fresh nandroid backup of boot/init_boot/vendor_boot/
+dtbo taken via `adb exec-out dd`, pulled and hash-verified, recorded in
+`docs/hardware-facts.md`, superseding the stale 2026-09-05 rollback
+point). Flashed the new rootfs to the SD card (`deploy-rootfs.sh
+twrp-sd`) and the boot bundle (`flash-boot-set.sh`), rebooted, and reached
+the device over real SSH on WiFi.
+
+Findings from the first real boot (full detail in
+`docs/hardware-facts.md`'s Camera section, not repeated here): the rear
+camera's HI1337 chip-ID read succeeded exactly
+(`model=0x1337 vendor=0x2000`) -- the sensor-identity hypothesis this
+whole port has rested on since Session 16 is now a measured fact, not a
+guess. The front camera's I2C reads failed outright (`-ENXIO`, a bus/
+address problem, not a wrong-chip mismatch). A real, useful discovery:
+qcom-camss's async notifier waits for *every* devicetree-referenced sensor
+to bind before finalizing any media links, so the front sensor's failure
+was silently blocking the rear sensor's own link too, even though the
+rear sensor had already identified successfully. Disabled the front
+sensor's devicetree node (`status = "disabled"`, dropped `&camss`'s
+`port@4`), rebuilt just the DTB, reflashed only `boot`/`vendor_boot` (a
+second explicit-confirmation flash, per the checklist's "every single
+flash, not just the first" rule), and confirmed on reboot: the rear
+sensor now shows a real, enabled media link to `msm_csiphy1`, and
+`cam -l` lists it correctly as "Internal back camera" with its tuning
+file auto-loaded.
+
+**Where it stands**: the rear camera identifies, links, and enumerates in
+libcamera correctly, but `cam --capture` never receives a single frame
+(confirmed hung past a 45 s on-device timeout, twice) -- the CCI/I2C
+control plane works perfectly while the CSI-2 data plane delivers
+nothing, which is exactly the signature this project's own research
+flagged as the leading risk going in: mainline CAMSS's CSIPHY driver only
+implements D-PHY, and this module's actual PHY mode was never
+independently confirmed, only assumed by analogy with the Ultra sibling.
+Not proven (a wrong link-frequency or lane count, also copied by analogy,
+would look identical), but the most likely explanation. A separate, real
+bug also surfaced independent of camera streaming: `wireplumber` was
+OOM-killed at 5.4 GB anon-rss shortly after the camera stack came up --
+needs its own investigation.
+
+Deliberately stopped the live hardware-iteration loop here rather than
+keep guessing at DT parameters blind: the next real step needs either
+CSIPHY-driver debug instrumentation (a kernel change, its own build/flash
+cycle) or hardware-level confirmation of the module's actual PHY mode,
+neither of which is a quick guess-and-reflash fix. Everything above is
+committed on the `camera-bringup` branch (not merged to `main`, per
+standing instruction for this work).
+
+## Session 18 — 2026-09-16 — Camera bring-up, continued: three real-hardware blockers investigated and root-caused, one decisively
+
+Picked up exactly where Session 17 stopped: three concrete real-hardware
+blockers (rear camera zero-frame streaming, front camera I2C `-ENXIO`,
+`wireplumber` OOM at 5.4 GB), each investigated this session with
+dedicated research before any code changed. Full technical detail lives in
+`docs/hardware-facts.md`'s Camera section; this is the narrative.
+
+**PipeWire/WirePlumber leak — root cause narrowed and mitigated.**
+Real-hardware testing (triggered by watching the tablet's GNOME Camera app
+freeze it) proved the original hypothesis wrong: the leak reproduced
+*again*, twice, with `gts9-camera-relays.service` confirmed
+`inactive (dead)` and no camera app running at all — not the unthrottled
+relay restart loop this session's plan initially blamed. The real trigger
+is stock Fedora WirePlumber's own default config
+(`wireplumber.conf`'s `wants = [ monitor.v4l2, monitor.libcamera ]`),
+which loads the ported PipeWire libcamera SPA plugin unconditionally the
+moment it exists on disk. Confirmed the fix live on the running device
+(renaming the plugin file to `.so.disabled` stopped the leak immediately
+and memory stayed flat for the rest of the session), then made it the
+build default in `scripts/build-fedora-rootfs.sh`. The relay-restart-loop
+throttle (`StartLimitIntervalSec=60`/`StartLimitBurst=5`) still landed as
+a good defense-in-depth change, just not the actual root cause. The
+underlying bug (suspected: patch `0005-libcamera-do-not-close-borrowed-
+buffer-fds.patch` against a 6-minor-version-newer PipeWire than it was
+written for) remains unfixed but fully mitigated by shipping the plugin
+disabled.
+
+**Rear camera zero-frame streaming — root-caused to the physical layer,
+with direct evidence instead of inference.** Added a CSI2 Rx IRQ status
+log to `camss-csid-gen3.c`'s `csid_isr()` (`kernel/patches/camss-log-
+csi2-rx-irq-status.patch`). First attempt used `dev_dbg_ratelimited()`,
+which produced nothing on real hardware — traced to the kernel booting
+under lockdown mode, which blocks the debugfs write needed to turn a
+`dev_dbg` call site on at runtime (and no `dyndbg=` boot parameter was
+set). Switched to `dev_info_ratelimited()`, rebuilt, reflashed (second
+flash of the day, full pre-flash checklist each time: fresh backup, hash
+verification, explicit confirmation naming the exact partitions). Still
+nothing printed during a real capture attempt. Rather than guess again,
+installed `v4l-utils` on-device and used `ftrace`'s `function_graph`
+tracer (still available despite lockdown, unlike `dynamic_debug`) across
+the whole streaming call chain — `csid_set_power`/`_set_stream`, `csid_isr`,
+`csiphy_set_power`/`_set_stream`, `csiphy_isr`, `vfe_set_power`/`_set_stream`,
+`vfe_isr` and friends, and the sensor's own `hi1337_set_stream`. Result:
+every software-side step succeeds and returns 0 (including the sensor's
+own ~287 ms register-table write and mode-select), IRQs are correctly
+requested and enabled throughout, and then **zero interrupts fire from
+CSID, CSIPHY, or VFE for the entire streaming window** — `csid_isr` fired
+exactly once, during power-on reset, never again once actual streaming
+was commanded. This is the direct evidence the previous session's plan
+asked for before deciding between "CSI-2 physical layer genuinely failing"
+and "problem is elsewhere in the software stack": it points squarely at
+the former. Doesn't yet distinguish a C-PHY/D-PHY mismatch from a still-
+wrong lane/frequency parameter, since neither is visible from software
+alone, but rules out every driver-stack-level explanation this session
+could think to check. Recommendation going forward: this needs either the
+open-ended mainline C-PHY backport already scoped as its own future
+effort, or physical signal verification — not more blind parameter
+changes or kernel logging, which this session's evidence suggests won't
+add anything further.
+
+**Front camera** — not reached this session; the device dropped off both
+USB and the network link partway through the rear-camera diagnostic work
+and did not reliably reconnect before time ran out. Still disabled in DT,
+unchanged from Session 17.
+
+Everything above is committed on the `camera-bringup` branch (not merged
+to `main`, per standing instruction for this work).
+
+
+## Session 19 — 2026-09-16 — Camera source corrections and device-specific stock evidence
+
+Revisited Sessions 17–18's three camera failures with parallel source
+investigations. The previous no-interrupt trace is valid, but its claimed
+C-PHY prerequisite was too strong: successful sensor identity and register
+writes do not establish complete module power. This device's stock r04
+camera node includes GPIO15 `RCAM_LDO_EN`, absent from the tested rear
+power path. The sibling models that line as a gated rear VIO supply
+shared by the sensor and lens. The rear supply correction is staged;
+frame delivery still needs a real capture test. Binding the DW9808 driver
+also did not read an actuator chip-ID, and pinned V4L2 explicitly handles
+zero-pad entities: investigate runtime power/I2C before blaming that ABI.
+
+Front's inherited wiring contained two independent errors. Stock r04
+fixups map rear VDIG to `pm_v6c_l1` and front VDIG to `pm_humu_l11`, but
+mainline routed both to L1C. Front address `0x20` came from the Ultra
+sensor plus X716's EEPROM address, rather than this tablet's sensor data.
+
+Read the running Fedora tablet's stock `super` partition without creating
+a device mapping, mounting anything, rebooting or writing a partition.
+Both LP geometry and all four metadata header/table checksum copies
+verified. Pulled the exact linear vendor extent (sector 17,643,520,
+4,858,416 sectors of 512 bytes) to host scratch and used offline `debugfs`
+to extract `/lib64/camera`. All three sensor descriptors passed their own
+CRC32 trailers. They contain HI1337 rear, front and front-full data;
+both front descriptors declare eight-bit slave address `0x42`, meaning
+Linux `0x21`, and ID register `0x0714` value `0x2000`. This is device
+configuration evidence; front silicon identity remains unmeasured.
+
+The V3.5.1 node/data layout and Qualcomm schema let us decode actual mode
+metadata and writes: rear mode 0's 93 writes match the existing table
+exactly. Front mode 0 is 2032x1524 in `.1`, or 4000x3000 in `.12`, rather
+than the inherited Ultra 3408x2556. These modes specify D-PHY, four lanes
+and 28ns settle time. Added a bounded offline descriptor decoder with
+length, CRC32, version and section/node bounds checks; kept extracted
+blobs/images and reports in host scratch with hashes documented in
+hardware facts. The configuration evidence replaces the C-PHY guess.
+
+The original stock vendor_boot base DTB resolves `L11B` and
+`pm_humu_l11` to the same `ldob11` regulator node. r04 maps panel VDD
+and front VDIG to those aliases respectively, then votes regulator
+min/max 1.1V while its panel supply table still requests 1.2V. The
+shared rail is confirmed; runtime compatibility is not. Front stays
+disabled until that conflict is resolved safely. DMIC GPIO17 belongs to
+LPASS TLMM; front enable GPIO17 belongs to main TLMM, so matching numbers
+do not prove an ownership conflict despite the inherited driver comment.
+
+The old SPA plugin also lacks upstream property-pagination fixes:
+missing built-in-property offset and end-iterator bound are concrete
+source bugs, unlike the earlier FD-lifecycle speculation. Replaced the
+Fedora build path with a plugin built from its installed core's exact
+Fedora SRPM and native libcamera version, and gated it with a regression
+compiled from the actual enumeration function. An isolated native build
+on the tablet passed against PipeWire 1.6.8 and libcamera 0.7.2. Runtime
+idle-memory and streaming validation remain separate acceptance gates;
+the build default stays disabled until those gates pass.
+
+### Live rear power test and remaining image-quality gate — 2026-09-17
+
+A bounded GPIO-v2 diagnostic held the otherwise unclaimed main-TLMM
+GPIO15 high while running the existing Fedora kernel. `cam` then captured
+four rear frames successfully at approximately 30 fps, where previous
+captures never returned frames. GPIO15 was lowered and released on exit.
+This establishes the missing rear module-enable line as a frame-delivery
+blocker; a C-PHY backport is not required to explain that failure.
+The fourth PPM is retained in `out/camera-validation/rear/`. Its image is
+almost black. The user confirmed the lens is uncovered and faces a lit
+scene. Exposure settling and the analogue-gain register write width still
+need investigation; frame delivery alone does not establish usable images.
+
+Live lens unbind/rebind produced duplicate media links. Rebinding CAMSS
+while WirePlumber retained camera descriptors left both old and new media
+devices, so those hot-rebind capture failures are not clean sensor tests.
+Stopped the temporary SPA memory run, removed its active plugin link, and
+requested a reboot into the existing Fedora installation to clear that
+state. SSH has not yet returned. No partition was written during these
+tests. The interrupted memory run is not a 30-minute acceptance result.
+
+Added Fedora's desktop user to the video group after live inspection found
+newly registered camera nodes inaccessible to that user. Tightened the
+sensor identity check to reject either failed register read and mismatched
+vendor/model values; rebuilt and staged the signed sensor module. The 11
+configuration, five descriptor, and four binary-backup regression tests
+pass. Front remains disabled pending the shared L11B voltage check.
+
+Fedora subsequently returned over SSH; the user confirmed a normal GDM
+boot. A clean-graph 120-frame capture succeeded at approximately 30 fps
+but remained nearly black. During streaming, read-only I2C register
+readback showed exposure `0x020a=0x0cbc`, analogue gain
+`0x0212=0x00f0`, and all four digital gains still `0x0200`.
+The suspected adjacent digital-gain corruption was not observed, so no
+gain-width change was made on that hypothesis. Full-resolution RAW capture
+also returned four 16,000,128-byte frames.
+
+After the user increased scene lighting, another 120-frame capture
+succeeded at approximately 30 fps. The final 640x480 RGB image's mean
+channel value rose from about 0.08 to 70.58 (0–255 scale), with a maximum
+of 146. It is visibly brighter but very blurred/noisy, without enough
+scene detail to claim usable imaging. Metadata reports 46.7ms exposure
+and 16x analogue gain. Lens initialization still fails with `EINVAL`,
+so this test does not validate autofocus. Retained the final image as
+`out/camera-validation/rear/brighter-119.ppm` and a PNG preview. The bounded
+GPIO15 diagnostic released the line after capture; SSH remains reachable.
+
+GNOME discovery was checked after the user reported no camera. The installed
+SPA plugin and relay service were still disabled, as intended by the prior
+OOM mitigation. A bounded test of the rebuilt plugin published
+`gts9-camera-rear` / `X716B Rear`; the desktop camera portal returned
+`IsCameraPresent=true`. Normal activation remains gated on the full memory
+and streaming tests and permanent power correction. No working GNOME
+capture is claimed from discovery alone.

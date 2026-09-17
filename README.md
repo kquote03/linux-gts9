@@ -43,7 +43,7 @@ device.
 | Sensors (SSC: accelerometer, ambient light, etc.) | ⚠️ ADSP boots and the HexagonFS registry path is fixed, but the SSC QMI service itself doesn't publish (a real, likely upstream `hexagonrpcd` gap — see `docs/porting-log.md`) |
 | Suspend (s2idle) | ✅ |
 | GNOME desktop (Wayland, `gdm`) | ✅ real login screen confirmed on the physical panel |
-| Camera | ❌ no drivers (gts9wifi-fedora's own reference doesn't have this either) |
+| Camera | ⚠️ Rear captures at ~30 fps with a temporary GPIO15 power override; brighter lighting produces images, but quality and autofocus remain unresolved. The corrected GPIO15 supply is built, awaiting flash. The rebuilt SPA plugin exposes the rear camera to GNOME’s portal in a bounded test; normal activation remains disabled pending memory/streaming validation. Front remains disabled pending shared-rail voltage validation. See `docs/hardware-facts.md`. |
 | Fingerprint | ❌ not present on the reference project this was ported from |
 | Hardware video decode (iris) | ❌ not sourced |
 | `/vendor` super partition (erofs) | ❌ needs a `make-dynpart-mappings` port neither project has done |
