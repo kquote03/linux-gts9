@@ -18,6 +18,11 @@ MINIMAL_DTS = """
 / {
 	#address-cells = <2>;
 	#size-cells = <2>;
+	rear_cam_vio: rear-camera-vio-regulator {
+		compatible = "regulator-fixed";
+		gpio = <1 15 0>;
+		enable-active-high;
+	};
 	soc@0 {
 		#address-cells = <2>;
 		#size-cells = <2>;
@@ -30,13 +35,20 @@ MINIMAL_DTS = """
 			status = "okay";
 			camera@21 {
 				compatible = "hynix,hi1337-gts9-rear";
+				reg = <0x21>;
+				vddio-supply = <&rear_cam_vio>;
 			};
 		};
 		cci@ac16000 {
 			compatible = "qcom,sm8550-cci";
 			status = "okay";
-			camera@20 {
+			lens@c {
+				vcc-supply = <&rear_cam_vio>;
+			};
+			camera@21 {
 				compatible = "hynix,hi1337-gts9-front";
+				reg = <0x21>;
+				status = "disabled";
 			};
 		};
 	};
@@ -117,9 +129,40 @@ class CameraConfigChecks(unittest.TestCase):
 
     def test_missing_sensor_node_rejected(self):
         self.write_config()
-        self.write_dtb(MINIMAL_DTS.replace('camera@21 {\n\t\t\t\tcompatible = "hynix,hi1337-gts9-rear";\n\t\t\t};\n', ""))
+        self.write_dtb(MINIMAL_DTS.replace("camera@21", "camera@22"))
         result = self.run_check()
         self.assertNotEqual(result.returncode, 0)
+
+    def test_front_wrong_address_rejected(self):
+        self.write_config()
+        self.write_dtb(MINIMAL_DTS.replace('compatible = "hynix,hi1337-gts9-front";\n\t\t\t\treg = <0x21>;',
+                                          'compatible = "hynix,hi1337-gts9-front";\n\t\t\t\treg = <0x20>;'))
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("7-bit address 0x21", result.stderr)
+
+    def test_missing_rear_enable_rejected(self):
+        self.write_config()
+        self.write_dtb(MINIMAL_DTS.replace("gpio = <1 15 0>", "gpio = <1 16 0>"))
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("GPIO15", result.stderr)
+
+    def test_lens_bypassing_shared_rail_rejected(self):
+        self.write_config()
+        self.write_dtb(MINIMAL_DTS.replace("vcc-supply = <&rear_cam_vio>", "vcc-supply = <42>"))
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("lens must share", result.stderr)
+
+    def test_enabled_child_does_not_enable_camss(self):
+        self.write_config()
+        disabled = MINIMAL_DTS.replace('compatible = "qcom,sm8550-camss";\n\t\t\tstatus = "okay";',
+                                      'compatible = "qcom,sm8550-camss";\n\t\t\tstatus = "disabled";\n\t\t\tports { status = "okay"; };')
+        self.write_dtb(disabled)
+        result = self.run_check()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("isp@acb7000", result.stderr)
 
 
 if __name__ == "__main__":

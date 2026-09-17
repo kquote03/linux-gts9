@@ -29,6 +29,22 @@ cite this document instead of re-deriving these details.
 
 ## Last verified rollback point
 
+Read-only SSH backup of the stable Fedora tablet on 2026-09-16, stored at
+`backups/2026-09-16-camera-power-ssh/`. Each file has the exact measured
+block-device size and matches the SHA256 read directly from its partition.
+Remote `dd status=none` kept the stream binary. No partition was written.
+This is the current verified rollback content; take a fresh TWRP backup using
+`scripts/backup-boot-set.sh` immediately before the next flash.
+
+| Partition | Size (bytes) | sha256 |
+|---|---|---|
+| `boot` | 100,663,296 | `1576195bd0cc6e9bafbf549bcd893b4a10edc4086f351ec92a3675a07a41377c` |
+| `init_boot` | 8,388,608 | `0517e8be3ec2adeb2e0f62a1fc131b67f9e9abe56b8a177fb0a091cc7375d7b3` |
+| `vendor_boot` | 100,663,296 | `256039eec1b2fb7567713e427c436ef221ddb4f4ebf544d48f900515df9b8ad5` |
+| `dtbo` | 16,777,216 | `bd7149dbc4c606da7510d5a65af4a7244b011f151282f52b8f513d5f7d984624` |
+
+### 2026-09-16 second-flash capture (superseded; contaminated stream)
+
 Fresh `boot`/`init_boot`/`vendor_boot`/`dtbo` backup taken directly via
 TWRP `adb exec-out dd` on 2026-09-16, immediately before this session's
 flash of the `dev_info_ratelimited`-corrected CSI2-IRQ-logging kernel
@@ -48,11 +64,13 @@ later than the previous rollback point's underlying content).
 | `vendor_boot` | 100,663,387 | `079e63475e17b9b3b2e39a3e1cdd62489cbcb0cf6d67853499cb71b6f00bce4a` |
 | `dtbo` | 16,777,304 | `13786dd7b9ae8f5a53b7b699d929908deea9d9a0bc1f7fc8d0a50a69745004d8` |
 
-Note: the raw partition sizes are ~88-91 bytes larger than the flashed
-`.img` files' own sizes (100,663,296 / 8,388,608 / 100,663,296 /
-16,777,216 respectively) — this is the fixed block-device partition size,
-not corruption; `adb exec-out dd` reads the whole partition, which is
-padded slightly beyond the image actually written into it.
+Correction discovered during camera implementation: the extra 88–91 bytes
+are ASCII `dd` record counts and throughput appended by `adb exec-out`, not
+larger partitions. The actual sizes are 100,663,296 / 8,388,608 /
+100,663,296 / 16,777,216 bytes. The oversized originals are retained as
+historical evidence and must not be flashed directly. Their published hashes
+include diagnostic text and do not establish equality with raw partitions.
+The exact-sized, independently verified SSH backup above supersedes them.
 
 ### 2026-09-16 rollback point, first flash of the day (superseded, kept for history)
 
@@ -839,7 +857,7 @@ found -- not the "entirely unverified" state this section described before
 that session. See `docs/porting-log.md`'s Camera bring-up session entry for
 the full narrative; this section is the current state of the facts.
 
-### Rear camera: sensor identity CONFIRMED, streaming BLOCKED
+### Rear camera: sensor identity CONFIRMED, streaming BLOCKED; module power incomplete
 
 - **Sensor identity: CONFIRMED on real silicon.** `hi1337-gts9 10-0021:
   rear-main model=0x1337 vendor=0x2000` -- an exact register-level match
@@ -850,17 +868,24 @@ the full narrative; this section is the current state of the facts.
 - **CCI/I2C control plane: working.** Power sequencing, MCLK, and the CCI0
   I2C transaction to read the chip-ID registers all succeed cleanly, with
   no GPIO/regulator errors in `dmesg`. The `vreg_l1c_1p1`/`vreg_l4b_1p8`
-  regulator guesses and the rear reset-GPIO (70) are therefore now measured
-  facts for the rear camera, not analogies.
-- **Actuator (DW9808 VCM): probes and binds** (`dw9808-vcm 11-000c`,
-  PM runtime suspend/resume both succeed), but its `/dev/v4l-subdev31`
-  device node fails to open with `EINVAL` (confirmed with both `cam` and a
-  direct `v4l2-ctl --info`, not just a libcamera-side issue) -- libcamera
+  regulator selections and rear reset-GPIO (70) are sufficient for
+  register access. This does **not** establish that every module rail is
+  powered for streaming: Session 19 found a missing downstream GPIO15
+  `RCAM_LDO_EN` control and distinct front/rear VDIG rails.
+- **Actuator (assumed DW9808 VCM): probes and binds** (`dw9808-vcm 11-000c`,
+  previously logged PM runtime suspend/resume success). The driver does
+  not read a chip-ID at probe, so binding does not prove actuator
+  identity. `/dev/v4l-subdev31` fails to open with `EINVAL` (confirmed
+  with both `cam` and direct `v4l2-ctl --info`) -- libcamera
   logs "Lens initialisation failed, lens disabled" and falls back to no AF
-  control. Root cause not yet found; a reasonable first guess is a mainline
-  v4l2-subdev-core behavior change around zero-pad lens subdevices between
-  whatever kernel version the Ultra sibling validated this driver against
-  and this project's pinned v7.2.0, but this is unconfirmed.
+  control. Pinned `v4l2-subdev.c` explicitly supports zero-pad state
+  allocation, so the earlier zero-pad ABI hypothesis is unsupported.
+  `dw9808_open()` calls `pm_runtime_resume_and_get()`; distinguish
+  actual `open(2)` failure from an ioctl error, then trace runtime
+  resume, supply enable, initialization and position/status I2C calls.
+  The lens currently shares the un-gated VIO supply; the stock rear
+  module-enable supply correction also applies to the lens. Live
+  autofocus validation remains outstanding.
 - **Media graph link: only completes with the front sensor disabled.**
   `media-ctl -p` initially showed the rear sensor registered but with
   **0 links** to `msm_csiphy1`, even though its own chip-ID read had
@@ -878,16 +903,15 @@ the full narrative; this section is the current state of the facts.
   automatically (confirming the sensor-model-string-to-tuning-file lookup
   this port depends on actually works), and configures the SoftISP input
   path (`Input 4128x3096-GRBG-10-CSI2P stride 5168`).
-- **Real, unresolved blocker: zero frames delivered -- now root-caused to
-  the physical layer with direct evidence, not inference.** `cam -c 1
+- **Historical zero-frame failure, resolved in a bounded GPIO15 test.** Receiver silence
+  is measured; its cause remains unproven (see Session 19 correction below). `cam -c 1
   --capture=1` (and a raw `v4l2-ctl --stream-mmap` directly on
   `/dev/video0`, bypassing libcamera entirely) both hang indefinitely with
   no data, confirmed repeatedly.
 
   **2026-09-16 diagnostic session (`dev_info_ratelimited` CSID patch,
   `46158ee`, plus live `ftrace` function-graph tracing across the whole
-  streaming call chain) produced the decisive evidence Phase J of the plan
-  called for:**
+  streaming call chain) established the following receiver silence:**
   - `csid_isr`'s own new `CSID_CSI2_RX_IRQ_STATUS` log line **never
     printed once** during any real capture attempt, at any point from
     stream-on through the eventual timeout/teardown.
@@ -915,29 +939,35 @@ the full narrative; this section is the current state of the facts.
     documented no-op stub by design ("bus done and RUP IRQ have been moved
     to CSID from VFE" for Titan Gen3) -- its silence is expected, not
     evidence of anything.
-  - This is the signature of a genuine CSI-2 physical-layer training
-    failure: the sensor's driver believes it started transmitting, but
-    CSIPHY never observes enough lane activity to generate even one
-    common-status interrupt, and CSID never sees a single valid packet
-    (not even an error one) to interrupt on. Software-side, every relevant
-    call succeeds -- there is no error return, no crash, no timeout inside
-    the driver stack itself to chase further with more logging.
-  - This does not yet distinguish between the two remaining explanations:
-    **(a)** this module is actually C-PHY, which mainline CAMSS's CSIPHY
-    driver cannot support at all (hard-rejected in `camss.c`, matching
-    this project's original leading risk), or **(b)** a still-wrong
-    lane-count/lane-mapping/link-frequency parameter (copied from the
-    Ultra sibling by analogy, and independently re-derived from downstream
-    source in an earlier session, but never confirmed against this
-    specific device's own schematic) preventing PHY lock even though it
-    is genuinely D-PHY. Distinguishing these needs either a logic
-    analyzer/scope on the physical MIPI lines, or a real C-PHY-capable
-    mainline driver to test against -- neither is available in-session.
-    **Recommendation:** treat this as requiring the previously-scoped,
-    open-ended mainline C-PHY backport (or hardware-level signal
-    verification) as its own follow-up effort; further blind parameter
-    changes or additional kernel-side logging are unlikely to add more
-    information than this session's `ftrace` evidence already provides.
+  - **Session 19 correction:** no IRQ activity establishes that no data
+    reached the observed receiver path; it does not establish a C-PHY
+    mismatch or exclude incomplete module power, incorrect mode tables,
+    or receiver configuration. Device stock DTS explicitly includes
+    GPIO15 `RCAM_LDO_EN`, absent from the tested mainline rear power
+    path. The sibling models it as a GPIO-enabled rear VIO supply for
+    sensor and lens. Register identity alone did not validate that path.
+  - Device-specific CRC-valid descriptors decoded in Session 19 specify
+    D-PHY (`is3Phase=0`), four lanes and 28ns settle time. Rear mode 0's
+    93 register writes match the existing rear mode table exactly.
+    Restore the missing enable/supply path first, then compare bounded
+    raw capture and sensor stream/status readbacks. A C-PHY backport
+    is not supported as the next step by this device's stock mode data.
+
+### 2026-09-17 capture and desktop-discovery update
+
+Holding main-TLMM GPIO15 high with a bounded diagnostic restores rear
+capture on the existing kernel: both RAW and 640x480 processed streams
+return frames at approximately 30 fps. Increasing scene lighting produces
+brighter images, but they remain blurred/noisy and lens initialization
+still fails with `EINVAL`. The permanent regulator correction has been
+built but not flashed; normal camera power is not yet fixed on-device.
+
+The default libcamera SPA plugin and relay service remain disabled. This
+explains GNOME reporting no camera after reboot. Temporarily loading the
+rebuilt Fedora-matched plugin publishes `gts9-camera-rear` (`X716B Rear`)
+and makes the desktop camera portal's `IsCameraPresent` property true.
+This establishes discovery, not working GNOME capture. The short bounded
+check does not replace the required 30-minute memory and streaming tests.
 
 ### Front camera: I2C communication fails outright, no chip-ID guess to make
 
@@ -947,15 +977,60 @@ the full narrative; this section is the current state of the facts.
   model=-6 vendor=-6`) -- a plain I2C bus communication failure, not a
   "wrong chip responded" mismatch. No GPIO/regulator/CCI-level error
   accompanies it.
-- This points at wrong I2C address, wrong CCI bus/master routing, or a
-  genuinely different (non-responding-to-HI1337-protocol) chip at that
-  slot -- not something to keep guessing at without either a bench i2cdetect
-  sweep of the front CCI bus or a real teardown/schematic reference for
-  this device's own front camera module.
+- **Offline source correction (Session 19): front VDIG is not the rear
+  rail.** In this device's `gts9_eur_openx_w00_r04.dts`, `__fixups__`
+  resolves rear `cam_vdig-supply` to `pm_v6c_l1`, but front sensor and
+  EEPROM `cam_vdig-supply` to `pm_humu_l11`. Fragments 138 and 140
+  independently vote 1,100,000 uV. The disabled mainline front node now references the actual shared
+  L11B rail; the sibling's hardware-validated front node
+  instead uses `vreg_l11b_1p1` (1,104,000 uV). A successful regulator API
+  call cannot establish correct physical front power.
+- **Panel compatibility remains unresolved.** X716 mainline panel VDD
+  currently uses L11B at 1,200,000 uV, based on a stock panel supply
+  declaration. The original stock vendor_boot base DTB's symbols
+  `L11B` and `pm_humu_l11` resolve to the **same** regulator node,
+  `/soc/apps_rsc@17a00000/drv@2/rpmh-regulator-ldob11/regulator-pm-humu-l11`
+  (RPMh resource `ldob11`). The r04 overlay maps panel VDD to `L11B`
+  and front VDIG to `pm_humu_l11`; its fragment 140 sets regulator
+  min/max to 1.1V while the panel supply table still requests exactly
+  1.2V. Shared-rail identity is established, but stock runtime voting
+  and the panel's compatibility with 1.104V remain unresolved. Do not
+  lower the working panel voltage by analogy.
+- **Device-specific descriptor address: 0x21, not sibling 0x20.**
+  Read-only extraction of the tablet's stock `super` vendor extent on
+  2026-09-16 recovered `com.samsung.sensormodule.1_hynix_hi1337_front.bin`
+  and `.12_hynix_hi1337_front_full.bin`. Both CRC32-valid V3.5.1
+  descriptors declare sensorName `hi1337`, eight-bit write address
+  `0x42` (Linux `0x21`), word register address/data types, identity
+  register `0x0714` value `0x2000`, and mask `0xffffffff`. The rear
+  descriptor declares the same slave fields. `scripts/decode-stock-camera.py`
+  reports bounded, source-substantiated slave and mode fields plus
+  extracted register tables; it does **not** establish the front's
+  silicon identity. The previous EEPROM address
+  `0x40` and Ultra sensor address were insufficient to choose the sensor
+  address for this device.
+- Device-specific stock routing independently confirms CCI1 master 1,
+  MCLK4/GPIO104 at 19.2 MHz, reset GPIO117, and enable GPIO17. The
+  descriptor power-up triples also confirm 1.8V/1ms, 1.1V/1ms,
+  module enable/1ms, 19.2MHz/10ms and reset release/12ms; numeric
+  configuration enums remain raw in the decoder report.
+- The device's `.1` front descriptor mode 0 is 2032x1524; `.12`
+  front-full mode 0 is 4000x3000. Both use D-PHY, four lanes, and
+  28ns settle time. The inherited Ultra 3408x2556 table is therefore
+  not this device's selected stock front mode. The driver now uses the exact
+  2032x1524 mode-0 writes and frame length 1621; capture remains unverified.
+- A diagnostic I2C read must hold the sensor's power, enable and reset
+  state for the transaction. The driver powers back off after failed
+  probe, so an ordinary scan afterwards cannot resolve addressing.
+  Prefer the descriptor's exact combined register-read transactions
+  over a blanket SMBus scan. Main TLMM GPIO17 and DMIC GPIO17 are on
+  distinct controllers (`&tlmm` versus `&lpass_tlmm`); equal GPIO
+  numbers do not establish an ownership conflict.
 - Currently disabled in DT (`status = "disabled"` on `hi1337_front`,
   `&camss`'s `port@4` dropped) specifically so it doesn't block the rear
   camera's own media graph completion (see above) -- re-enabling is a
-  one-line revert once the real wiring is found.
+  coordinated restoration of sensor and CAMSS reciprocal endpoints plus
+  sensor enablement once the real wiring and panel compatibility are found.
 
 ### PipeWire/WirePlumber memory leak: confirmed, root cause narrowed, mitigated
 
@@ -987,26 +1062,49 @@ so future builds ship stable; the plugin is still built (so the work isn't
 wasted) and re-enabling is a one-line change once the underlying bug is
 actually fixed.
 
-**Leading suspect for the underlying bug, not yet fixed**: a real version
-gap this port introduced. The 7 backport patches
-(`specs/pipewire-x716b/patches/`) were written and validated (by the
-sibling `ubuntu-galaxy-tab-s9ultra` project, on real hardware, over
-multi-hour stress tests with no memory issue) against a PipeWire commit
-matching ~1.0.5. That sibling's own OS (Ubuntu Noble) ships stock PipeWire
-1.0.5 already -- same version by construction, with an explicit
-`Depends: pipewire (>= 1.0.5), pipewire (<< 1.1)` in its own package. This
-Fedora port instead loads that same patched plugin into **Fedora 44's
-stock PipeWire 1.6.8** (confirmed via embedded package metadata in the
-built rootfs) -- a 6-minor-version gap, with no equivalent guard. Prime
-suspect patch: `0005-libcamera-do-not-close-borrowed-buffer-fds.patch`,
-which removed the old defensive `close()` fallback and now depends
-entirely on `freeBuffers()` running on every negotiation/teardown path --
-an assumption that held for the exact core version it was validated
-against but may not hold against 1.6.8's actual SPA node lifecycle.
-**Not yet fixed** -- next step is auditing that patch's teardown-path
-assumptions against 1.6.8's real behavior, or building a complete
-version-pinned PipeWire (matching the sibling's implicit approach) instead
-of dropping the plugin into a much newer stock core.
+**Session 19 source diagnosis:** the historical PipeWire 1.0.5-era
+plugin omits upstream `PropInfo` pagination fixes
+[`e5afc939e8d053e3331e401f29bdc9913bf200f0`](https://gitlab.freedesktop.org/pipewire/pipewire/-/commit/e5afc939e8d053e3331e401f29bdc9913bf200f0)
+and [`e770ed42c37f25ae1fa640f44ae109988131100a`](https://gitlab.freedesktop.org/pipewire/pipewire/-/commit/e770ed42c37f25ae1fa640f44ae109988131100a).
+The enumeration path lacks the node's built-in-property offset and an
+end-of-control-map iterator bound. Repeated property queries can return
+non-advancing pagination or iterate past the map, a concrete source bug
+that can reproduce independently of streaming. The earlier borrowed-FD
+teardown explanation remains unproven; it is not the leading diagnosis.
+
+`scripts/build-fedora-camera-spa.sh` now builds the native plugin from
+the exact source RPM corresponding to installed Fedora `pipewire-libs`,
+including Fedora patches, with version/hash provenance. The actual-source
+pagination regression exercises finite iteration, unsupported controls,
+filters, empty maps and out-of-range offsets. Native compilation against
+Fedora `pipewire-1.6.8-1.fc44.src.rpm` and libcamera 0.7.2 passed on the
+tablet; the isolated artifact was retained without replacing the active
+plugin. Build success and source regression do not establish runtime
+OOM resolution: bounded idle-memory and streaming validation remain
+required before enabling the plugin by default.
+
+### Stock camera evidence retained from Session 19
+
+Read-only extraction used `super`'s single linear `vendor` extent:
+start sector 17,643,520, length 4,858,416 sectors (512-byte units).
+Both LP geometry copies and all four metadata header/table SHA256
+checksums verified. Exactly 2,487,508,992 bytes were pulled to host
+`work/camera-stock-2026-09-16/vendor.img`; offline `debugfs` extracted
+`/lib64/camera`. No device mapping, mount, reboot or partition write was
+needed. The device descriptors' own CRC32 trailers verify independently.
+Host scratch image/blobs are evidence, not build-time inputs.
+
+| Device stock descriptor | SHA256 |
+|---|---|
+| `0_hynix_hi1337.bin` | `696a444f78cdfa5f4556d3cb5dd030cdb8ff32b0a043e14bd7bf09b26a055209` |
+| `1_hynix_hi1337_front.bin` | `7be8cd9cf9e1ca4804c0c3e09b6bc7f882144720412419f1218a0644bbe38151` |
+| `12_hynix_hi1337_front_full.bin` | `c646608d67dd52ae2ae4bf9bbf23bb5b748d31c588e25e08aaa094893a18d7fb` |
+
+The bounded decoder uses slave field ordering from Qualcomm's
+[`camxsensordriver.xsd`](https://github.com/comprehensive9/vendor_qcom_proprietary/blob/master/chi-cdk/api/sensor/camxsensordriver.xsd)
+and rejects unsupported versions/layouts, corrupt CRC32 and invalid
+section/node bounds. Its successful decode is configuration evidence;
+front chip-ID and actual capture are still hardware acceptance gates.
 
 ### Devicetree topology (measured from this device's own stock downstream source)
 

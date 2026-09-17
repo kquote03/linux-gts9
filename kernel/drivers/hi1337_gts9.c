@@ -1,23 +1,11 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  * Hynix HI1337 support for the Samsung Galaxy Tab S9 5G (SM-X716B).
- *
- * Forked from ubuntu-galaxy-tab-s9ultra's own hi1337_gts9u.c (SM-X910
- * Ultra, same SM8550 "gts9" reference-design family) with zero logic
- * changes -- only the front-ultrawide variant is dropped, since X716B has
- * no third rear/fourth lens at all (one AF rear + one fixed-focus front,
- * per Samsung's published spec and this device's own stock devicetree,
- * see docs/hardware-facts.md).
- *
- * UNVERIFIED HYPOTHESIS, pending real-hardware confirmation: this assumes
- * X716B's rear and front camera modules are the same physical HI1337
- * parts as the Ultra's rear-main/front-main slots (same CSIPHY indices --
- * 1 and 4 -- in both this device's own downstream devicetree and the
- * Ultra's, and matching autofocus/fixed-focus wiring), so the mode/
- * register tables in hi1337_gts9_tables.h are reused verbatim rather than
- * re-derived. If Phase 0 hardware bring-up (docs/hardware-facts.md) finds
- * a different chip ID or a different sensor mode/resolution, this file
- * and its tables need updating before anything here can be trusted.
+ * Based on the validated SM-X910 driver. The X716B stock descriptors now
+ * verify global/rear tables exactly and provide the front 2032x1524 mode.
+ * Both describe four-lane D-PHY; rear silicon identity is measured, front
+ * identity and capture remain unverified until its supply is resolved.
+ * See hi1337_gts9_tables.h provenance and docs/hardware-facts.md.
  */
 
 #include <linux/clk.h>
@@ -85,11 +73,11 @@ static const struct hi1337_variant hi1337_rear = {
 
 static const struct hi1337_variant hi1337_front = {
 	.mode = {
-		.width = 3408,
-		.height = 2556,
-		.frame_length = 0x0a96,
-		.regs = hi1337_front_3408x2556_regs,
-		.num_regs = ARRAY_SIZE(hi1337_front_3408x2556_regs),
+		.width = 2032,
+		.height = 1524,
+		.frame_length = 0x0655,
+		.regs = hi1337_front_2032x1524_regs,
+		.num_regs = ARRAY_SIZE(hi1337_front_2032x1524_regs),
 		.name = "front-main",
 	},
 };
@@ -187,9 +175,9 @@ static int hi1337_power_on(struct hi1337 *sensor)
 	usleep_range(2000, 2500);
 
 	/*
-	 * The front module-enable line is multiplexed with the internal DMIC.
-	 * Hold camera GPIOs only while the sensor is actually powered so an
-	 * idle, registered camera cannot regress audio capture.
+	 * Hold camera GPIOs only while the sensor is actually powered. The
+	 * front enable is TLMM GPIO17; DMIC GPIO17 belongs to LPASS TLMM, a
+	 * separate controller, and does not share this line.
 	 */
 	sensor->enable_gpio = gpiod_get_optional(sensor->dev, "enable",
 					 GPIOD_OUT_LOW);
@@ -259,14 +247,14 @@ static int hi1337_identify(struct hi1337 *sensor)
 
 	model_ret = hi1337_read_reg(sensor, HI1337_REG_MODEL_ID, &model);
 	vendor_ret = hi1337_read_reg(sensor, HI1337_REG_VENDOR_ID, &vendor);
-	if (model_ret && vendor_ret) {
+	if (model_ret || vendor_ret) {
 		dev_err(sensor->dev,
 			"identity reads failed: model=%d vendor=%d\n",
 			model_ret, vendor_ret);
-		return model_ret;
+		return model_ret ? model_ret : vendor_ret;
 	}
 
-	if (model != HI1337_MODEL_ID && model != 0x1337 &&
+	if ((model != HI1337_MODEL_ID && model != 0x1337) ||
 	    vendor != HI1337_VENDOR_ID) {
 		dev_err(sensor->dev,
 			"unexpected sensor identity model=0x%04x vendor=0x%04x\n",

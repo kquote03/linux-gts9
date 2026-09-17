@@ -9,15 +9,56 @@ sm8550-samsung-x716b.dts can compile fine while still, say, losing a node to
 a bad `status` override resolved only after full preprocessing).
 """
 import argparse
+import re
 from pathlib import Path
 import subprocess
 import sys
 
 REPO = Path(__file__).resolve().parent.parent
 BOARD_DTB = "sm8550-samsung-x716b.dtb"
-CONFIG_SYMBOLS = ("CONFIG_VIDEO_HI1337_GTS9", "CONFIG_VIDEO_DW9808_VCM")
+CONFIG_SYMBOLS = ("CONFIG_VIDEO_HI1337_GTS9", "CONFIG_VIDEO_DW9808_VCM", "CONFIG_REGULATOR_FIXED_VOLTAGE")
 MODULE_STEMS = ("hi1337_gts9", "dw9808_vcm")
-REQUIRED_DT_NODES = ("camss", "cci@ac15000", "cci@ac16000", "camera@21", "camera@20")
+REQUIRED_DT_NODES = ("camss", "cci@ac15000", "cci@ac16000")
+SENSOR_COMPATIBLES = ("hynix,hi1337-gts9-rear", "hynix,hi1337-gts9-front")
+
+
+def parse_nodes(decompiled):
+    """Read dtc's canonical output without confusing child properties with parents."""
+    nodes, stack = [], []
+    for line in decompiled.splitlines():
+        text = line.strip()
+        if text.endswith("{"):
+            node = {"name": text[:-1].strip(), "properties": {}}
+            nodes.append(node)
+            stack.append(node)
+        elif text == "};":
+            stack.pop()
+        elif stack and text.endswith(";"):
+            key, separator, value = text[:-1].partition(" = ")
+            stack[-1]["properties"][key] = value if separator else None
+    return nodes
+
+
+def check_rear_power(nodes):
+    def properties(name):
+        matches = [node["properties"] for node in nodes if node["name"] == name]
+        if len(matches) != 1:
+            raise ValueError(f"expected exactly one {name} node")
+        return matches[0]
+
+    rail = properties("rear-camera-vio-regulator")
+    if rail.get("compatible") != '"regulator-fixed"' or "enable-active-high" not in rail:
+        raise ValueError("rear camera must use an active-high fixed regulator")
+    gpio = re.findall(r"0x[0-9a-f]+|\d+", rail.get("gpio", ""))
+    if len(gpio) != 3 or int(gpio[1], 0) != 15 or int(gpio[2], 0) != 0:
+        raise ValueError("rear camera regulator must own active-high GPIO15")
+    phandle = rail.get("phandle")
+    rear = next(node["properties"] for node in nodes
+                if node["properties"].get("compatible") == f'"{SENSOR_COMPATIBLES[0]}"')
+    if not phandle or rear.get("vddio-supply") != phandle:
+        raise ValueError("rear sensor must consume the GPIO15 regulator")
+    if properties("lens@c").get("vcc-supply") != phandle:
+        raise ValueError("rear lens must share the sensor's GPIO15 regulator")
 
 
 def check_config(config_path):
@@ -53,17 +94,24 @@ def check_dtb(dtb_path):
     except subprocess.CalledProcessError as error:
         raise ValueError(f"{dtb_path}: dtc failed to decompile: {error.stderr}")
     decompiled = result.stdout
+    nodes = parse_nodes(decompiled)
     for node in REQUIRED_DT_NODES:
         if node not in decompiled:
             raise ValueError(f"{dtb_path}: missing expected node/label containing {node!r}")
+    for compatible in SENSOR_COMPATIBLES:
+        matches = [node for node in nodes
+                   if node["properties"].get("compatible") == f'"{compatible}"']
+        if len(matches) != 1:
+            raise ValueError(f"{dtb_path}: expected exactly one sensor with compatible {compatible!r}")
+        if matches[0]["name"] != "camera@21" or matches[0]["properties"].get("reg") != "<0x21>":
+            raise ValueError(f"{dtb_path}: {compatible} must use camera@21 and 7-bit address 0x21")
     # A node can be *present* but left disabled -- camss/cci0/cci1 must all
     # actually be enabled, not just exist in the compiled tree.
     for marker in ("isp@acb7000", "cci@ac15000", "cci@ac16000"):
-        start = decompiled.index(marker)
-        end = decompiled.index("\n\t\t};", start)
-        block = decompiled[start:end]
-        if 'status = "okay"' not in block:
+        matches = [node for node in nodes if node["name"] == marker]
+        if len(matches) != 1 or matches[0]["properties"].get("status") != '"okay"':
             raise ValueError(f"{dtb_path}: {marker} is not status=\"okay\" in the compiled DTB")
+    check_rear_power(nodes)
 
 
 def main():

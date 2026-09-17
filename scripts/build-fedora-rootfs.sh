@@ -323,7 +323,7 @@ if [ "$desktop" = "gnome" ]; then
 		python3-pyyaml python3-jinja2 python3-ply \
 		gnutls-devel libyaml-devel libdrm-devel libjpeg-turbo-devel \
 		libtiff-devel libevent-devel boost-devel elfutils-devel \
-		gstreamer1-devel gstreamer1-plugins-base-devel pipewire-devel
+		gstreamer1-devel gstreamer1-plugins-base-devel pipewire-devel rpm-build dnf5-plugins
 fi
 
 echo "== building libssc 0.4.4 (not in Fedora) =="
@@ -480,57 +480,11 @@ if [ "$desktop" = "gnome" ]; then
 			/usr/share/libcamera/ipa/simple/hi1337-gts9.yaml
 	'
 
-	echo "== building the PipeWire libcamera SPA plugin (0.7-compat backports) =="
-	# Only the one plugin target, not all of PipeWire -- Fedora's own
-	# pipewire/wireplumber packages (already installed via the Workstation
-	# group) are otherwise kept as-is, this just replaces the one .so that
-	# needs to speak libcamera 0.7's API.
-	mkdir -p "$rootdir/tmp/pipewire-patches"
-	cp "$repo_root/specs/pipewire-x716b/patches/"*.patch "$rootdir/tmp/pipewire-patches/"
-	run_chroot /usr/bin/bash -c '
-		set -eu
-		export HOME=/root
-		d=$(mktemp -d)
-		for attempt in 1 2 3; do
-			git clone --quiet https://gitlab.freedesktop.org/pipewire/pipewire.git "$d/src" && break
-			[ "$attempt" = 3 ] && exit 1
-			rm -rf "$d/src"
-			sleep 5
-		done
-		cd "$d/src"
-		git checkout --quiet a2287be601710eea0d073261223ec34b92384c8a
-		for p in /tmp/pipewire-patches/*.patch; do
-			git apply "$p"
-		done
-		meson setup "$d/build" . \
-			--prefix=/usr \
-			--libdir=lib64 \
-			-Dauto_features=disabled \
-			-Dspa-plugins=enabled \
-			-Ddbus=disabled \
-			-Dudev=enabled \
-			-Dlibcamera=enabled \
-			-Dsession-managers=[]
-		meson compile -C "$d/build" spa-libcamera
-		# Camera bring-up session (real-hardware follow-up): installed
-		# *disabled* (.so.disabled, not .so) -- confirmed live on real
-		# hardware that the moment this plugin is loadable, stock Fedora
-		# WirePlumber config (wireplumber.conf, own default
-		# "wants = [ monitor.v4l2, monitor.libcamera ]" for
-		# hardware.video-capture) loads it unconditionally and it leaks
-		# without bound (wireplumber OOM-killed at 5.4GB anon-rss within
-		# a few minutes, reproduced twice, with the camera-relay service
-		# confirmed not even running -- not the relay restart loop, the
-		# plugin itself is the trigger). Leading suspect is the version
-		# gap between this PipeWire-1.0.5-era patch set and the actual
-		# stock Fedora PipeWire (1.6.8) -- see docs/hardware-facts.md,
-		# Camera section, for the full writeup. Built here regardless so
-		# the work is not wasted -- re-enabling (drop the .disabled
-		# suffix) is a one-line change once this is actually fixed and
-		# re-verified stable on real hardware.
-		install -Dm755 "$d/build/spa/plugins/libcamera/libspa-libcamera.so" \
-			/usr/lib64/spa-0.2/libcamera/libspa-libcamera.so.disabled
-	'
+	echo "== building the libcamera SPA plugin from the installed Fedora PipeWire SRPM =="
+	mkdir -p "$rootdir/tmp/pipewire-spec"
+	cp -a "$repo_root/specs/pipewire-x716b/." "$rootdir/tmp/pipewire-spec/"
+	cp "$repo_root/scripts/build-fedora-camera-spa.sh" "$rootdir/tmp/build-fedora-camera-spa.sh"
+	run_chroot /usr/bin/bash /tmp/build-fedora-camera-spa.sh /tmp/pipewire-spec
 
 	echo "== building v4l2-relayd (relays libcamera onto v4l2loopback nodes) =="
 	# Not packaged for Fedora at all (Ubuntu/Launchpad-specific); autotools,
@@ -559,7 +513,8 @@ if [ "$desktop" = "gnome" ]; then
 	'
 fi
 rm -rf "$rootdir/tmp/hexagonrpcd-patches" "$rootdir/tmp/iio-sensor-proxy-patches" \
-	"$rootdir/tmp/libcamera-patches" "$rootdir/tmp/pipewire-patches" \
+	"$rootdir/tmp/libcamera-patches" "$rootdir/tmp/pipewire-spec" \
+	"$rootdir/tmp/build-fedora-camera-spa.sh" \
 	"$rootdir/tmp/v4l2-relayd-patches"
 
 echo "== staging this project's own firmware (WiFi/BT/GPU) =="
@@ -666,6 +621,8 @@ echo "== applying device overlay =="
 # handful of libexec scripts that call systemctl directly).
 cp -a "$repo_root/rootfs/overlay-common/." "$rootdir/"
 cp -a "$repo_root/rootfs/overlay-systemd/." "$rootdir/"
+# WirePlumber 0.5 uses the replacement SPA-JSON camera rules.
+rm -f "$rootdir/usr/share/wireplumber/main.lua.d/51-gts9-camera-backends.lua"
 
 echo "== base system configuration =="
 # fstab by LABEL, not UUID/device path -- matches this project's own
@@ -743,6 +700,7 @@ run_chroot /usr/bin/bash -c "echo 'root:${build_user}' | chpasswd"
 # container): populate the home directory explicitly instead of trusting
 # useradd -m's skel copy to finish.
 run_chroot /usr/sbin/useradd -M -G wheel -s /usr/bin/bash "$build_user" || true
+run_chroot /usr/sbin/usermod -a -G video "$build_user"
 run_chroot /usr/bin/bash -c "mkdir -p /home/${build_user} && cp -a /etc/skel/. /home/${build_user}/ && chown -R 1000:1000 /home/${build_user}"
 run_chroot /usr/bin/bash -c "echo '${build_user}:${build_user}' | chpasswd"
 

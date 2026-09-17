@@ -4855,3 +4855,116 @@ unchanged from Session 17.
 
 Everything above is committed on the `camera-bringup` branch (not merged
 to `main`, per standing instruction for this work).
+
+
+## Session 19 — 2026-09-16 — Camera source corrections and device-specific stock evidence
+
+Revisited Sessions 17–18's three camera failures with parallel source
+investigations. The previous no-interrupt trace is valid, but its claimed
+C-PHY prerequisite was too strong: successful sensor identity and register
+writes do not establish complete module power. This device's stock r04
+camera node includes GPIO15 `RCAM_LDO_EN`, absent from the tested rear
+power path. The sibling models that line as a gated rear VIO supply
+shared by the sensor and lens. The rear supply correction is staged;
+frame delivery still needs a real capture test. Binding the DW9808 driver
+also did not read an actuator chip-ID, and pinned V4L2 explicitly handles
+zero-pad entities: investigate runtime power/I2C before blaming that ABI.
+
+Front's inherited wiring contained two independent errors. Stock r04
+fixups map rear VDIG to `pm_v6c_l1` and front VDIG to `pm_humu_l11`, but
+mainline routed both to L1C. Front address `0x20` came from the Ultra
+sensor plus X716's EEPROM address, rather than this tablet's sensor data.
+
+Read the running Fedora tablet's stock `super` partition without creating
+a device mapping, mounting anything, rebooting or writing a partition.
+Both LP geometry and all four metadata header/table checksum copies
+verified. Pulled the exact linear vendor extent (sector 17,643,520,
+4,858,416 sectors of 512 bytes) to host scratch and used offline `debugfs`
+to extract `/lib64/camera`. All three sensor descriptors passed their own
+CRC32 trailers. They contain HI1337 rear, front and front-full data;
+both front descriptors declare eight-bit slave address `0x42`, meaning
+Linux `0x21`, and ID register `0x0714` value `0x2000`. This is device
+configuration evidence; front silicon identity remains unmeasured.
+
+The V3.5.1 node/data layout and Qualcomm schema let us decode actual mode
+metadata and writes: rear mode 0's 93 writes match the existing table
+exactly. Front mode 0 is 2032x1524 in `.1`, or 4000x3000 in `.12`, rather
+than the inherited Ultra 3408x2556. These modes specify D-PHY, four lanes
+and 28ns settle time. Added a bounded offline descriptor decoder with
+length, CRC32, version and section/node bounds checks; kept extracted
+blobs/images and reports in host scratch with hashes documented in
+hardware facts. The configuration evidence replaces the C-PHY guess.
+
+The original stock vendor_boot base DTB resolves `L11B` and
+`pm_humu_l11` to the same `ldob11` regulator node. r04 maps panel VDD
+and front VDIG to those aliases respectively, then votes regulator
+min/max 1.1V while its panel supply table still requests 1.2V. The
+shared rail is confirmed; runtime compatibility is not. Front stays
+disabled until that conflict is resolved safely. DMIC GPIO17 belongs to
+LPASS TLMM; front enable GPIO17 belongs to main TLMM, so matching numbers
+do not prove an ownership conflict despite the inherited driver comment.
+
+The old SPA plugin also lacks upstream property-pagination fixes:
+missing built-in-property offset and end-iterator bound are concrete
+source bugs, unlike the earlier FD-lifecycle speculation. Replaced the
+Fedora build path with a plugin built from its installed core's exact
+Fedora SRPM and native libcamera version, and gated it with a regression
+compiled from the actual enumeration function. An isolated native build
+on the tablet passed against PipeWire 1.6.8 and libcamera 0.7.2. Runtime
+idle-memory and streaming validation remain separate acceptance gates;
+the build default stays disabled until those gates pass.
+
+### Live rear power test and remaining image-quality gate — 2026-09-17
+
+A bounded GPIO-v2 diagnostic held the otherwise unclaimed main-TLMM
+GPIO15 high while running the existing Fedora kernel. `cam` then captured
+four rear frames successfully at approximately 30 fps, where previous
+captures never returned frames. GPIO15 was lowered and released on exit.
+This establishes the missing rear module-enable line as a frame-delivery
+blocker; a C-PHY backport is not required to explain that failure.
+The fourth PPM is retained in `out/camera-validation/rear/`. Its image is
+almost black. The user confirmed the lens is uncovered and faces a lit
+scene. Exposure settling and the analogue-gain register write width still
+need investigation; frame delivery alone does not establish usable images.
+
+Live lens unbind/rebind produced duplicate media links. Rebinding CAMSS
+while WirePlumber retained camera descriptors left both old and new media
+devices, so those hot-rebind capture failures are not clean sensor tests.
+Stopped the temporary SPA memory run, removed its active plugin link, and
+requested a reboot into the existing Fedora installation to clear that
+state. SSH has not yet returned. No partition was written during these
+tests. The interrupted memory run is not a 30-minute acceptance result.
+
+Added Fedora's desktop user to the video group after live inspection found
+newly registered camera nodes inaccessible to that user. Tightened the
+sensor identity check to reject either failed register read and mismatched
+vendor/model values; rebuilt and staged the signed sensor module. The 11
+configuration, five descriptor, and four binary-backup regression tests
+pass. Front remains disabled pending the shared L11B voltage check.
+
+Fedora subsequently returned over SSH; the user confirmed a normal GDM
+boot. A clean-graph 120-frame capture succeeded at approximately 30 fps
+but remained nearly black. During streaming, read-only I2C register
+readback showed exposure `0x020a=0x0cbc`, analogue gain
+`0x0212=0x00f0`, and all four digital gains still `0x0200`.
+The suspected adjacent digital-gain corruption was not observed, so no
+gain-width change was made on that hypothesis. Full-resolution RAW capture
+also returned four 16,000,128-byte frames.
+
+After the user increased scene lighting, another 120-frame capture
+succeeded at approximately 30 fps. The final 640x480 RGB image's mean
+channel value rose from about 0.08 to 70.58 (0–255 scale), with a maximum
+of 146. It is visibly brighter but very blurred/noisy, without enough
+scene detail to claim usable imaging. Metadata reports 46.7ms exposure
+and 16x analogue gain. Lens initialization still fails with `EINVAL`,
+so this test does not validate autofocus. Retained the final image as
+`out/camera-validation/rear/brighter-119.ppm` and a PNG preview. The bounded
+GPIO15 diagnostic released the line after capture; SSH remains reachable.
+
+GNOME discovery was checked after the user reported no camera. The installed
+SPA plugin and relay service were still disabled, as intended by the prior
+OOM mitigation. A bounded test of the rebuilt plugin published
+`gts9-camera-rear` / `X716B Rear`; the desktop camera portal returned
+`IsCameraPresent=true`. Normal activation remains gated on the full memory
+and streaming tests and permanent power correction. No working GNOME
+capture is claimed from discovery alone.

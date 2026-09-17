@@ -3,20 +3,11 @@
 # ubuntu-gts9u-camera-relays (SM-X910 Ultra) -- trimmed from four cameras to
 # this device's two, node names/logic otherwise unchanged.
 #
-# PipeWire's libcamera source names encode the sysfs path of each sensor's
-# I2C device. Both entries below match this board's own devicetree topology
-# exactly (kernel/dts/sm8550-samsung-x716b.dts): rear is CCI0 (ac15000)
-# i2c-bus 1 camera@21, front is CCI1 (ac16000) i2c-bus 1 camera@20 -- the
-# identical CCI/bus/address assignment the Ultra sibling uses for its own
-# real, working rear-main/front-main HI1337 slots, which is the whole reason
-# these names can be predicted rather than measured. UNVERIFIED until
-# confirmed against this device's own live `pw-cli ls Node` output.
+# WirePlumber 0.5 location rules assign stable names independently of the
+# sensor's CCI bus/address. Keep these in sync with 51-gts9-camera-backends.conf.
 set -euo pipefail
 
-sources=(
-	libcamera_input._base_soc_0_cci_ac15000_i2c-bus_1_camera_21
-	libcamera_input._base_soc_0_cci_ac16000_i2c-bus_1_camera_20
-)
+sources=(gts9-camera-rear gts9-camera-front)
 pids=()
 
 stop_relays() {

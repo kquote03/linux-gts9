@@ -115,6 +115,17 @@
 					  * already sourced from). See docs/porting-log.md's
 					  * gts9wifi-fedora pivot entry. */
 
+	/* Stock X716B RCAM_LDO_EN is GPIO15. Share ownership with the lens. */
+	rear_cam_vio: rear-camera-vio-regulator {
+		compatible = "regulator-fixed";
+		regulator-name = "rear_cam_vio";
+		regulator-min-microvolt = <1800000>;
+		regulator-max-microvolt = <1800000>;
+		vin-supply = <&vreg_l4b_1p8>;
+		gpio = <&tlmm 15 GPIO_ACTIVE_HIGH>;
+		enable-active-high;
+	};
+
 	aliases {
 		serial0 = &uart7; /* measured: same MMIO address (0xa9c000) as X716
 				   * downstream's qup_hsuart@a9c000/hsuart5, and matches
@@ -602,29 +613,9 @@
 		qcom,pmic-id = "c";
 
 		/*
-		 * Camera VDIG (Camera bring-up session). Downstream decodes the
-		 * rear camera's "cam_vdig" as "pm_humu_l11" and the front
-		 * camera's as the same name -- but this board's own LDO11/die-b
-		 * is ALREADY the panel's confirmed-working VDD rail (see the
-		 * vreg_l11b_1p2 node and its Session 7 postmortem comment,
-		 * &apps_rsc's regulators-0 block above), so Samsung's downstream
-		 * numeric "l11" index evidently does NOT map onto mainline's
-		 * die-b/LDO11 the way it does for cam_vio/l4 above -- Samsung's
-		 * own "pm_humu_lN" numbering is not guaranteed to line up 1:1
-		 * with mainline's die-letter+index convention (this file's own
-		 * LDO14 touch-AVDD postmortem already found a real, hardware-
-		 * confirmed case where a wrong exact-voltage regulator crashed
-		 * the whole board). Given that conflict, this rail instead
-		 * follows the sibling X910 Ultra port's own real, working
-		 * die/index choice for its analogous camera VDIG rail
-		 * (vreg_l1c_1p1, ubuntu-galaxy-tab-s9ultra/kernel/dts/sm8550-
-		 * samsung-gts9uwifi.dts) rather than trusting the downstream
-		 * digit -- LOW CONFIDENCE, genuinely unverified for X716B, and
-		 * shared between both sensors here as a simplifying first-pass
-		 * assumption (only one camera streams at a time). If camera
-		 * bring-up regresses the panel, or fails to power on at all,
-		 * re-derive this from a real downstream DT decode instead of
-		 * this by-analogy guess before anything else.
+		 * Stock rear cam_vdig resolves to pm_v6c_l1 (PM8550VS-C L1).
+		 * Front uses pm_humu_l11 instead; reconcile its shared panel
+		 * voltage before enabling that sensor.
 		 */
 		vreg_l1c_1p1: ldo1 {
 			regulator-name = "vreg_l1c_1p1";
@@ -2182,8 +2173,8 @@
  * (ubuntu-galaxy-tab-s9ultra/kernel/dts/sm8550-samsung-gts9uwifi.dts),
  * the same way this file already borrows GPIO numbers elsewhere (e.g. the
  * USB Type-C stack above) pending independent confirmation. CSIPHY link
- * mode (D-PHY, assumed here via plain clock-lanes/data-lanes properties)
- * is also unconfirmed for this exact device -- see docs/hardware-facts.md.
+ * mode is D-PHY in this device's decoded stock descriptors. Physical lane
+ * mapping and frame delivery still require hardware validation.
  */
 &camss {
 	status = "okay";
@@ -2230,7 +2221,7 @@
 		clocks = <&camcc CAM_CC_MCLK2_CLK>;
 		assigned-clocks = <&camcc CAM_CC_MCLK2_CLK>;
 		assigned-clock-rates = <19200000>;
-		vddio-supply = <&vreg_l4b_1p8>;
+		vddio-supply = <&rear_cam_vio>;
 		vdig-supply = <&vreg_l1c_1p1>;
 		reset-gpios = <&tlmm 70 GPIO_ACTIVE_LOW>;
 		pinctrl-0 = <&cam2_default>;
@@ -2268,31 +2259,25 @@
 	rear_focus: lens@c {
 		compatible = "dongwoon,dw9808-vcm";
 		reg = <0x0c>;
-		vcc-supply = <&vreg_l4b_1p8>;
+		vcc-supply = <&rear_cam_vio>;
 	};
 };
 
 &cci1_i2c1 {
-	hi1337_front: camera@20 {
-		/*
-		 * Disabled 2026-09-15: real hardware returns -ENXIO on both
-		 * chip-ID register reads at this address after a clean
-		 * power-on (see &camss's ports comment above and
-		 * docs/hardware-facts.md) -- csiphy4/port@4 is dropped above
-		 * to match, so this node's own endpoint has no remote to
-		 * link to anyway. Node kept intact (not deleted) so
-		 * re-enabling is a one-line change once the real address/
-		 * bus is found.
+	hi1337_front: camera@21 {
+		/* Keep disabled until front VDIG/panel voltage sharing is validated.
+		 * Restore both graph endpoints together.
 		 */
 		status = "disabled";
 		compatible = "hynix,hi1337-gts9-front";
-		/* Stock CamX slaveAddress 0x40 is a 7-bit Linux address of 0x20. */
-		reg = <0x20>;
+		/* X716 vendor front and front_full descriptors use slaveAddress 0x42. */
+		reg = <0x21>;
 		clocks = <&camcc CAM_CC_MCLK4_CLK>;
 		assigned-clocks = <&camcc CAM_CC_MCLK4_CLK>;
 		assigned-clock-rates = <19200000>;
 		vddio-supply = <&vreg_l4b_1p8>;
-		vdig-supply = <&vreg_l1c_1p1>;
+		/* Stock front VDIG is the panel's L11B; voltage remains unresolved. */
+		vdig-supply = <&vreg_l11b_1p2>;
 		enable-gpios = <&tlmm 17 GPIO_ACTIVE_HIGH>;
 		reset-gpios = <&tlmm 117 GPIO_ACTIVE_LOW>;
 		pinctrl-0 = <&cam4_default>;

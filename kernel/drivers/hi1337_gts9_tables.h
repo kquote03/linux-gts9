@@ -1,26 +1,18 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Forked verbatim from ubuntu-galaxy-tab-s9ultra's own
- * hi1337_gts9u_tables.h (SM-X910 Ultra), minus the front-ultrawide table
- * X716B has no hardware for. Originally generated for the SM-X910 by
- * work/generate-hi1337-tables.py: the 1476-entry global table is
- * byte-for-byte identical to Samsung's GPL-2.0 is-cis-hi1337-setA.h
- * (2022, a different Samsung device's own GPL kernel release for the same
- * physical sensor chip -- register sequences are chip-specific, not
- * device-specific, so this part is not an X910-vs-X716B concern). The
- * rear/front mode tables below, however, WERE decoded from the Ultra's
- * (X910) own stock CamX sensormodule blobs, not X716B's -- reused here
- * only as an unverified hypothesis that X716B's rear-main/front-main
- * camera modules are the identical physical HI1337 parts (see
- * hi1337_gts9.c's header and docs/hardware-facts.md). If real X716B
- * hardware streams garbage or fails to identify, re-derive these two
- * tables from this device's own modules instead of assuming Ultra parity.
+ * HI1337 tables for SM-X716B, verified against its own CRC-valid Samsung
+ * Parameter Parser V3.5.1 descriptors (see scripts/decode-stock-camera.py).
+ * Global (1476 writes) and rear 4128x3096 (93 writes), originally inherited
+ * from SM-X910, exactly match the X716B descriptors. Front 2032x1524 mode 0
+ * is decoded from com.samsung.sensormodule.1_hynix_hi1337_front.bin:
+ * SHA256 7be8cd9cf9e1ca4804c0c3e09b6bc7f882144720412419f1218a0644bbe38151.
+ * All decoded writes have zero delay. Both selected modes use four-lane
+ * D-PHY. Descriptor matching establishes configuration, not live capture.
  */
 #ifndef __HI1337_GTS9_TABLES_H__
 #define __HI1337_GTS9_TABLES_H__
 
 /* rear (SM-X910 Ultra): com.samsung.sensormodule.0_hynix_hi1337.bin sha256=4d34b3746533442897791e26258076de1ca457f3413988c9fce4ae8f2dd2c57c */
-/* front (SM-X910 Ultra): com.samsung.sensormodule.1_hynix_hi1337_front.bin sha256=df9180ddfc26bef05e33ab829b57838d487102a9a1467c9bd465eb70abeca34a */
 
 static const struct hi1337_reg hi1337_global_regs[] = {
 	{ 0x0790, 0x0100 },
@@ -1597,19 +1589,19 @@ static const struct hi1337_reg hi1337_rear_4128x3096_regs[] = {
 	{ 0x1116, 0x0000 },
 };
 
-static const struct hi1337_reg hi1337_front_3408x2556_regs[] = {
+static const struct hi1337_reg hi1337_front_2032x1524_regs[] = {
 	{ 0x0204, 0x0000 },
-	{ 0x0206, 0x0375 },
-	{ 0x020a, 0x0a92 },
-	{ 0x020e, 0x0a96 },
+	{ 0x0206, 0x05c8 },
+	{ 0x020a, 0x0651 },
+	{ 0x020e, 0x0655 },
 	{ 0x0214, 0x0200 },
 	{ 0x0216, 0x0200 },
 	{ 0x0218, 0x0200 },
 	{ 0x021a, 0x0200 },
-	{ 0x0224, 0x0148 },
+	{ 0x0224, 0x034c },
 	{ 0x022a, 0x0017 },
-	{ 0x022c, 0x0e1f },
-	{ 0x022e, 0x0b47 },
+	{ 0x022c, 0x0e17 },
+	{ 0x022e, 0x0943 },
 	{ 0x0234, 0x1111 },
 	{ 0x0236, 0x1111 },
 	{ 0x0238, 0x1111 },
@@ -1623,21 +1615,21 @@ static const struct hi1337_reg hi1337_front_3408x2556_regs[] = {
 	{ 0x025a, 0x0000 },
 	{ 0x025c, 0x0000 },
 	{ 0x025e, 0x0202 },
-	{ 0x0440, 0x0016 },
+	{ 0x0440, 0x0031 },
 	{ 0x0f00, 0x0000 },
-	{ 0x0f04, 0x0198 },
+	{ 0x0f04, 0x03d8 },
 	{ 0x0b02, 0x0000 },
 	{ 0x0b04, 0x00dd },
-	{ 0x0b12, 0x0d50 },
-	{ 0x0b14, 0x09fc },
+	{ 0x0b12, 0x07f0 },
+	{ 0x0b14, 0x05f4 },
 	{ 0x0b20, 0x0100 },
 	{ 0x1100, 0x1100 },
-	{ 0x1108, 0x0002 },
-	{ 0x1118, 0x0118 },
+	{ 0x1108, 0x0000 },
+	{ 0x1118, 0x04ac },
 	{ 0x0a10, 0xb040 },
-	{ 0x0c14, 0x0198 },
-	{ 0x0c18, 0x0d50 },
-	{ 0x0c1a, 0x09fc },
+	{ 0x0c14, 0x03d8 },
+	{ 0x0c18, 0x07f0 },
+	{ 0x0c1a, 0x05f4 },
 	{ 0x0730, 0x0001 },
 	{ 0x0732, 0x0000 },
 	{ 0x0734, 0x0300 },
@@ -1661,10 +1653,10 @@ static const struct hi1337_reg hi1337_front_3408x2556_regs[] = {
 	{ 0x1002, 0xc311 },
 	{ 0x1004, 0x2bab },
 	{ 0x1010, 0x0100 },
-	{ 0x1012, 0x03e8 },
-	{ 0x1014, 0x01a1 },
-	{ 0x1016, 0x01a1 },
-	{ 0x101a, 0x01a1 },
+	{ 0x1012, 0x0b44 },
+	{ 0x1014, 0x055d },
+	{ 0x1016, 0x055d },
+	{ 0x101a, 0x055d },
 	{ 0x1020, 0xc10b },
 	{ 0x1022, 0x0b34 },
 	{ 0x1024, 0x050d },
@@ -1675,22 +1667,22 @@ static const struct hi1337_reg hi1337_front_3408x2556_regs[] = {
 	{ 0x1038, 0x1100 },
 	{ 0x103e, 0x0001 },
 	{ 0x1042, 0x0108 },
-	{ 0x1044, 0x00d4 },
+	{ 0x1044, 0x007c },
 	{ 0x1046, 0x0004 },
-	{ 0x1048, 0x00d4 },
+	{ 0x1048, 0x007c },
 	{ 0x1066, 0x0100 },
 	{ 0x1600, 0xe000 },
-	{ 0x1608, 0x01a0 },
-	{ 0x160a, 0x0d40 },
-	{ 0x160c, 0x0020 },
-	{ 0x160e, 0x09c0 },
-	{ 0x0268, 0x00c1 },
-	{ 0x1246, 0x00f5 },
-	{ 0x0406, 0x0008 },
-	{ 0x0408, 0x1084 },
-	{ 0x0d28, 0x0008 },
-	{ 0x0d2a, 0x1087 },
-	{ 0x1116, 0x0000 },
+	{ 0x1608, 0x03e0 },
+	{ 0x160a, 0x07e0 },
+	{ 0x160c, 0x001c },
+	{ 0x160e, 0x05c0 },
+	{ 0x0268, 0x0077 },
+	{ 0x1246, 0x0092 },
+	{ 0x0406, 0x0078 },
+	{ 0x0408, 0x1014 },
+	{ 0x0d28, 0x0078 },
+	{ 0x0d2a, 0x1017 },
+	{ 0x1116, 0x001a },
 };
 
 

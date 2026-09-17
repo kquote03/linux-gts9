@@ -192,6 +192,10 @@ mainline boot works on the exact same chip family without it.
    `vendor_boot`, `dtbo`. A backup from 2026-09-04 already exists in this
    working directory's sibling folder — confirm it's still the most recent
    before relying on it, or take a new one.
+   For a raw boot-set backup with exact sizes and device/host hashes, use
+   `bash scripts/backup-boot-set.sh backups/<new-directory>` while already
+   in TWRP. It redirects `dd` stderr on the device; unredirected
+   `adb exec-out dd` can append diagnostic text to binary image data.
 3. `adb pull` the backup off-device. Verify each file's size against
    `docs/hardware-facts.md`'s partition table and its `.md5` sidecar.
 4. Record the backup's location and a fresh `sha256sum` of each file as the
