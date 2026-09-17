@@ -1,0 +1,35 @@
+--- a/drivers/media/platform/qcom/camss/camss-csid-gen3.c
++++ b/drivers/media/platform/qcom/camss/camss-csid-gen3.c
+@@ -270,6 +270,32 @@
+ 	val = readl(csid->base + CSID_CSI2_RX_IRQ_STATUS);
+ 	writel(val, csid->base + CSID_CSI2_RX_IRQ_CLEAR);
+ 
++	/*
++	 * Camera bring-up session: this status register carries the CSI-2
++	 * receiver's own physical/protocol-layer error bits (lane sync loss,
++	 * CRC, etc.) but was read and cleared without ever being surfaced --
++	 * real hardware bring-up for the Galaxy Tab S9 5G (X716B) hit a rear
++	 * camera that identifies correctly over I2C/CCI and completes its
++	 * media-graph link, but then streams zero frames with no visible
++	 * error anywhere, and this was the one register in the whole CSID/
++	 * CSIPHY/VFE path already being read that could explain why, if only
++	 * it were logged. See docs/hardware-facts.md's Camera section.
++	 *
++	 * dev_info_ratelimited(), not dev_dbg_ratelimited(): the first real
++	 * hardware attempt with this patch found dev_dbg produces nothing at
++	 * all on this device even with CONFIG_DYNAMIC_DEBUG=y -- the kernel
++	 * boots under lockdown (confirmed: "Lockdown: ... is restricted" in
++	 * dmesg), which blocks the debugfs dynamic_debug/control write
++	 * needed to turn a dev_dbg call site on at runtime, and no dyndbg=
++	 * boot parameter was set either. dev_info is always compiled in and
++	 * always prints, sidestepping that entirely. Logged unconditionally
++	 * (not just when val is nonzero) so a real capture attempt also
++	 * proves whether this ISR runs *at all* -- distinguishing "CSI2 Rx
++	 * IRQ fires with a clean status" from "csid_isr never runs during
++	 * this failure," which point at very different next steps.
++	 */
++	dev_info_ratelimited(csid->camss->dev, "CSI2 Rx IRQ status: 0x%x\n", val);
++
+ 	buf_done_val = readl(csid->base + CSID_BUF_DONE_IRQ_STATUS);
+ 	writel(buf_done_val, csid->base + CSID_BUF_DONE_IRQ_CLEAR);
+ 

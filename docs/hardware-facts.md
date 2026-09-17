@@ -30,6 +30,70 @@ cite this document instead of re-deriving these details.
 ## Last verified rollback point
 
 Fresh `boot`/`init_boot`/`vendor_boot`/`dtbo` backup taken directly via
+TWRP `adb exec-out dd` on 2026-09-16, immediately before this session's
+flash of the `dev_info_ratelimited`-corrected CSI2-IRQ-logging kernel
+(the camera-bringup-continuation session, second flash of the day).
+Pulled off-device and hash-verified to match the on-device partitions
+exactly. Stored at `backups/2026-09-16-camera-bringup-2/` (gitignored —
+binary artifacts aren't committed). Supersedes the same-day
+`backups/2026-09-16-camera-bringup/` rollback point below (this one
+reflects the device's actual current state — the CSI2-logging kernel
+whose real-hardware `dev_dbg` output was found to be silent, one flash
+later than the previous rollback point's underlying content).
+
+| Partition | Size (bytes) | sha256 |
+|---|---|---|
+| `boot` | 100,663,387 | `e2e3b9e322e3ff14bfcffe5c1d4c95fb3a76395cb9e4be51515acf49038680cd` |
+| `init_boot` | 8,388,696 | `58f6884941321f5e51d9aa30735f927df3f8820bbfcc0acd062964ee15a49a4f` |
+| `vendor_boot` | 100,663,387 | `079e63475e17b9b3b2e39a3e1cdd62489cbcb0cf6d67853499cb71b6f00bce4a` |
+| `dtbo` | 16,777,304 | `13786dd7b9ae8f5a53b7b699d929908deea9d9a0bc1f7fc8d0a50a69745004d8` |
+
+Note: the raw partition sizes are ~88-91 bytes larger than the flashed
+`.img` files' own sizes (100,663,296 / 8,388,608 / 100,663,296 /
+16,777,216 respectively) — this is the fixed block-device partition size,
+not corruption; `adb exec-out dd` reads the whole partition, which is
+padded slightly beyond the image actually written into it.
+
+### 2026-09-16 rollback point, first flash of the day (superseded, kept for history)
+
+Fresh `boot`/`init_boot`/`vendor_boot`/`dtbo` backup taken directly via
+TWRP `adb exec-out dd` on 2026-09-16, immediately before this session's
+flash of the CSI2-IRQ-logging kernel + throttled-relay rootfs (the
+camera-bringup-continuation session). Pulled off-device and hash-verified
+to match the on-device partitions exactly. Stored at
+`backups/2026-09-16-camera-bringup/` (gitignored — binary artifacts
+aren't committed). Supersedes the 2026-09-15 rollback point below.
+
+| Partition | Size (bytes) | sha256 |
+|---|---|---|
+| `boot` | 100,663,296 | `e2915a58484096c028f35d0f7d5d3172f4992e4c313df123ec1c361ac4eddea5` |
+| `init_boot` | 8,388,608 | `0517e8be3ec2adeb2e0f62a1fc131b67f9e9abe56b8a177fb0a091cc7375d7b3` |
+| `vendor_boot` | 100,663,296 | `b377d9e8185a9b2458fa242ba30765f246a667a66b594e1183e5c8e725061848` |
+| `dtbo` | 16,777,216 | `bd7149dbc4c606da7510d5a65af4a7244b011f151282f52b8f513d5f7d984624` |
+
+### 2026-09-15 rollback point (superseded, kept for history)
+
+Fresh `boot`/`init_boot`/`vendor_boot`/`dtbo` backup taken directly via
+TWRP `adb exec-out dd` (not TWRP's own nandroid UI) on 2026-09-15,
+immediately before the camera bring-up session's first flash of this
+branch's boot images. Pulled off-device and hash-verified to match the
+on-device partitions exactly. Stored at
+`backups/2026-09-15-camera-bringup/` (gitignored — binary artifacts
+aren't committed). Superseded the 2026-09-05 rollback point below, which
+was already stale by then (the device had been reflashed multiple times,
+including the same-day 2026-09-15 reliability session's own boot-only
+backup at `backups/2026-09-15-reliability/`).
+
+| Partition | Size (bytes) | sha256 |
+|---|---|---|
+| `boot` | 100,663,296 | `63e5936e7bae4dc4ae388c7015f1b0275999634eeed38ab4c95cd1b590706df4` |
+| `init_boot` | 8,388,608 | `b3b3ae6c38719a133b1abe57d0bc87fee84635022f845352d90ce831e3806f14` |
+| `vendor_boot` | 100,663,296 | `3cc5c6efae1f9bfebe62b7ca7d090d6fd1ebece5f4b3cd3be2183b2c61be7b5f` |
+| `dtbo` | 16,777,216 | `c3d5dbce86a6829891a226573693c76424b527f7dc7af2479a8351b08b0aa97a` |
+
+### 2026-09-05 rollback point (superseded, kept for history)
+
+Fresh `boot`/`init_boot`/`vendor_boot`/`dtbo` backup taken directly via
 TWRP `dd` (not TWRP's own nandroid UI) on 2026-09-05, immediately before
 the first custom flash attempt. Pulled off-device and hash-verified to
 match the on-device dump exactly before the on-device tmpfs copy was
@@ -766,6 +830,192 @@ board-specific.
   figures exactly) are not, and setting a fixed (`min==max`) regulator to
   an off-grid value fails outright. **measured** (see
   `docs/porting-log.md`'s Session 8 bisection).
+
+## Camera (Camera bring-up session)
+
+Real-hardware bring-up happened 2026-09-15 (kernel v7.2.0-dirty #85, this
+branch's own build). Genuine progress and one specific, real blocker were
+found -- not the "entirely unverified" state this section described before
+that session. See `docs/porting-log.md`'s Camera bring-up session entry for
+the full narrative; this section is the current state of the facts.
+
+### Rear camera: sensor identity CONFIRMED, streaming BLOCKED
+
+- **Sensor identity: CONFIRMED on real silicon.** `hi1337-gts9 10-0021:
+  rear-main model=0x1337 vendor=0x2000` -- an exact register-level match
+  against `HI1337_MODEL_ID`/`HI1337_VENDOR_ID`
+  (`kernel/drivers/hi1337_gts9.c`). The hypothesis that this device's rear
+  module is the same physical Hynix HI1337 part as the Ultra sibling's
+  rear-main slot is no longer a guess.
+- **CCI/I2C control plane: working.** Power sequencing, MCLK, and the CCI0
+  I2C transaction to read the chip-ID registers all succeed cleanly, with
+  no GPIO/regulator errors in `dmesg`. The `vreg_l1c_1p1`/`vreg_l4b_1p8`
+  regulator guesses and the rear reset-GPIO (70) are therefore now measured
+  facts for the rear camera, not analogies.
+- **Actuator (DW9808 VCM): probes and binds** (`dw9808-vcm 11-000c`,
+  PM runtime suspend/resume both succeed), but its `/dev/v4l-subdev31`
+  device node fails to open with `EINVAL` (confirmed with both `cam` and a
+  direct `v4l2-ctl --info`, not just a libcamera-side issue) -- libcamera
+  logs "Lens initialisation failed, lens disabled" and falls back to no AF
+  control. Root cause not yet found; a reasonable first guess is a mainline
+  v4l2-subdev-core behavior change around zero-pad lens subdevices between
+  whatever kernel version the Ultra sibling validated this driver against
+  and this project's pinned v7.2.0, but this is unconfirmed.
+- **Media graph link: only completes with the front sensor disabled.**
+  `media-ctl -p` initially showed the rear sensor registered but with
+  **0 links** to `msm_csiphy1`, even though its own chip-ID read had
+  already succeeded. Root cause: mainline qcom-camss's async fwnode
+  notifier only finalizes media links once *every* sensor endpoint
+  referenced in the devicetree has bound -- since the front sensor's probe
+  failed outright (see below), the notifier never completed, which blocked
+  the rear sensor's link too. Fixed by dropping `&camss`'s `port@4`
+  (front/csiphy4) and setting `hi1337_front`'s `status = "disabled"` in
+  `kernel/dts/sm8550-samsung-x716b.dts` -- confirmed on a reflash: the rear
+  sensor then showed a real, enabled link to `msm_csiphy1` at
+  `SGRBG10_1X10/4128x3096`, and got a working `/dev/v4l-subdev30` node.
+- **libcamera enumerates it correctly**: `cam -l` lists "Internal back
+  camera", loads `/usr/share/libcamera/ipa/simple/hi1337-gts9.yaml`
+  automatically (confirming the sensor-model-string-to-tuning-file lookup
+  this port depends on actually works), and configures the SoftISP input
+  path (`Input 4128x3096-GRBG-10-CSI2P stride 5168`).
+- **Real, unresolved blocker: zero frames delivered -- now root-caused to
+  the physical layer with direct evidence, not inference.** `cam -c 1
+  --capture=1` (and a raw `v4l2-ctl --stream-mmap` directly on
+  `/dev/video0`, bypassing libcamera entirely) both hang indefinitely with
+  no data, confirmed repeatedly.
+
+  **2026-09-16 diagnostic session (`dev_info_ratelimited` CSID patch,
+  `46158ee`, plus live `ftrace` function-graph tracing across the whole
+  streaming call chain) produced the decisive evidence Phase J of the plan
+  called for:**
+  - `csid_isr`'s own new `CSID_CSI2_RX_IRQ_STATUS` log line **never
+    printed once** during any real capture attempt, at any point from
+    stream-on through the eventual timeout/teardown.
+  - `ftrace function_graph` on `csid_set_power`, `csid_set_stream`,
+    `csid_isr`, `csiphy_set_power`, `csiphy_set_stream`, `csiphy_isr`,
+    `vfe_set_power`, `vfe_set_stream`, `vfe_isr`, `vfe_isr_sof`,
+    `vfe_isr_reg_update`, `vfe_isr_wm_done`, and the sensor's own
+    `hi1337_set_stream`/`hi1337_power_on`/`hi1337_set_ctrl` confirms the
+    **entire software-side pipeline runs and reports success**: CSIPHY1
+    and CSID0 power on, the sensor's `hi1337_set_stream(1)` completes
+    (power-on sequencing plus the full `hi1337_global_regs` +
+    per-mode register table write over CCI, ~287 ms total -- large but
+    consistent with a real multi-hundred-entry I2C register table, not a
+    stall) and returns 0, CSID/CSIPHY are told to stream. **Then, for the
+    entire streaming window (12 s+, repeatedly), zero interrupts fire from
+    any of CSID, CSIPHY, or VFE.** `csid_isr` fired exactly once across
+    the whole test, during the earlier power-on reset-done sequence, not
+    during actual streaming.
+  - IRQ registration itself was independently verified correct:
+    `camss-csid.c`/`camss-csiphy.c` register both IRQs with
+    `IRQF_NO_AUTOEN` but `csid_set_power(true)`/`csiphy_set_power(true)`
+    correctly call `enable_irq()` and leave it enabled for the whole
+    session -- ruled out as a cause.
+  - `vfe_isr` for this driver generation (`camss-vfe-gen3.c`) is a
+    documented no-op stub by design ("bus done and RUP IRQ have been moved
+    to CSID from VFE" for Titan Gen3) -- its silence is expected, not
+    evidence of anything.
+  - This is the signature of a genuine CSI-2 physical-layer training
+    failure: the sensor's driver believes it started transmitting, but
+    CSIPHY never observes enough lane activity to generate even one
+    common-status interrupt, and CSID never sees a single valid packet
+    (not even an error one) to interrupt on. Software-side, every relevant
+    call succeeds -- there is no error return, no crash, no timeout inside
+    the driver stack itself to chase further with more logging.
+  - This does not yet distinguish between the two remaining explanations:
+    **(a)** this module is actually C-PHY, which mainline CAMSS's CSIPHY
+    driver cannot support at all (hard-rejected in `camss.c`, matching
+    this project's original leading risk), or **(b)** a still-wrong
+    lane-count/lane-mapping/link-frequency parameter (copied from the
+    Ultra sibling by analogy, and independently re-derived from downstream
+    source in an earlier session, but never confirmed against this
+    specific device's own schematic) preventing PHY lock even though it
+    is genuinely D-PHY. Distinguishing these needs either a logic
+    analyzer/scope on the physical MIPI lines, or a real C-PHY-capable
+    mainline driver to test against -- neither is available in-session.
+    **Recommendation:** treat this as requiring the previously-scoped,
+    open-ended mainline C-PHY backport (or hardware-level signal
+    verification) as its own follow-up effort; further blind parameter
+    changes or additional kernel-side logging are unlikely to add more
+    information than this session's `ftrace` evidence already provides.
+
+### Front camera: I2C communication fails outright, no chip-ID guess to make
+
+- Probe completes a full, error-free power-on sequence (~30 ms, matching
+  the driver's own sequencing delays) but **both chip-ID register reads
+  fail with `-ENXIO`** (`hi1337-gts9 12-0020: identity reads failed:
+  model=-6 vendor=-6`) -- a plain I2C bus communication failure, not a
+  "wrong chip responded" mismatch. No GPIO/regulator/CCI-level error
+  accompanies it.
+- This points at wrong I2C address, wrong CCI bus/master routing, or a
+  genuinely different (non-responding-to-HI1337-protocol) chip at that
+  slot -- not something to keep guessing at without either a bench i2cdetect
+  sweep of the front CCI bus or a real teardown/schematic reference for
+  this device's own front camera module.
+- Currently disabled in DT (`status = "disabled"` on `hi1337_front`,
+  `&camss`'s `port@4` dropped) specifically so it doesn't block the rear
+  camera's own media graph completion (see above) -- re-enabling is a
+  one-line revert once the real wiring is found.
+
+### PipeWire/WirePlumber memory leak: confirmed, root cause narrowed, mitigated
+
+**Confirmed and reproduced twice on real hardware** (2026-09-15 and
+2026-09-16): `wireplumber` gets OOM-killed at **5.4 GB anon-rss** within
+minutes of the ported PipeWire libcamera SPA plugin
+(`/usr/lib64/spa-0.2/libcamera/libspa-libcamera.so`) becoming loadable.
+
+2026-09-16 session narrowed this decisively: the leak is **not** caused by
+`gts9-camera-relays.service`'s restart loop (that was throttled this same
+session, and was confirmed `inactive (dead)` -- not even running -- both
+times the leak reproduced) and **not** dependent on any application
+actively using the camera (it reproduced a second time with no camera app
+running at all, purely from WirePlumber's own background `monitor.libcamera`
+component). The real trigger is simpler and more severe than first
+suspected: **stock, unmodified Fedora WirePlumber config**
+(`/usr/share/wireplumber/wireplumber.conf`'s own default
+`wants = [ monitor.v4l2, monitor.libcamera ]` for the `hardware.video-capture`
+feature) loads this plugin unconditionally the moment it exists on disk --
+this project's own `rootfs/overlay-common/.../51-gts9-camera-backends.lua`
+only adds cosmetic node naming on top, it is not what enables the monitor.
+
+**Confirmed fix (live-tested)**: renaming the plugin file away
+(`libspa-libcamera.so` → `libspa-libcamera.so.disabled`) and restarting
+WirePlumber immediately and completely stops the leak -- memory stayed flat
+for the remainder of the session. `scripts/build-fedora-rootfs.sh` now
+installs the plugin pre-disabled (same `.so.disabled` suffix) by default,
+so future builds ship stable; the plugin is still built (so the work isn't
+wasted) and re-enabling is a one-line change once the underlying bug is
+actually fixed.
+
+**Leading suspect for the underlying bug, not yet fixed**: a real version
+gap this port introduced. The 7 backport patches
+(`specs/pipewire-x716b/patches/`) were written and validated (by the
+sibling `ubuntu-galaxy-tab-s9ultra` project, on real hardware, over
+multi-hour stress tests with no memory issue) against a PipeWire commit
+matching ~1.0.5. That sibling's own OS (Ubuntu Noble) ships stock PipeWire
+1.0.5 already -- same version by construction, with an explicit
+`Depends: pipewire (>= 1.0.5), pipewire (<< 1.1)` in its own package. This
+Fedora port instead loads that same patched plugin into **Fedora 44's
+stock PipeWire 1.6.8** (confirmed via embedded package metadata in the
+built rootfs) -- a 6-minor-version gap, with no equivalent guard. Prime
+suspect patch: `0005-libcamera-do-not-close-borrowed-buffer-fds.patch`,
+which removed the old defensive `close()` fallback and now depends
+entirely on `freeBuffers()` running on every negotiation/teardown path --
+an assumption that held for the exact core version it was validated
+against but may not hold against 1.6.8's actual SPA node lifecycle.
+**Not yet fixed** -- next step is auditing that patch's teardown-path
+assumptions against 1.6.8's real behavior, or building a complete
+version-pinned PipeWire (matching the sibling's implicit approach) instead
+of dropping the plugin into a much newer stock core.
+
+### Devicetree topology (measured from this device's own stock downstream source)
+
+`android_kernel_samsung_gts9/.../gts9_eur_openx_w00_r04.dts` shows exactly
+one rear camera (autofocus, generic `qcom,cam-sensor` on
+`csiphy-sd-index = 1`, CCI0, actuator+EEPROM on CCI1) and one front camera
+(fixed-focus, same compatible on `csiphy-sd-index = 4`, CCI1) -- no
+ultra-wide rear, no dual front, matching Samsung's published spec for the
+non-Ultra Tab S9.
 
 ## Open risks / unverified assumptions (carried into later phases)
 

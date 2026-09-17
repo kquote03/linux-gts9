@@ -1,0 +1,87 @@
+#!/bin/bash
+# Camera bring-up session. Adapted from ubuntu-galaxy-tab-s9ultra's own
+# ubuntu-gts9u-camera-relays (SM-X910 Ultra) -- trimmed from four cameras to
+# this device's two, node names/logic otherwise unchanged.
+#
+# PipeWire's libcamera source names encode the sysfs path of each sensor's
+# I2C device. Both entries below match this board's own devicetree topology
+# exactly (kernel/dts/sm8550-samsung-x716b.dts): rear is CCI0 (ac15000)
+# i2c-bus 1 camera@21, front is CCI1 (ac16000) i2c-bus 1 camera@20 -- the
+# identical CCI/bus/address assignment the Ultra sibling uses for its own
+# real, working rear-main/front-main HI1337 slots, which is the whole reason
+# these names can be predicted rather than measured. UNVERIFIED until
+# confirmed against this device's own live `pw-cli ls Node` output.
+set -euo pipefail
+
+sources=(
+	libcamera_input._base_soc_0_cci_ac15000_i2c-bus_1_camera_21
+	libcamera_input._base_soc_0_cci_ac16000_i2c-bus_1_camera_20
+)
+pids=()
+
+stop_relays() {
+	trap - TERM INT EXIT
+	if [ "${#pids[@]}" -gt 0 ]; then
+		kill "${pids[@]}" 2>/dev/null || true
+		wait "${pids[@]}" 2>/dev/null || true
+	fi
+}
+trap stop_relays TERM INT EXIT
+
+# The PipeWire socket belongs to the desktop user. Waiting for both the socket
+# and its service makes a cold boot deterministic without racing systemd's
+# own user-session startup.
+pipewire_main_pid() {
+	systemctl --user show pipewire.service -p MainPID --value 2>/dev/null || true
+}
+
+pipewire_pid=
+for unused in {1..30}; do
+	pipewire_pid=$(pipewire_main_pid)
+	if [ -S "$XDG_RUNTIME_DIR/pipewire-0" ] &&
+		[ -n "$pipewire_pid" ] && [ "$pipewire_pid" != 0 ] &&
+		kill -0 "$pipewire_pid" 2>/dev/null; then
+		break
+	fi
+	sleep 1
+done
+[ -S "$XDG_RUNTIME_DIR/pipewire-0" ]
+[ -n "$pipewire_pid" ]
+[ "$pipewire_pid" != 0 ]
+kill -0 "$pipewire_pid"
+
+# Same idle-cost fix the Ultra sibling found necessary: publish at the
+# resolution the frames actually carry (640x480) rather than the sensor's
+# full capture size, or an idle relay burns a full core on a scaler/YUY2
+# conversion of a black frame nobody is reading.
+caps="video/x-raw,format=YUY2,width=640,height=480,framerate=30/1"
+
+splash="dataurisrc uri=data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAIAAACQkWg2AAAAEElEQVQoz2NgGAWjYBTAAAADEAABaJFtwwAAAABJRU5ErkJggg== ! pngdec ! videoscale ! videoconvert ! capsfilter caps=video/x-raw,format=YUY2,width=640,height=480 ! imagefreeze is-live=true"
+
+for index in 0 1; do
+	node=$((20 + index))
+	input="pipewiresrc target-object=${sources[$index]} do-timestamp=true ! capsfilter caps=video/x-raw,format=RGBA,width=640,height=480 ! queue max-size-buffers=4 leaky=downstream ! videoconvert ! videoscale ! videorate ! capsfilter caps=$caps"
+	output="appsrc name=appsrc is-live=true format=time block=false max-bytes=0 max-buffers=4 leaky-type=downstream caps=$caps ! videoconvert ! $caps ! v4l2sink name=v4l2sink device=/dev/video${node} sync=false"
+	/usr/bin/v4l2-relayd --input "$input" --output "$output" --splash "$splash" &
+	pids+=("$!")
+done
+
+# A PipeWire restart does not always surface as a fatal GStreamer error. Watch
+# its real service PID explicitly so the relays cannot remain attached to a
+# dead socket and silently publish black frames. Any relay exit has the same
+# effect. systemd then restarts the complete set, releasing the single CAMSS
+# pipeline before replacements are launched.
+while true; do
+	sleep 1
+	if ! kill -0 "$pipewire_pid" 2>/dev/null; then
+		current_pipewire_pid=$(pipewire_main_pid)
+		echo "PipeWire changed from $pipewire_pid to ${current_pipewire_pid:-unavailable}; restarting relays" >&2
+		exit 1
+	fi
+	for pid in "${pids[@]}"; do
+		if ! kill -0 "$pid" 2>/dev/null; then
+			echo "Camera relay $pid exited; restarting relay set" >&2
+			exit 1
+		fi
+	done
+done

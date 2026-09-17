@@ -1,0 +1,23 @@
+#!/bin/sh
+# Camera bring-up session. Copied verbatim from ubuntu-galaxy-tab-s9ultra's
+# own ubuntu-gts9u-flashlight-permissions -- chip-generic (PM8550/PM8350C
+# flash LED class), not board-specific, except this device's fixed,
+# build-time-created desktop user (see gts9-camera-relays.service's own
+# header for why this doesn't need the Ultra's dynamic-user-detection
+# machinery).
+set -eu
+
+devpath=${1-}
+case "$devpath" in
+	/devices/*) ;;
+	*) exit 1 ;;
+esac
+
+led_dir=/sys$devpath
+[ -d "$led_dir" ]
+[ "${led_dir##*/}" = 'white:flash' ]
+[ -e "$led_dir/brightness" ]
+
+chgrp video "$led_dir/brightness"
+chmod 0660 "$led_dir/brightness"
+chown x716b "$led_dir/brightness" 2>/dev/null || true
