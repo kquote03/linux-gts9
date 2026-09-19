@@ -215,12 +215,26 @@ lands in `/sys/class/devcoredump/` and must be copied out within
 
 ## Open follow-ups
 
+- **2026-09-19 Pixel 6 diagnosis:** a controlled USB capture reproduced
+  RDDM 1.035 seconds after the MU-EDCA (`type 1`) WMM command, with the
+  matched Samsung firmware verified before the test. The saved firmware
+  dump reports the same `inst=17be7d0 cause=7003` as the legacy crash above.
+  `ath11k-samsung-skip-mu-edca.patch` extends the existing quirk to that
+  send as well, keeping parameter caching and the separate U-APSD path.
+  The parameter retains its existing name and `-1/0/1` values for
+  compatibility; it now controls both legacy and MU-EDCA WMM sends.
+  No calibration or firmware bytes change. Kernel #94 was flashed to the
+  `boot` partition after a verified TWRP backup. It booted normally and
+  associated with `kquote03` at 2x2 HE, 1200.9 Mbit/s, with no RDDM or
+  hardware restart in the initial observation window. A longer traffic
+  soak remains useful because the first attempted ping used an invalid
+  gateway and did not measure Internet traffic.
 - The September 2026 reliability pass found that an existing Fedora rootfs
   could still contain the community firmware set even when the boot ramdisk
   carried Samsung's HSP2.0 files. Rootfs and initramfs builders now verify
   all four exact Samsung files and reject stale `firmware-2.bin*` overrides;
-  see `docs/reliability-2026-09.md`. The Pixel 6 personal-hotspot reboot
-  still needs a controlled real-hardware reproduction.
+  see `docs/reliability-2026-09.md`. The Pixel reproduction above used the
+  verified matching set, ruling out that earlier deployment mismatch.
 - A controlled same-position / same-band / same-AP A/B to pin the exact
   throughput delta (tonight's samples were real but across different
   bands/APs/positions).

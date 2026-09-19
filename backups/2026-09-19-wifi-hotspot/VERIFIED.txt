@@ -1,0 +1,1 @@
+All four exact-sized partition images match remote hashes before and after capture.
