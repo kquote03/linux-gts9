@@ -29,12 +29,14 @@ cite this document instead of re-deriving these details.
 
 ## Last verified rollback point
 
-Read-only SSH backup of the stable Fedora tablet on 2026-09-16, stored at
-`backups/2026-09-16-camera-power-ssh/`. Each file has the exact measured
-block-device size and matches the SHA256 read directly from its partition.
-Remote `dd status=none` kept the stream binary. No partition was written.
-This is the current verified rollback content; take a fresh TWRP backup using
-`scripts/backup-boot-set.sh` immediately before the next flash.
+Fresh TWRP backup on 2026-09-19, stored at
+`backups/2026-09-19-wifi-hotspot/`, using `scripts/backup-boot-set.sh`
+before the hotspot-fix flash. Each image has the exact measured partition
+size and matches both the pre-read and post-read device SHA256. All four
+are byte-identical to the earlier SSH backup at
+`backups/2026-09-16-camera-power-ssh/`. This preserves the deployed Fedora
+kernel #89 and its existing DTB/ramdisks. No partition was written while
+taking this backup.
 
 | Partition | Size (bytes) | sha256 |
 |---|---|---|

@@ -1,8 +1,19 @@
 # Fedora WiFi, sleep and boot reliability — September 2026
 
 Investigation on the SM-X716B, 2026-09-14–15. Fedora is the active target.
-The Pixel 6 hotspot reboot and extended-sleep reboot remain open until their
-specific reproductions pass; the findings below do not establish their cause.
+The extended-sleep reboot remains open. The Pixel 6 hotspot failure is
+diagnosed below; post-fix association has passed, while a longer traffic
+soak remains useful.
+
+**2026-09-19 update:** the Pixel hotspot failure has now been reproduced
+with matching Samsung firmware. MU-EDCA WMM transmission is followed by
+RDDM at the exact previously decoded WMM-handler PC (`0x017be7d0`). An
+incremental kernel patch guards that send using the existing firmware
+quirk. Post-fix kernel #94 was flashed to `boot` after a fresh verified
+backup. The tablet booted normally and associated with `kquote03` at 2x2
+HE / 1200.9 Mbit/s without RDDM or a hardware restart in the initial
+observation window. The first attempted soak targeted an invalid gateway,
+so it is not counted as traffic validation.
 
 ## Firmware and throughput
 

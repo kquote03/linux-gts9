@@ -5005,3 +5005,57 @@ and refreshed Fedora image are staged and verified offline; no partition was
 written during this session. Long-duration deep-sleep validation and the
 controlled Pixel-hotspot test remain acceptance gates for the next hardware
 boot.
+
+## Session 21 — 2026-09-19 — Pixel hotspot firmware crash: MU-EDCA bypassed the Samsung WMM quirk
+
+Reviewed the original networking port, Samsung board-data extraction and
+Hexagon crash analysis before reproducing the reported hotspot failure.
+The tablet ran kernel #89 with the automatic WMM quirk (`-1`). All four
+rootfs firmware hashes matched the committed Samsung overlay, and both
+initial boot and panel-recovery resume reported HSP 2.0. This reproduction
+was therefore independent of Session 20's resolved firmware mismatch.
+
+Connected to the user's Pixel hotspot (2.4 GHz channel 1, WPA2, HE capable)
+while streaming `dmesg` to the host over USB with ath11k WMI debugging and
+running the existing on-device diagnostics collector. At uptime 704.5148,
+the association response led to `wmi wmm set type 1` (MU-EDCA); at 705.5503,
+firmware entered `MHI_CB_EE_RDDM`. Command timeouts and a hardware restart
+request followed. USB disappeared; the user restarted the tablet. No host
+kernel panic stack was captured, so the directly established failure is
+the WLAN firmware crash followed by loss of system access.
+
+The collector saved a 16,646,684-byte ath11k dump before the restart.
+Parsing its RDDM segment table located the 80-byte Q6-SFR region, which
+reports `Exception recieved tid=1a inst=17be7d0 cause=7003`: the exact same
+firmware PC/cause decoded in the original legacy-WMM investigation. The
+new trigger is MU-EDCA, which still sent `WMI_VDEV_SET_WMM_PARAMS_CMDID`
+without consulting the existing quirk. Evidence is private host scratch
+under `out/wifi-hotspot/`; the dump SHA256 is
+`13bd833f45b94db5497ffa3652a3012f8542a33f8bc4a052a372e43d9a8a8c8c`.
+
+Added `ath11k-samsung-skip-mu-edca.patch` after the original patch in the
+kernel build, with its own application marker so existing patched trees
+receive the fix. The MU-EDCA callback still caches parameters and validates
+ACs, but skips the firmware send under the same quirk. U-APSD continues
+through its separate callback. The existing module parameter name and
+`-1/0/1` overrides remain compatible; its description now explicitly covers
+both command types. Firmware and calibration bytes are unchanged.
+
+The host regression compiles the actual patched callbacks with a mock WMI
+transport. It checks Samsung/community/unknown build IDs, automatic and
+forced modes, all four ACs, caching, legacy-only APs, pre-start deferral,
+U-APSD and transport errors. It passes with the fix and fails against the
+original legacy-only patch. Both patches also apply cleanly in sequence
+to pristine pinned source. All eight firmware-packaging tests pass.
+
+The full Image, DTB and module build completed successfully (kernel #94),
+with an identical configuration to the running tablet. A fresh TWRP backup of all four boot partitions was pulled
+and hash-verified at `backups/2026-09-19-wifi-hotspot/`; all match the prior
+verified rollback content. The candidate boot image uses the deployed DTB,
+not the newly built camera DTB, and its unpacked Image was compared with
+the build output. With explicit confirmation, flashed only `boot`; the
+script readback hash matched the candidate. After reboot the tablet ran
+kernel #94, loaded Samsung HSP 2.0, associated with `kquote03`, and
+negotiated 2x2 HE at 1200.9 Mbit/s. The initial observation window showed
+no RDDM, hardware restart, Oops, or panic. A later ping soak targeted an
+invalid gateway and is not counted as traffic validation.

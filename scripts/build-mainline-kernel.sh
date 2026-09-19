@@ -182,10 +182,16 @@ apply_unless 'consume_retained_sink_dfp' \
 # unconditional NULL-pointer dereference in its WMM-params handler
 # (RDDM coredump + Hexagon disassembly; the fault instruction exists 3x
 # in amss20.bin, 0x in the community WLAN.HSP.1.1 build). The community
-# firmware this port ships by default is unaffected and unchanged. Full
+# firmware remains available as an alternate and is unaffected. Full
 # write-up: docs/wifi-samsung-calibration.md.
 apply_unless 'ath11k_mac_skip_legacy_wmm_params' \
 	drivers/net/wireless/ath/ath11k/mac.c ath11k-defer-wmm-params-until-vdev-started.patch
+
+# Pixel 6 hotspot reproduction: the type-1 MU-EDCA send bypassed the
+# legacy-only quirk and triggered RDDM immediately after association.
+# Keep this incremental so already-patched kernel checkouts get the fix.
+apply_unless 'Samsung HSP.2.0 also faults on MU-EDCA' \
+	drivers/net/wireless/ath/ath11k/mac.c ath11k-samsung-skip-mu-edca.patch
 
 # Camera bring-up session (real-hardware follow-up): mainline CAMSS reads
 # and clears the CSI-2 receiver's own physical/protocol-layer error status
