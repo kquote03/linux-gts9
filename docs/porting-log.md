@@ -5059,3 +5059,30 @@ kernel #94, loaded Samsung HSP 2.0, associated with `kquote03`, and
 negotiated 2x2 HE at 1200.9 Mbit/s. The initial observation window showed
 no RDDM, hardware restart, Oops, or panic. A later ping soak targeted an
 invalid gateway and is not counted as traffic validation.
+
+## Session 22 — 2026-09-21 — Silent reboot under SD-card I/O: hung-task panic
+
+The tablet froze for about a minute during a flatpak/ostree install (Discover
+pulling RustDesk, Firefox open) and then rebooted itself. The previous boot's
+journal ends mid-install with no Oops, RDDM, MMC, thermal or shutdown record;
+earlier boots end the same way.
+
+Live inspection showed the rootfs is on the microSD card (`mmcblk0`, SDR104)
+and the running kernel had `kernel.hung_task_panic=1` with a 15 s timeout,
+which `nowatchdog` does not disable, plus `panic=10`. With `vm.dirty_ratio=20`
+on 6.6 GB of RAM (about 1.3 GB of dirty pages allowed) an ostree commit can
+stall the card for tens of seconds; blocked tasks then trip the detector,
+the kernel panics, and it reboots 10 s later. The panic text goes to
+`console=null` and is lost, which is why no log exists. This is the most
+consistent explanation, not a captured proof.
+
+`kernel.watchdog` was `0` because ABL injects `nowatchdog`.
+
+Changes: `rootfs/overlay-common/etc/sysctl.d/90-gts9-storage-stall.conf`
+(small dirty limits, no hung-task panic, 120 s timeout, watchdog re-enabled),
+a persistent journald drop-in with a 5 s sync, and the kernel fragment
+defaults `HUNG_TASK_PANIC=0` / `HUNG_TASK_TIMEOUT=120`. The two rootfs files
+were also applied live to the tablet. The user will repeat the install; a
+survival with only a "blocked for more than" warning confirms the diagnosis.
+If it still reboots, a pstore/ramoops console for real panics is the next
+step (the 2 MiB `sec-log-buf-region@880200000` is unused for that).
