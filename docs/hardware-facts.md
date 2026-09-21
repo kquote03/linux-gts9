@@ -360,6 +360,31 @@ booted. **measured**. This is the MVP rootfs target (Phase 4).
   `modem` partition (188 MiB, FAT16 container). Permanently out of scope; no
   mainline story exists for Samsung's Shannon modem IPC on this platform.
 
+## Speakers (individual verification, 2026-09-21)
+
+**Measured** on Fedora with kernel #94: each CS35L45 independently produces
+sound, confirmed by the user while Elisa played a looping track and only
+one amplifier's `AMP Enable Switch` was enabled at a time. Positions below
+refer to the user's unchanged tablet orientation during that test; they
+are not an orientation-sensor mapping.
+
+| I²C address (bus 1) | ALSA prefix | Physical grille in test | PCM source |
+|---|---|---|---|
+| `0x30` | Rear Left | Upper left | ASP_RX1 |
+| `0x31` | Front Left | Lower left | ASP_RX1 |
+| `0x32` | Rear Right | Upper right | ASP_RX2 |
+| `0x33` | Front Right | Lower right | ASP_RX2 |
+
+After restoring all four enable switches, the user confirmed all four
+speakers audible together at equal volume. They remained equally audible
+after PipeWire was fully stopped, all four amplifiers reached runtime
+suspend, the audio services restarted, and Elisa opened a fresh stream.
+No gain, channel-routing, firmware, or kernel changes were required. The
+initial report of silent upper speakers was not reproduced after isolation;
+its cause is unproven. Do not infer a permanent fix or an initialization
+workaround from this test. See Session 23 in `docs/porting-log.md` for
+diagnostics and retesting.
+
 ## Toolchain
 
 - Stock kernel's own `shell.nix` builds successfully with `llvmPackages_18`

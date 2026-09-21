@@ -32,7 +32,7 @@ device.
 | S Pen digitizer (Wacom wez01) | ✅ confirmed on hardware, tracks correctly across display rotations (see `docs/s-pen-orientation.md`) |
 | Wi-Fi (QCA6490 / ath11k) | ⚠️ Samsung factory firmware/calibration restores both RX chains and measured 113–118 Mbit/s downloads on 5 GHz. The Samsung HSP 2.0 MU-EDCA firmware crash is guarded in the kernel; build #94 associated with the Pixel 6 hotspot at 2x2 HE without RDDM. Extended traffic soak remains to be repeated. See `docs/reliability-2026-09.md`. |
 | Bluetooth | ✅ HCI up, real BT keyboard + touchpad HID input confirmed working on hardware |
-| Speakers (4× CS35L45 on PRIMARY MI2S) | ✅ both stereo channels confirmed audible by ear |
+| Speakers (4× CS35L45 on PRIMARY MI2S) | ✅ all four individually verified and audible together at equal volume (2026-09-21). Initial upper-pair silence cleared during isolation; cause unproven. See Session 23 in `docs/porting-log.md`. |
 | DMIC capture (LPASS VA macro) | ⚠️ wired in DTS, not yet tested with a real recording |
 | Battery / charging incl. PPS (SM5714 + SM5440) | ⚠️ real PD/PPS contract confirmed negotiating (`docs/porting-log.md`), needs more extended real-world testing before calling it fully proven |
 | Power / volume buttons | ✅ confirmed on hardware (power suspends; both volume keys work) |

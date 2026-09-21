@@ -5086,3 +5086,53 @@ were also applied live to the tablet. The user will repeat the install; a
 survival with only a "blocked for more than" warning confirms the diagnosis.
 If it still reboots, a pstore/ramoops console for real panics is the next
 step (the 2 MiB `sec-log-buf-region@880200000` is unused for that).
+
+## Session 23 — 2026-09-21 — Individual verification of all four speakers
+
+The user reported only the lower left/right speakers audible on Fedora;
+all four had worked under Android. Previous port validation had established
+audible left/right channels, not independently verified physical speakers.
+
+Inspected kernel #94 over USB SSH during a looping Elisa track. All four
+CS35L45s (`1-0030` through `1-0033`) probed successfully. Mixer settings
+already matched the overlay: all AMP Enable switches on, Digital PCM Volume
+380, Analog PCM Volume 3, left DACPCM sources ASP_RX1 and right ASP_RX2.
+During playback every amp's DAPM Playback, AMP, SPK and GLOBAL_EN path was
+on and runtime PM was active. Register snapshots agreed on I2S format,
+16-bit receive width, slots 0/1 and gain. No differentiating amplifier fault
+appeared in the inspected logs/status registers. Later direct I²C register
+reads also confirmed all four globally enabled, the correct RX source,
+and AMP_OUTPUT_MUTE=0 with all four playing.
+
+Checked Samsung's actual downstream driver and
+`audio-hal/primary-hal/configs/kalama/audconf/gts9/gts9xxx/mixer_paths.xml`:
+Android uses separate ASP RX slots 0/1/2/3 and Cirrus protection DSP output.
+That is different from this port's stereo direct-ASP setup, but is not
+evidence that four slots or DSP firmware are required to drive four amps.
+
+Isolated each amp by turning the other three `AMP Enable Switch` controls
+off, leaving the track, gain and source routing unchanged. User confirmed:
+
+| ALSA prefix | Address | Audible grille in the user's unchanged orientation |
+|---|---|---|
+| Rear Left | `0x30` | Upper left |
+| Front Left | `0x31` | Lower left |
+| Rear Right | `0x32` | Upper right |
+| Front Right | `0x33` | Lower right |
+
+Restored all four enable switches to on. The user then confirmed **all four
+audible simultaneously at equal volume**. The first upper-left test did
+not toggle that amp off/on: it only disabled the other three. Thus even a
+specific "cycling the silent amplifiers fixes it" explanation is unproven.
+No routing, gain, UCM, firmware or kernel fix was made; do not add a blind
+boot-time reset workaround or claim the initial symptom's cause is known.
+
+For a stream-reopen check, pausing Elisa and separately requesting sink
+suspension did not leave the ALSA PCM closed. Stopping WirePlumber,
+PipeWire/PipeWire-Pulse and their sockets did: after eight seconds the PCM
+was closed and all four amps were runtime-suspended. Restarted all those
+services/sockets; all four enable controls returned on. Elisa needed its
+process restarted because its old PipeWire sockets were invalid. After a
+fresh Elisa process opened the same track, the user again confirmed all four
+speakers working. This exercises a complete stream close, amplifier runtime
+suspend, audio-service restart, fresh stream open, and four-speaker playback.
