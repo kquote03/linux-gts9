@@ -748,7 +748,7 @@ run_in_chroot bash -c '
 
 echo "== building iio-sensor-proxy 3.9 with libssc (SSC) support =="
 mkdir -p "$rootdir/tmp/iio-sensor-proxy-patches"
-cp "$repo_root/specs/iio-sensor-proxy-libssc/patches/notify-slow-sensor-discovery.patch" \
+cp "$repo_root/specs/iio-sensor-proxy-libssc/patches/"*.patch \
 	"$rootdir/tmp/iio-sensor-proxy-patches/"
 run_in_chroot bash -c '
 	set -eu
@@ -756,7 +756,8 @@ run_in_chroot bash -c '
 	d=$(mktemp -d)
 	curl -sfL "https://gitlab.freedesktop.org/hadess/iio-sensor-proxy/-/archive/3.9/iio-sensor-proxy-3.9.tar.gz" \
 		| tar xz -C "$d" --strip-components=1
-	patch -d "$d" -p1 < /tmp/iio-sensor-proxy-patches/notify-slow-sensor-discovery.patch
+	# notify-slow-sensor-discovery first, then start-polling-claimed-while-starting
+	for p in /tmp/iio-sensor-proxy-patches/*.patch; do patch -d "$d" -p1 < "$p"; done
 	meson setup "$d/build" "$d" -Dprefix=/usr -Dssc-support=enabled
 	meson compile -C "$d/build"
 	meson install --no-rebuild -C "$d/build"
