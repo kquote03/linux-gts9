@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: MIT
+#
+# Ported from the SM-X710 gts9wifi-fedora fork. The rear DW9808 VCM lens keeps
+# whatever position was last set; applications only get libcamera's software
+# autofocus (specs/libcamera-x716b/patches/0002) when a client enables it.
+# Pin a sane starting position: the middle of the only in-focus range measured
+# on the X710 (contrast sweep peaked at focus_absolute 307-409). NOT measured
+# on the X716B -- retune with tools/gts9-autofocus.c if it looks soft.
+#
+# The dw9808 driver caches the position while the camera is idle and ramps back
+# to it when the sensor starts streaming, so setting it once is enough.
+ACTION=="add|change", SUBSYSTEM=="video4linux", ATTR{name}=="dw9808-vcm*", \
+    RUN+="/usr/bin/v4l2-ctl -d /dev/%k --set-ctrl=focus_absolute=384"
