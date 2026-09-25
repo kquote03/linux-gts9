@@ -5136,3 +5136,69 @@ process restarted because its old PipeWire sockets were invalid. After a
 fresh Elisa process opened the same track, the user again confirmed all four
 speakers working. This exercises a complete stream close, amplifier runtime
 suspend, audio-service restart, fresh stream open, and four-speaker playback.
+
+## Session 24 — 2026-09-25 — Port camera, sensor and video-decode fixes from the SM-X710 fork
+
+Source: `gts9wifi-fedora-new/` (troikoss/gts9wifi-fedora, the Wi-Fi Tab S9,
+same SM8550 and mostly the same board; kept untracked as reference input).
+Everything below was **built/compiled only** — nothing was flashed or run
+on an X716B, so every item is unverified on this device.
+
+Ported:
+- **Iris hardware decode.** `&iris` enabled with
+  `firmware-name = "qcom/vpu/vpu30_4v.mbn"`; `SM_VIDEOCC_8550` and
+  `VIDEO_QCOM_IRIS` stated as `=m` in the fragment (already `=m` in the
+  base); `build-fedora-rootfs.sh` stages *this device's own*
+  `vendor-firmware-dump/firmware/vpu30_4v.mbn` (sha `422207…`). The fork's
+  downloadable blob (sha `431e97…`) is X710-signed and differs, so it was
+  deliberately not used.
+- **HI1337 lens binding.** The driver now registers with
+  `v4l2_async_register_subdev()` and binds `lens-focus` through a
+  sub-device notifier (ancillary sensor→lens link), replacing
+  `v4l2_async_register_subdev_sensor()`. **DW9808** initialises only once
+  the shared `rear_cam_vio` rail is up (`dw9808_ensure_ready`); the old
+  open-time init is the likely cause of the recorded `EINVAL` on subdev
+  open. Kept ours: the stricter chip-ID check, the X716B front
+  2032x1524 mode table and `hynix,hi1337-gts9-*` compatibles; dropped the
+  fork's `DBG:` register dumps and the Ultra-only front-uw variant.
+- **DTS.** Rear and front `rotation = <0>` (the fork measured stock
+  `sensor-position-roll` does not map onto the property); front camera
+  enabled with `&camss` `port@4` and endpoint links restored.
+- **Focus.** udev default `focus_absolute=384` (X710-measured, not
+  measured here) and `tools/gts9-autofocus.c` (device nodes overridable via
+  `GTS9_AF_*`; not installed in the image).
+- **Sensors.** `ssc-accel` `IIO_SENSOR_PROXY_TYPE` tag on `fastrpc-adsp`;
+  `start-polling-claimed-while-starting.patch` for iio-sensor-proxy 3.9
+  (applies cleanly after `notify-slow-sensor-discovery`); Fedora and
+  Debian builders now apply every patch in the directory. `v4l-utils`
+  added to the Fedora image for the focus rule.
+
+Deliberately **not** ported:
+- L11B rail at 1.104 V. The fork lowered the shared panel/front-camera
+  rail; this tablet's stock DTS votes 1.2 V for the panel VDD, and the
+  panel is the only display, so `vreg_l11b_1p2` is unchanged and the front
+  sensor runs from that 1.2 V rail. Revisit only with a measured stock
+  camera-side vote.
+- The fork's `gts9wifi-sensors-resume`/wait-for-sensor-proxy scripts: ours
+  are newer (PD-map check, bounded `timeout`s, bind-mounted HexagonFS
+  registry).
+- The libcamera HI1337 helper: ours (`0001-…`) already has
+  `blackLevel_ = 4096` and `AnalogueGainLinear{1,16,0,16}`.
+- The `gts9wifi` paths, the X710 sensor mount matrix values (ours kept;
+  the 5G orientation is not separately measured) and the fork's
+  MEDIA_SUPPORT/`=y` camera builds.
+
+Front-camera revert recipe: if the rear disappears from `media-ctl -p`
+(a failed front probe blocks camss's async notifier — first seen
+2026-09-15), set `hi1337_front` to `status = "disabled"` and drop `&camss`
+`port@4` plus the front node's `port {}`.
+
+Verification done offline: DTB builds (iris, front endpoints resolve),
+`hi1337_gts9.o`/`dw9808_vcm.o` compile against the tree with the repo
+config, `tools/gts9-autofocus.c` compiles `-Wall` clean,
+`test-verify-camera-config.py` passes, both iio-sensor-proxy patches
+apply, `bash -n` on the builders.
+On-device checklist: `v4l2-ctl --list-devices` shows `iris_driver` and a
+VP9 file decodes with hardware; `media-ctl -p` shows rear and front links
+and the lens ancillary link; `cam -l`; `monitor-sensor` rotation after
+boot and after suspend/resume.

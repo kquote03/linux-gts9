@@ -1194,3 +1194,35 @@ non-Ultra Tab S9.
    cold-boot suspend/resume DDIC-recovery quirk (needed on the X910
    Ultra's sibling panel) turned out to be unnecessary here — this
    panel's ID read correctly before that quirk ever ran.
+
+## SM-X710 fork port: camera, sensor, video decode (Session 24)
+
+Values below are **inherited from the SM-X710 (Wi-Fi) fork, not measured on
+the X716B**; see `docs/porting-log.md` Session 24.
+
+- **Iris:** `&iris` enabled, `firmware-name = qcom/vpu/vpu30_4v.mbn`
+  (downstream `vidc,firmware-name`). The blob is this device's own dump
+  (sha256 `422207b8…12fe`); the X710's is different (`431e976f…3787`) and
+  will not authenticate here. On the X710 it registers `iris_driver`
+  (VP9, H.264, HEVC to NV12) and cut 1080p VP9 decode from 3.20 s to
+  0.15 s CPU.
+- **Camera rotation:** both sensors use `rotation = <0>`; stock
+  `sensor-position-roll` (rear 90, front 270) does not map onto the V4L2
+  property (X710 measurement in GNOME Snapshot: value applied clockwise
+  as-is).
+- **Front camera:** re-enabled at 7-bit `0x21` (the fork's full
+  `0x08..0x77` sweep answered only there; `0x20` is the module EEPROM),
+  MCLK4, GPIO17 enable, GPIO117 reset. VDIG comes from the panel's shared
+  L11B rail, which stays at **1.2 V** here (the X710 uses 1.104 V, its
+  stock vote); the sensor's 1.1 V request is therefore not honoured.
+  **Untested.** If the rear camera drops out of `media-ctl -p`, set
+  `hi1337_front` to `status = "disabled"` and remove `&camss` `port@4`
+  and the front `port {}`. Front and rear share csid0/vfe0/video0, so
+  only one can stream at a time.
+- **Lens:** the DW9808 answers I2C only while the sensor holds the shared
+  `rear_cam_vio` rail; init is deferred until then. Default
+  `focus_absolute=384` (X710 plateau 307-409) is set by udev; the X716B
+  plateau is unmeasured.
+- **Accelerometer:** needs the `ssc-accel` tag on `fastrpc-adsp` for
+  iio-sensor-proxy to look it up; the mount matrix in
+  `61-gts9wifi-sensor-mount-matrix.rules` is unchanged from before.

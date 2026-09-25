@@ -86,6 +86,12 @@ cover:
    sm8550/` the same way `build-fedora-rootfs.sh` does. This is pure data,
    not distro-specific at all, but a builder that doesn't know to look
    there will silently ship a device with no ADSP and no sound.
+   Also stage `vendor-firmware-dump/firmware/vpu30_4v.mbn` at
+   `/lib/firmware/qcom/vpu/vpu30_4v.mbn`: the DTS's `&iris` node names it,
+   and it is this device's Samsung-signed VPU image (an X710 copy will not
+   authenticate). Without it the iris driver fails to probe and there is no
+   hardware video decode (`build-fedora-rootfs.sh` fails the build if it is
+   missing; the other builders have not been updated yet).
 4. Confirm *something* triggers ALSA UCM's `BootSequence` for the sound
    card (see the `overlay-common` note above), or otherwise apply the
    equivalent `amixer cset` calls some other way -- without this the

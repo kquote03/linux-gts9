@@ -40,12 +40,12 @@ device.
 | USB (gadget debug network) | ✅ `g_ether`, real SSH access |
 | USB host mode, Type-C PD, docks | ✅ confirmed on hardware — real USB-C hub enumerated fully (`docs/porting-log.md`) |
 | USB-C DisplayPort altmode | ⚠️ wired in DTS, not tested with a physical dock |
-| Sensors (SSC: accelerometer, ambient light, etc.) | ⚠️ ADSP boots and the HexagonFS registry path is fixed, but the SSC QMI service itself doesn't publish (a real, likely upstream `hexagonrpcd` gap — see `docs/porting-log.md`) |
+| Sensors (SSC: accelerometer, ambient light, etc.) | ⚠️ ADSP boots and the HexagonFS registry path is fixed, but the SSC QMI service itself doesn't publish (a real, likely upstream `hexagonrpcd` gap — see `docs/porting-log.md`) Auto-rotate fixes ported from the SM-X710 fork (`ssc-accel` udev tag, iio-sensor-proxy claim-race patch) — unverified on the X716B. |
 | Suspend (deep) | ⚠️ short and ~11-minute sleeps resumed; extended-sleep reboot remains under investigation. A confirmed USB-C I²C suspend race is fixed in source and awaits flashed-kernel validation; see `docs/reliability-2026-09.md`. |
 | GNOME desktop (Wayland, `gdm`) | ✅ real login screen confirmed on the physical panel |
-| Camera | ⚠️ Rear captures at ~30 fps with a temporary GPIO15 power override; brighter lighting produces images, but quality and autofocus remain unresolved. The corrected GPIO15 supply is built, awaiting flash. The rebuilt SPA plugin exposes the rear camera to GNOME’s portal in a bounded test; normal activation remains disabled pending memory/streaming validation. Front remains disabled pending shared-rail voltage validation. See `docs/hardware-facts.md`. |
+| Camera | ⚠️ Rear captures at ~30 fps with a temporary GPIO15 power override; brighter lighting produces images, but quality and autofocus remain unresolved. The corrected GPIO15 supply is built, awaiting flash. The rebuilt SPA plugin exposes the rear camera to GNOME’s portal in a bounded test; normal activation remains disabled pending memory/streaming validation. Front camera re-enabled (untested on the X716B, ported from the SM-X710 fork; revert recipe in `docs/hardware-facts.md`), and the HI1337 driver now binds the DW9808 lens via a sensor notifier — awaiting flash. See `docs/hardware-facts.md`. |
 | Fingerprint | ❌ not present on the reference project this was ported from |
-| Hardware video decode (iris) | ❌ not sourced |
+| Hardware video decode (iris) | ⚠️ `&iris` enabled with this device's own `vpu30_4v.mbn` and staged by the Fedora builder (ported from the SM-X710 fork, where VP9/H.264/HEVC decode in hardware); built, awaiting flash — unverified on the X716B |
 | `/vendor` super partition (erofs) | ❌ needs a `make-dynpart-mappings` port neither project has done |
 | Cellular / 5G modem | ❌ permanent non-goal — no mainline story for Samsung's Shannon modem IPC on this SoC |
 
