@@ -2198,21 +2198,14 @@
 	vdda-pll-supply = <&vreg_l3e_1p2>;
 
 	/*
-	 * port@4 (front, csiphy4) deliberately NOT wired here for now --
-	 * real-hardware bring-up (2026-09-15) confirmed the rear sensor's
-	 * chip-ID read succeeds (model=0x1337 vendor=0x2000, exact HI1337
-	 * match) but the front sensor's I2C reads fail outright (-ENXIO on
-	 * both registers, after a clean power-on sequence with no GPIO/
-	 * regulator errors -- so probably a wrong I2C address/bus routing,
-	 * not a wrong-chip guess). Because qcom-camss's async fwnode notifier
-	 * only finalizes media links once *every* referenced sensor endpoint
-	 * has bound, the still-unmatched front endpoint was blocking the
-	 * already-working rear sensor's link too (confirmed: both showed
-	 * "0 link" in `media-ctl -p` while front's node was present but
-	 * unprobed). Dropping port@4 here (while leaving hi1337_front's own
-	 * node below intact, just status=disabled) lets rear's link complete
-	 * independently. Re-add once front's real wiring is found -- see
-	 * docs/hardware-facts.md's Camera section.
+	 * port@4 (front, csiphy4) restored, ported from the SM-X710 fork where
+	 * both sensors bind and stream. UNVERIFIED on the X716B. Earlier X716B
+	 * bring-up (2026-09-15) had the front I2C read fail (-ENXIO), and the
+	 * unbound front endpoint kept camss's async notifier from finalizing
+	 * the rear link too (both showed "0 link" in `media-ctl -p`). If the
+	 * rear camera vanishes from the media graph, revert: set hi1337_front
+	 * to status = "disabled" and drop this port@4 and the front node's
+	 * port{} -- see docs/hardware-facts.md's Camera section.
 	 */
 	ports {
 		port@1 {
@@ -2220,6 +2213,14 @@
 				clock-lanes = <4>;
 				data-lanes = <0 1 2 3>;
 				remote-endpoint = <&hi1337_rear_ep>;
+			};
+		};
+
+		port@4 {
+			csiphy4_hi1337_front_ep: endpoint {
+				clock-lanes = <4>;
+				data-lanes = <0 1 2 3>;
+				remote-endpoint = <&hi1337_front_ep>;
 			};
 		};
 	};
@@ -2243,7 +2244,13 @@
 		pinctrl-1 = <&cam2_sleep>;
 		pinctrl-names = "default", "sleep";
 		orientation = <1>;
-		rotation = <90>;
+		/*
+		 * Landscape-native rear module; frames are already upright. The
+		 * SM-X710 fork measured <90> making libcamera report the wrong
+		 * rotation and GNOME Camera's viewfinder rotate by 90 degrees
+		 * (stock sensor-position-roll does not map onto this property).
+		 */
+		rotation = <0>;
 		lens-focus = <&rear_focus>;
 
 		port {
@@ -2280,10 +2287,12 @@
 
 &cci1_i2c1 {
 	hi1337_front: camera@21 {
-		/* Keep disabled until front VDIG/panel voltage sharing is validated.
-		 * Restore both graph endpoints together.
+		/*
+		 * Enabled untested on the X716B (ported from the SM-X710 fork).
+		 * VDIG is the panel's shared L11B rail, kept at this tablet's
+		 * 1.2 V (stock panel vote); the fork's 1.104 V is X710-specific
+		 * and lowering it here could starve the panel.
 		 */
-		status = "disabled";
 		compatible = "hynix,hi1337-gts9-front";
 		/* X716 vendor front and front_full descriptors use slaveAddress 0x42. */
 		reg = <0x21>;
@@ -2299,14 +2308,17 @@
 		pinctrl-1 = <&cam4_sleep>;
 		pinctrl-names = "default", "sleep";
 		orientation = <0>;
-		rotation = <270>;
+		/* Measured on the X710: 0 renders upright, 270 rotates the image. */
+		rotation = <0>;
 
-		/*
-		 * port/endpoint dropped along with &camss's port@4 above --
-		 * DTC resolves phandle references regardless of a disabled
-		 * status, so a remote-endpoint pointing at the now-removed
-		 * csiphy4_hi1337_front_ep label would fail to compile.
-		 */
+		port {
+			hi1337_front_ep: endpoint {
+				clock-lanes = <4>;
+				data-lanes = <0 1 2 3>;
+				link-frequencies = /bits/ 64 <360200000>;
+				remote-endpoint = <&csiphy4_hi1337_front_ep>;
+			};
+		};
 	};
 };
 

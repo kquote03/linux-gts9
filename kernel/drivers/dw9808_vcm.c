@@ -8,6 +8,10 @@
  * UNVERIFIED assumption (see hi1337_gts9.c and docs/hardware-facts.md)
  * that it's wired to the same DW9808 part at the same I2C address (0x18)
  * this device's stock devicetree shows for its rear actuator.
+ *
+ * The rail-aware init (dw9808_ensure_ready) is ported from the SM-X710
+ * gts9wifi-fedora fork: the VCM only answers I2C while the sensor keeps the
+ * shared rear_cam_vio rail up, so the old open()-time init failed.
  */
 
 #include <linux/delay.h>
@@ -34,6 +38,7 @@ struct dw9808_device {
 	struct v4l2_subdev subdev;
 	struct regulator *vcc;
 	u16 position;
+	bool inited;
 };
 
 static inline struct dw9808_device *to_dw9808(struct v4l2_subdev *subdev)
@@ -104,6 +109,32 @@ static int dw9808_set_position(struct i2c_client *client, u16 position)
 	return ret == sizeof(data) ? 0 : -EIO;
 }
 
+/*
+ * The VCM shares the 1.8 V sensor rail (rear_cam_vio) and only answers on I2C
+ * while the sensor keeps that rail up (i.e. while streaming). Detect rail
+ * down/power-cycles so a re-initialisation happens on the next write.
+ */
+static int dw9808_ensure_ready(struct dw9808_device *dw9808,
+			       struct i2c_client *client)
+{
+	int ret;
+
+	if (!regulator_is_enabled(dw9808->vcc)) {
+		dw9808->inited = false;
+		return -EAGAIN;
+	}
+
+	if (dw9808->inited)
+		return 0;
+
+	ret = dw9808_init(client);
+	if (ret)
+		return ret;
+
+	dw9808->inited = true;
+	return 0;
+}
+
 static int dw9808_set_control(struct v4l2_ctrl *control)
 {
 	struct dw9808_device *dw9808 = container_of(control->handler,
@@ -119,7 +150,15 @@ static int dw9808_set_control(struct v4l2_ctrl *control)
 	ret = pm_runtime_get_if_in_use(&client->dev);
 	if (ret <= 0)
 		return ret < 0 ? ret : 0;
-	ret = dw9808_set_position(client, dw9808->position);
+	ret = dw9808_ensure_ready(dw9808, client);
+	if (ret == -EAGAIN) {
+		/* Keep the device active until close; the position is applied
+		 * on the next successful write once the sensor streams. */
+		pm_runtime_put(&client->dev);
+		return 0;
+	}
+	if (!ret)
+		ret = dw9808_set_position(client, dw9808->position);
 	pm_runtime_put(&client->dev);
 	return ret;
 }
@@ -155,6 +194,11 @@ static int dw9808_suspend(struct device *dev)
 	struct dw9808_device *dw9808 = to_dw9808(subdev);
 	int position, ret = 0;
 
+	if (!regulator_is_enabled(dw9808->vcc)) {
+		dw9808->inited = false;
+		return 0;
+	}
+
 	for (position = dw9808->position & ~(DW9808_CTRL_STEPS - 1);
 	     position >= 0; position -= DW9808_CTRL_STEPS) {
 		int step_ret = dw9808_set_position(client, position);
@@ -166,6 +210,7 @@ static int dw9808_suspend(struct device *dev)
 	if (dw9808_write(client, DW9808_REG_CONTROL, 0x01) && !ret)
 		ret = -EIO;
 	regulator_disable(dw9808->vcc);
+	dw9808->inited = false;
 	return ret;
 }
 
@@ -181,9 +226,14 @@ static int dw9808_resume(struct device *dev)
 		return ret;
 	usleep_range(1000, 1100);
 
-	ret = dw9808_init(client);
-	if (ret)
-		goto disable;
+	ret = dw9808_ensure_ready(dw9808, client);
+	if (ret) {
+		regulator_disable(dw9808->vcc);
+		/* The shared rail may be off while the sensor is idle; keep the
+		 * open() alive and retry initialisation from dw9808_set_control()
+		 * once the sensor streams. */
+		return 0;
+	}
 
 	for (position = dw9808->position % DW9808_CTRL_STEPS;
 	     position < dw9808->position + DW9808_CTRL_STEPS;
@@ -191,20 +241,16 @@ static int dw9808_resume(struct device *dev)
 		ret = dw9808_set_position(client,
 					 min(position, (int)dw9808->position));
 		if (ret)
-			goto disable;
+			break;
 		usleep_range(DW9808_CTRL_DELAY_US, DW9808_CTRL_DELAY_US + 100);
 	}
+	/* Leave the rail on until the subdev is closed (as before); the sensor
+	 * streaming path never races it because the regulator is shared. */
 	return 0;
-
-disable:
-	regulator_disable(dw9808->vcc);
-	return ret;
 }
 
-static const struct dev_pm_ops dw9808_pm_ops = {
-	SET_SYSTEM_SLEEP_PM_OPS(pm_runtime_force_suspend, pm_runtime_force_resume)
-	SET_RUNTIME_PM_OPS(dw9808_suspend, dw9808_resume, NULL)
-};
+static DEFINE_RUNTIME_DEV_PM_OPS(dw9808_pm_ops, dw9808_suspend,
+				 dw9808_resume, NULL);
 
 static int dw9808_probe(struct i2c_client *client)
 {
@@ -276,7 +322,7 @@ static struct i2c_driver dw9808_driver = {
 	.driver = {
 		.name = "dw9808-vcm",
 		.of_match_table = dw9808_of_match,
-		.pm = &dw9808_pm_ops,
+		.pm = pm_ptr(&dw9808_pm_ops),
 	},
 	.probe = dw9808_probe,
 	.remove = dw9808_remove,
