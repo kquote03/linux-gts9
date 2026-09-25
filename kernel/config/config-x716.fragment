@@ -445,11 +445,11 @@ CONFIG_POWER_RESET_QCOM_PON=y
 # prior session. See docs/porting-log.md for the full debugging story.
 CONFIG_SECURITY_SELINUX=n
 
-# Cellular modem remoteproc and hardware video decode (iris) remain
-# explicitly NOT enabled here (see docs/hardware-facts.md non-goals) --
-# gts9wifi-fedora's own reference doesn't ship these either, and cellular
-# is a permanent non-goal for this Wi-Fi-first port. Camera, previously
-# also listed here as out of scope, is not any more -- see the Camera
+# Cellular modem remoteproc remains explicitly NOT enabled here (see
+# docs/hardware-facts.md non-goals) -- cellular is a permanent non-goal
+# for this Wi-Fi-first port. Hardware video decode (iris) is enabled
+# at the end of this file. Camera, previously also listed here as out of
+# scope, is not any more -- see the Camera
 # bring-up session entry in docs/porting-log.md and the new "Camera"
 # section in docs/hardware-facts.md.
 
@@ -477,3 +477,11 @@ CONFIG_VIDEO_DW9808_VCM=m
 # killed). No debugger session is planned for this bring-up; re-assert
 # the fix here so it survives the base-config swap.
 CONFIG_DEBUG_INFO_NONE=y
+
+# Hardware video decode: SM8550 is served by the iris driver (not venus).
+# Ported from the gts9wifi-fedora fork, where it decodes VP9/H.264/HEVC.
+# Both are already =m in config-mainline.aarch64; stated here so the intent
+# survives a base-config refresh. Modules load from the rootfs after boot,
+# where the signed VPU firmware (qcom/vpu/vpu30_4v.mbn) lives.
+CONFIG_SM_VIDEOCC_8550=m
+CONFIG_VIDEO_QCOM_IRIS=m

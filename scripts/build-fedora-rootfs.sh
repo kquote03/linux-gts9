@@ -552,6 +552,18 @@ for f in a740_zap.mdt a740_zap.b00 a740_zap.b01 a740_zap.b02 a740_sqe.fw gmu_gen
 	fi
 done
 
+# Iris hardware video decoder (VPU 3.0): the DTS points firmware-name at
+# qcom/vpu/vpu30_4v.mbn, matching the downstream vidc,firmware-name. Use
+# this device's own Samsung-signed blob from the vendor dump -- the
+# gts9wifi fork's downloadable copy is signed for the X710 and differs.
+mkdir -p "$fwdir/qcom/vpu"
+if [ -s "$vfw/vpu30_4v.mbn" ]; then
+	cp "$vfw/vpu30_4v.mbn" "$fwdir/qcom/vpu/vpu30_4v.mbn"
+else
+	echo "Missing $vfw/vpu30_4v.mbn; extract the device's VPU firmware before building" >&2
+	exit 1
+fi
+
 echo "== staging ADSP PIL firmware + HexagonFS payload + AudioReach topology =="
 # Extracted by scripts/extract-vendor-firmware.sh (gts9wifi-fedora pivot),
 # which itself pulls the device-specific firmware directly off this exact

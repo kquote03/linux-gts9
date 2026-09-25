@@ -2153,6 +2153,21 @@
 };
 
 /*
+ * Iris video decoder (VPU 3.0), ported from the SM-X710 gts9wifi-fedora
+ * fork where it decodes VP9/H.264/HEVC in hardware. sm8550.dtsi ships the
+ * node disabled because the firmware is vendor-signed; like the zap
+ * shader, only Samsung's own signed image passes this device's TrustZone.
+ * vpu30_4v matches the downstream vidc,firmware-name. The blob is this
+ * device's own (vendor-firmware-dump/firmware/vpu30_4v.mbn, staged by
+ * scripts/build-fedora-rootfs.sh) -- NOT the fork's download, which is
+ * signed for the X710. UNVERIFIED on the X716B.
+ */
+&iris {
+	firmware-name = "qcom/vpu/vpu30_4v.mbn";
+	status = "okay";
+};
+
+/*
  * Cameras (Camera bring-up session). UNVERIFIED HYPOTHESIS pending real
  * hardware -- see docs/hardware-facts.md's Camera section and
  * kernel/drivers/hi1337_gts9.c's own header for the full caveat. Summary:
