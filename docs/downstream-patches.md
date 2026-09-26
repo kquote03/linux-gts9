@@ -41,7 +41,7 @@ Rules:
 Applied by `scripts/build-downstream-userland.sh` (Fedora, Debian) or the
 equivalent Nix packages, from `specs/<component>/series`.
 
-### libcamera (`specs/libcamera-x716b/`, pin `62d4bfc45079`, v0.7.2+53)
+### libcamera (`specs/libcamera-x716b/`, pin `62d4bfc45079`, v0.7.2+53; patches 0001-0008)
 
 Built with `--buildtype=release`; meson's default is `debug` (`-O0`), which made
 the CPU software ISP several times slower (rear camera ~3.75 fps at `-O0`,
@@ -55,6 +55,8 @@ the CPU software ISP several times slower (rear camera ~3.75 fps at `-O0`,
 | `0004-simple-reset-qcom-camss-links-before-configure` | The SM8550 CAMSS routes all sensors through shared CSID/VFE pads; discovery leaves one path enabled and the next camera fails with `EBUSY`. Resets the shared links before selecting a camera. | Pipeline/board workaround; unlikely. |
 | `0005-simple-drop-metadata-wait-for-cancelled-output-buffers` | Requests whose software-ISP output is cancelled at `stop()` waited forever for metadata, so `PipelineHandler::stop()` hit `ASSERT(queuedRequests_.empty())` and aborted (WirePlumber and GNOME Camera died on every camera switch). | **A genuine generic bug** (upstream master has the same code). Worth reporting and sending upstream; carried until then. Not yet done. |
 | `0006-software-isp-dont-queue-work-to-a-stopped-worker` | `SoftwareIsp::stop()` calls `ipa_->stop()`, whose synchronous IPC spins a nested event loop; a captured frame arriving there is queued to the just-stopped debayer worker and run by the next `start()` on freed buffers (SIGSEGV; fast rear/front switching). | **A genuine generic bug**, same status as 0005. |
+| `0007-simple-ipa-retrigger-autofocus-on-scene-change` | After locking, the autofocus only rescanned when the focus score dropped, which misses a subject moving away (a lens focused near blurs everything, so the score stays low). Compares the luminance histogram and score with a reference taken after the lock and rescans once a changed scene settles. Thresholds are untuned first guesses; metrics are logged at debug level. | Builds on 0002 and shares its outlook: unlikely upstream. |
+| `0008-simple-ipa-exposure-controls` | The software AGC exposed no controls. Adds `AeEnable`, `ExposureTime`, `AnalogueGain` and `ExposureValue` (manual exposure, and compensation by shifting the AGC's brightness target). Used by `gts9-camera` (`docs/camera-controls.md`). | Newer upstream libcamera moved the software AGC to libipa's shared AGC, which brings its own controls; this patch would be dropped when the pin moves past that. |
 
 ### hexagonrpcd (`specs/hexagonrpcd-samsung/`, pin v0.4.0 `23a69640bf10`)
 

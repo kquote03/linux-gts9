@@ -1,0 +1,551 @@
+#!/usr/bin/python3
+# SPDX-License-Identifier: MIT
+"""gts9-camera: inspect and control the Galaxy Tab S9's cameras from the shell.
+
+Controls are sent to the running PipeWire camera node (the libcamera SPA plugin),
+so they apply live to whatever application is streaming, e.g. GNOME Camera or
+Firefox. Focus position is written to the lens directly. See
+/usr/share/doc/gts9-camera/camera-controls.md (docs/camera-controls.md in the repo) for what each control does and what is not supported
+(digital zoom, manual white-balance gains).
+
+  gts9-camera list
+  gts9-camera status [rear|front]
+  gts9-camera controls [rear|front]
+  gts9-camera focus rear continuous|auto|manual|trigger|<0-1023>
+  gts9-camera exposure rear auto | <microseconds> [--gain G] | ev <-2..2>
+  gts9-camera gain rear <1-16>
+  gts9-camera wb rear auto|off
+  gts9-camera contrast|saturation|gamma rear <value>
+  gts9-camera set rear <control> <value>
+  gts9-camera reset rear
+  gts9-camera daemon
+"""
+
+import argparse
+import glob
+import json
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import time
+
+CAMERAS = {"rear": "gts9-camera-rear", "front": "gts9-camera-front"}
+ALIASES = {"back": "rear"}
+
+# Friendly names -> libcamera control names as the plugin reports them.
+FRIENDLY = {
+    "af-mode": "AfMode",
+    "af-trigger": "AfTrigger",
+    "awb": "AwbEnable",
+    "ae": "AeEnable",
+    "ev": "ExposureValue",
+    "exposure-time": "ExposureTime",
+    "exposure": "ExposureTime",
+    "gain": "AnalogueGain",
+    "gamma": "Gamma",
+    "contrast": "Contrast",
+    "saturation": "Saturation",
+}
+
+AF_MODES = {"manual": 0, "auto": 1, "continuous": 2}
+
+# What "reset" restores (the IPA's own defaults).
+DEFAULTS = {
+    "AfMode": 2,
+    "AeEnable": True,
+    "ExposureValue": 0.0,
+    "AwbEnable": True,
+    "Gamma": 2.2,
+    "Contrast": 1.0,
+    "Saturation": 1.0,
+}
+
+READ_ONLY = {"ColourTemperature"}
+LENS_MAX = 1023
+
+
+class Error(Exception):
+    pass
+
+
+def state_path():
+    base = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
+    return pathlib.Path(base) / "gts9-camera" / "state.json"
+
+
+def load_state():
+    try:
+        return json.loads(state_path().read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_state(state):
+    p = state_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(state, indent=1, sort_keys=True))
+
+
+def remember(cam, name, value):
+    state = load_state()
+    state.setdefault(cam, {})[name] = value
+    save_state(state)
+
+
+def run(cmd):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, check=False)
+    except FileNotFoundError:
+        raise Error("%s not found (is PipeWire / v4l-utils installed?)" % cmd[0])
+
+
+def pw_nodes():
+    """Return {camera: node dict} for the camera nodes PipeWire currently has."""
+    if not os.environ.get("XDG_RUNTIME_DIR"):
+        os.environ["XDG_RUNTIME_DIR"] = "/run/user/%d" % os.getuid()
+    r = run(["pw-dump"])
+    if r.returncode != 0:
+        raise Error("cannot talk to PipeWire: %s" % (r.stderr.strip() or "pw-dump failed"))
+    nodes = {}
+    for obj in json.loads(r.stdout):
+        if obj.get("type") != "PipeWire:Interface:Node":
+            continue
+        name = obj.get("info", {}).get("props", {}).get("node.name", "")
+        for cam, node_name in CAMERAS.items():
+            if name == node_name:
+                nodes[cam] = obj
+    return nodes
+
+
+def pick_camera(name):
+    cam = ALIASES.get(name, name)
+    if cam not in CAMERAS:
+        raise Error("unknown camera '%s' (use rear or front)" % name)
+    return cam
+
+
+def get_node(cam):
+    nodes = pw_nodes()
+    if cam not in nodes:
+        raise Error("the %s camera is not available in PipeWire (is WirePlumber running and the "
+                    "libcamera plugin enabled? try: gts9-camera list)" % cam)
+    return nodes[cam]
+
+
+def controls_of(node):
+    """Map libcamera control name -> {key, kind, min, max, default} from PropInfo."""
+    out = {}
+    for info in node.get("info", {}).get("params", {}).get("PropInfo", []):
+        name = info.get("description")
+        pid = info.get("id", "")
+        typ = info.get("type", {})
+        if not name:
+            continue
+        m = re.fullmatch(r"id-([0-9a-fA-F]{8})", pid)
+        key = int(m.group(1), 16) if m else pid
+        default = typ.get("default")
+        if name in DEFAULTS:
+            default = DEFAULTS[name]  # PipeWire reports the first enum alternative for booleans
+        if "min" in typ:
+            kind = "float" if isinstance(typ["min"], float) or isinstance(typ.get("max"), float) else "int"
+            lo, hi = typ["min"], typ["max"]
+        else:
+            kind, lo, hi = "bool", None, None
+        out[name] = {"key": key, "kind": kind, "min": lo, "max": hi, "default": default,
+                     "readonly": name in READ_ONLY}
+    return out
+
+
+def parse_value(kind, text):
+    t = str(text).strip().lower()
+    if kind == "bool":
+        if t in ("1", "true", "on", "yes", "auto", "enable", "enabled"):
+            return True
+        if t in ("0", "false", "off", "no", "manual", "disable", "disabled"):
+            return False
+        raise Error("expected on/off, got '%s'" % text)
+    try:
+        return int(t, 0) if kind == "int" else float(t)
+    except ValueError:
+        raise Error("expected a number, got '%s'" % text)
+
+
+def fmt_value(kind, v):
+    if kind == "bool":
+        return "true" if v else "false"
+    if kind == "int":
+        return str(int(v))
+    s = repr(float(v))
+    return s if ("." in s or "e" in s) else s + ".0"
+
+
+def send(cam, node, ctl, name, value, quiet=False):
+    """Validate and send one control to the camera node."""
+    if ctl["readonly"]:
+        raise Error("%s is read-only" % name)
+    if ctl["kind"] != "bool":
+        lo, hi = ctl["min"], ctl["max"]
+        if value < lo or value > hi:
+            raise Error("%s must be between %s and %s (got %s)" % (name, lo, hi, value))
+    arg = "{ %s = %s }" % (ctl["key"], fmt_value(ctl["kind"], value))
+    r = run(["pw-cli", "set-param", str(node["id"]), "Props", arg])
+    if r.returncode != 0 or "error" in (r.stdout + r.stderr).lower():
+        raise Error("PipeWire rejected %s: %s" % (name, (r.stderr or r.stdout).strip()))
+    if name != "AfTrigger":
+        remember(cam, name, value)
+    if not quiet:
+        print("%s %s = %s" % (cam, name, fmt_value(ctl["kind"], value)))
+
+
+def note_persistence():
+    """Explain (once, on a terminal) that settings do not outlive the stream by themselves."""
+    if not sys.stderr.isatty():
+        return
+    r = run(["systemctl", "--user", "is-active", "--quiet", "gts9-camera-settings.service"])
+    if r.returncode != 0:
+        print("note: this applies to the current stream only. To keep settings across camera\n"
+              "      restarts and camera switches: systemctl --user enable --now gts9-camera-settings",
+              file=sys.stderr)
+
+
+def set_controls(cam, values):
+    """values: list of (libcamera name, python value). Returns nothing."""
+    node = get_node(cam)
+    ctls = controls_of(node)
+    for name, value in values:
+        if name not in ctls:
+            raise Error("the %s camera does not offer '%s' (see: gts9-camera controls %s)" % (cam, name, cam))
+        send(cam, node, ctls[name], name, value)
+        time.sleep(0.05)
+    note_persistence()
+
+
+# --- lens and sensor (V4L2 sub-devices) ------------------------------------------------------
+
+def subdevs():
+    """Yield (path, entity name, resolved device path) for every v4l-subdev."""
+    for d in sorted(glob.glob("/sys/class/video4linux/v4l-subdev*")):
+        try:
+            name = pathlib.Path(d, "name").read_text().strip()
+            dev = os.path.realpath(os.path.join(d, "device"))
+        except OSError:
+            continue
+        yield "/dev/" + os.path.basename(d), name, dev
+
+
+def sensor_subdev(cam):
+    bus = "ac15000" if cam == "rear" else "ac16000"
+    for path, name, dev in subdevs():
+        if name.startswith("hi1337") and bus in dev:
+            return path
+    return None
+
+
+def lens_subdev(cam):
+    if cam != "rear":
+        return None
+    for path, name, _dev in subdevs():
+        if name.startswith("dw9808"):
+            return path
+    return None
+
+
+def v4l2_get(path, ctrls):
+    r = run(["v4l2-ctl", "-d", path, "--get-ctrl=" + ",".join(ctrls)])
+    vals = {}
+    for line in r.stdout.splitlines():
+        m = re.match(r"\s*(\w+):\s*(-?\d+)", line)
+        if m:
+            vals[m.group(1)] = int(m.group(2))
+    return vals
+
+
+def set_lens(pos):
+    lens = lens_subdev("rear")
+    if not lens:
+        raise Error("no focus lens found (the front camera is fixed-focus)")
+    pos = max(0, min(LENS_MAX, int(pos)))
+    r = run(["v4l2-ctl", "-d", lens, "--set-ctrl=focus_absolute=%d" % pos])
+    if r.returncode != 0:
+        raise Error("cannot move the lens: %s" % (r.stderr.strip() or "v4l2-ctl failed"))
+    return pos
+
+
+# --- commands ---------------------------------------------------------------------------------
+
+def cmd_list(args):
+    nodes = pw_nodes()
+    rows = []
+    for cam in CAMERAS:
+        n = nodes.get(cam)
+        rows.append({"camera": cam, "node": n["id"] if n else None,
+                     "state": n["info"]["state"] if n else "missing",
+                     "lens": bool(lens_subdev(cam)), "controls": sorted(controls_of(n)) if n else []})
+    if args.json:
+        print(json.dumps(rows, indent=1))
+        return
+    for r in rows:
+        print("%-6s node %-4s %-10s %s" % (r["camera"], r["node"], r["state"],
+                                          "autofocus lens" if r["lens"] else "fixed focus"))
+
+
+def cmd_controls(args):
+    cam = pick_camera(args.camera)
+    node = get_node(cam)
+    saved = load_state().get(cam, {})
+    print("%s camera controls (node %s):" % (cam, node["id"]))
+    for name, c in sorted(controls_of(node).items()):
+        if c["kind"] == "bool":
+            rng = "on/off"
+        else:
+            rng = "%s..%s" % (c["min"], c["max"])
+        print("  %-18s %-10s default %-8s last set: %s%s" % (
+            name, rng, c["default"], saved.get(name, "-"), "  (read-only)" if c["readonly"] else ""))
+    if lens_subdev(cam):
+        print("  %-18s %-10s (lens, set with: gts9-camera focus %s <n>)" % ("LensPosition", "0..%d" % LENS_MAX, cam))
+    print("Not supported by this camera stack: digital zoom, manual white-balance gains.")
+
+
+def cmd_status(args):
+    cams = [pick_camera(args.camera)] if args.camera else list(CAMERAS)
+    nodes = pw_nodes()
+    out = {}
+    for cam in cams:
+        n = nodes.get(cam)
+        info = {"state": n["info"]["state"] if n else "missing", "settings": load_state().get(cam, {})}
+        sensor = sensor_subdev(cam)
+        if sensor:
+            info["sensor"] = v4l2_get(sensor, ["exposure", "analogue_gain"])
+        lens = lens_subdev(cam)
+        if lens:
+            info["lens_position"] = v4l2_get(lens, ["focus_absolute"]).get("focus_absolute")
+        out[cam] = info
+    if args.json:
+        print(json.dumps(out, indent=1))
+        return
+    for cam, i in out.items():
+        print("%s: %s" % (cam, i["state"]))
+        if "lens_position" in i:
+            print("  lens position:   %s" % i["lens_position"])
+        if "sensor" in i:
+            print("  sensor exposure: %s lines, gain code %s" % (i["sensor"].get("exposure"),
+                                                                i["sensor"].get("analogue_gain")))
+        if i["settings"]:
+            print("  last set: " + ", ".join("%s=%s" % kv for kv in sorted(i["settings"].items())))
+        else:
+            print("  last set: (nothing; defaults)")
+
+
+def cmd_focus(args):
+    cam = pick_camera(args.camera)
+    if not lens_subdev(cam):
+        raise Error("the %s camera has no focus lens" % cam)
+    a = args.mode.lower()
+    if a in ("continuous", "auto"):
+        set_controls(cam, [("AfMode", AF_MODES[a])])
+        if a == "auto":
+            set_controls(cam, [("AfTrigger", 1)])
+            print("focusing once; the lens holds afterwards")
+    elif a == "manual":
+        set_controls(cam, [("AfMode", 0)])
+    elif a == "trigger":
+        set_controls(cam, [("AfTrigger", 1)])
+    else:
+        try:
+            pos = int(a, 0)
+        except ValueError:
+            raise Error("focus takes continuous, auto, manual, trigger or a position 0-%d" % LENS_MAX)
+        set_controls(cam, [("AfMode", 0)])
+        time.sleep(0.4)  # let the autofocus release the lens before moving it
+        pos = set_lens(pos)
+        remember(cam, "LensPosition", pos)
+        print("%s lens position = %d" % (cam, pos))
+
+
+def cmd_exposure(args):
+    cam = pick_camera(args.camera)
+    a = args.value[0].lower()
+    if a == "auto":
+        set_controls(cam, [("AeEnable", True)])
+    elif a == "ev":
+        if len(args.value) != 2:
+            raise Error("usage: exposure %s ev <-2..2>" % cam)
+        set_controls(cam, [("ExposureValue", parse_value("float", args.value[1]))])
+    else:
+        vals = [("AeEnable", False), ("ExposureTime", parse_value("int", a))]
+        if args.gain is not None:
+            vals.append(("AnalogueGain", parse_value("float", args.gain)))
+        set_controls(cam, vals)
+
+
+def cmd_gain(args):
+    cam = pick_camera(args.camera)
+    set_controls(cam, [("AeEnable", False), ("AnalogueGain", parse_value("float", args.value))])
+
+
+def cmd_wb(args):
+    cam = pick_camera(args.camera)
+    set_controls(cam, [("AwbEnable", parse_value("bool", args.mode))])
+
+
+def make_simple(name, kind):
+    def cmd(args):
+        cam = pick_camera(args.camera)
+        set_controls(cam, [(FRIENDLY[name], parse_value(kind, args.value))])
+    return cmd
+
+
+def cmd_set(args):
+    cam = pick_camera(args.camera)
+    name = FRIENDLY.get(args.control.lower(), args.control)
+    node = get_node(cam)
+    ctls = controls_of(node)
+    if name not in ctls:
+        raise Error("unknown control '%s' (see: gts9-camera controls %s)" % (args.control, cam))
+    send(cam, node, ctls[name], name, parse_value(ctls[name]["kind"], args.value))
+
+
+def cmd_zoom(args):
+    raise Error("digital zoom is not supported: libcamera's software ISP has no ScalerCrop, so there is "
+                "nothing to send. Zoom in the application, or see docs/camera-controls.md for what "
+                "would be needed.")
+
+
+def cmd_reset(args):
+    cam = pick_camera(args.camera)
+    node = get_node(cam)
+    ctls = controls_of(node)
+    for name, value in DEFAULTS.items():
+        if name in ctls:
+            send(cam, node, ctls[name], name, value, quiet=True)
+            time.sleep(0.05)
+    state = load_state()
+    state.pop(cam, None)
+    save_state(state)
+    print("%s camera controls reset to defaults" % cam)
+
+
+def reapply(cam, node):
+    """Send everything remembered for this camera to a freshly started stream."""
+    saved = load_state().get(cam, {})
+    ctls = controls_of(node)
+    order = ["AeEnable", "AwbEnable", "AfMode", "ExposureValue", "ExposureTime", "AnalogueGain",
+             "Gamma", "Contrast", "Saturation"]
+    for name in order:
+        if name in saved and name in ctls:
+            try:
+                send(cam, node, ctls[name], name, saved[name], quiet=True)
+            except Error as e:
+                print("gts9-camera: %s" % e, file=sys.stderr)
+            time.sleep(0.05)
+    if "LensPosition" in saved and saved.get("AfMode") == 0:
+        time.sleep(0.4)
+        try:
+            set_lens(saved["LensPosition"])
+        except Error as e:
+            print("gts9-camera: %s" % e, file=sys.stderr)
+
+
+def cmd_daemon(args):
+    """Re-apply remembered settings whenever a camera stream (re)starts.
+
+    The libcamera IPA resets its controls every time a stream is configured, so
+    a setting made with this tool would otherwise be lost when the application
+    stops and restarts the camera (or switches cameras).
+    """
+    last = {}
+    print("gts9-camera daemon: applying remembered settings to new streams", flush=True)
+    while True:
+        try:
+            nodes = pw_nodes()
+        except Error as e:
+            print("gts9-camera: %s" % e, file=sys.stderr, flush=True)
+            time.sleep(5)
+            continue
+        for cam, node in nodes.items():
+            state = node["info"]["state"]
+            if state == "running" and last.get(cam) != "running":
+                time.sleep(1.0)  # the stream must be up before controls apply
+                try:
+                    reapply(cam, get_node(cam))
+                except Error as e:
+                    print("gts9-camera: %s" % e, file=sys.stderr, flush=True)
+            last[cam] = state
+        time.sleep(args.interval)
+
+
+def build_parser():
+    p = argparse.ArgumentParser(prog="gts9-camera", description=__doc__.split("\n\n")[0],
+                                formatter_class=argparse.RawDescriptionHelpFormatter,
+                                epilog="Cameras: rear, front. See /usr/share/doc/gts9-camera/camera-controls.md.")
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    def add(name, fn, help_, cam=True):
+        sp = sub.add_parser(name, help=help_)
+        if cam:
+            sp.add_argument("camera", choices=sorted(list(CAMERAS) + list(ALIASES)), help="rear or front")
+        sp.set_defaults(fn=fn)
+        return sp
+
+    sp = sub.add_parser("list", help="show the cameras, their PipeWire state and lens")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(fn=cmd_list)
+
+    sp = sub.add_parser("status", help="show live lens/sensor values and remembered settings")
+    sp.add_argument("camera", nargs="?", choices=sorted(list(CAMERAS) + list(ALIASES)))
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(fn=cmd_status)
+
+    add("controls", cmd_controls, "list the controls a camera offers, with ranges")
+
+    sp = add("focus", cmd_focus, "autofocus mode, trigger, or a manual lens position")
+    sp.add_argument("mode", help="continuous | auto | manual | trigger | <0-%d>" % LENS_MAX)
+
+    sp = add("exposure", cmd_exposure, "auto exposure, manual exposure time, or EV compensation")
+    sp.add_argument("value", nargs="+", help="auto | <microseconds> | ev <-2..2>")
+    sp.add_argument("--gain", help="analogue gain (1-16) with a manual exposure time")
+
+    sp = add("gain", cmd_gain, "manual analogue gain (turns auto exposure off)")
+    sp.add_argument("value")
+
+    sp = add("wb", cmd_wb, "auto white balance on/off (off holds the current gains)")
+    sp.add_argument("mode", help="auto | off")
+
+    for name, kind, help_ in (("contrast", "float", "contrast 0..2 (1 = normal)"),
+                              ("saturation", "float", "saturation 0..2 (1 = normal)"),
+                              ("gamma", "float", "gamma 0.1..10 (2.2 = normal)")):
+        sp = add(name, make_simple(name, kind), help_)
+        sp.add_argument("value")
+
+    sp = add("set", cmd_set, "set any control by name (see: controls)")
+    sp.add_argument("control")
+    sp.add_argument("value")
+
+    sp = sub.add_parser("zoom", help="digital zoom (not supported; explains why)")
+    sp.add_argument("args", nargs="*")
+    sp.set_defaults(fn=cmd_zoom)
+
+    add("reset", cmd_reset, "restore the default controls")
+
+    sp = sub.add_parser("daemon", help="re-apply remembered settings whenever a stream starts")
+    sp.add_argument("--interval", type=float, default=1.0, help="polling interval in seconds")
+    sp.set_defaults(fn=cmd_daemon)
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    try:
+        args.fn(args)
+    except Error as e:
+        print("gts9-camera: %s" % e, file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
