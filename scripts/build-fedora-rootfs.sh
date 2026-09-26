@@ -458,8 +458,11 @@ if [ "$desktop" = "gnome" ]; then
 		for p in /tmp/libcamera-patches/*.patch; do
 			git apply "$p"
 		done
+		# --buildtype=release: meson defaults to debug (-O0), which made the CPU
+		# software ISP several times slower (docs/porting-log.md Session 24).
 		meson setup "$d/build" . \
 			--prefix=/usr \
+			--buildtype=release \
 			--libdir=lib64 \
 			-Dpipelines=simple \
 			-Dipas=simple \

@@ -40,7 +40,9 @@ done <<<"$found_dirs"
 }
 source_dir=${source_dirs[0]%/spa/plugins/libcamera}
 python3 "$spec_dir/test-control-pagination.py" "$source_dir"
-meson setup "$work_dir/build" "$source_dir" --prefix=/usr --libdir=lib64 \
+# Release build: meson defaults to buildtype=debug (-O0); the rest of the
+# camera stack was found to be built that way (docs/porting-log.md Session 24).
+meson setup "$work_dir/build" "$source_dir" --prefix=/usr --libdir=lib64 --buildtype=release \
     -Dauto_features=disabled -Dspa-plugins=enabled -Ddbus=disabled \
     -Dudev=enabled -Dlibcamera=enabled -Dsession-managers=[]
 meson compile -C "$work_dir/build" spa-libcamera

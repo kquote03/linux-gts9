@@ -5231,3 +5231,42 @@ front 2024x1524 at ~15 fps; both frames are recognisable, upright and
 in focus, dim indoors with a blue cast (grey-world AWB). Not yet checked:
 autofocus, low-light exposure/gain tuning, GNOME (SPA plugin and relays are
 still disabled by design).
+
+### Session 24 addendum 2 — 2026-09-26 — GNOME Camera switch crash: root cause, partial fix, release build
+
+**Snapshot crash.** Switching rear/front in GNOME Camera stops the running
+camera; libcamera then aborts (`pipeline_handler.cpp:398 assertion
+"data->queuedRequests_.empty()" failed in stop()`), taking WirePlumber (which
+hosts the SPA plugin) with it; Snapshot loses its PipeWire remote and hangs
+(`Could not start camerabin`). Cause, in `simple.cpp`: with the software ISP a
+request completes only when its buffers are done *and* its metadata arrived;
+`SoftwareIsp::stop()` cancels the in-flight output buffers, the IPA is already
+stopped, and `conversionOutputDone()` never dropped `metadataRequired` for
+cancelled/errored buffers, so those requests stay in `queuedRequests_`.
+Upstream master has identical code. New patch
+`specs/libcamera-x716b/patches/0005-simple-drop-metadata-wait-for-cancelled-output-buffers.patch`
+(applies on the pin + 0001-0004).
+
+**Build type.** The source-built libcamera was `-g -O0` (no `-Dbuildtype`, so
+Meson defaulted to `debug`). `--buildtype=release` is now set for libcamera and
+the SPA plugin. Measured with `cam` on the tablet: rear 3.75 -> 29.6 fps at
+4120x3096, front ~15 -> 30 fps; the 2 s software-ISP stop timeout on the rear
+camera disappeared.
+
+**Results.** `cam` interrupted mid-stream (fresh process each time): 18/20
+aborts before, 0/30 after 0005. Under WirePlumber (20 rear/front start-stop
+cycles per variant, private libcamera prefixes via `LD_LIBRARY_PATH`):
+release without 0005 -> 1 SIGABRT; release with 0005 -> 1 SIGSEGV; debug with
+0005 -> 4 SIGSEGV. The SEGV is in the software-ISP worker
+(`DebayerCpu::process -> Debayer::dmaSyncBegin -> SharedFD copy`, use of an
+already-freed buffer) while the camera thread is in `SoftwareIsp::start()`.
+Every WirePlumber instance so far died once (ABRT before 0005, SEGV after) and
+then survived the rest of the run, so **the crash is not fixed for GNOME Camera**:
+0005 removes the assertion but a related stop/start race in the software ISP
+remains. Not yet explained: which frame reaches the worker after stop. Ruled
+out: the SPA plugin requeueing cancelled requests (it disconnects
+`requestCompleted` before `camera->stop()`). Next steps: inspect a core dump
+(`coredumpctl gdb`) for the `input`/`output` FrameBuffer being processed and
+whether it belongs to the previous stream; try current libcamera master with
+0001-0005; consider draining the debayer worker's message queue in
+`SoftwareIsp::stop()`.
