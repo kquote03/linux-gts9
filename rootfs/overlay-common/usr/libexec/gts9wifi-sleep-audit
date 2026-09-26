@@ -5,7 +5,10 @@
 # SoC reached its deep sleep states, how the battery moved, and what was left
 # powered.  Run as root.
 #
-#   sudo /usr/libexec/gts9wifi-sleep-audit [seconds] [outdir]
+#   sudo /usr/libexec/gts9wifi-sleep-audit [seconds] [outdir] [start-delay]
+#
+# start-delay (seconds, default 0) waits before the first snapshot so the USB
+# cable can be pulled after starting the audit over Wi-Fi.
 #
 # Meant to be run over Wi-Fi with the USB cable UNPLUGGED: a cable keeps the
 # DWC3/PHY and their CX vote alive, which hides exactly what this measures.
@@ -21,10 +24,13 @@
 #   battery ocv/soc delta   -> real drain, only meaningful over >= 30 min
 set -eu
 secs=${1:-300}
+delay=${3:-0}
 out=${2:-/var/log/gts9wifi-sleep-audit/$(date +%Y%m%d-%H%M%S)}
 case "$secs" in ''|*[!0-9]*) echo "seconds must be a number" >&2; exit 2;; esac
 [ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
 mkdir -p "$out"
+case "$delay" in ''|*[!0-9]*) echo "start-delay must be a number" >&2; exit 2;; esac
+[ "$delay" -gt 0 ] && sleep "$delay"
 umask 077
 
 stats=/sys/kernel/debug/qcom_stats
