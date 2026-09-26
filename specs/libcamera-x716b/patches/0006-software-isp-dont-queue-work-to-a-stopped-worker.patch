@@ -1,0 +1,39 @@
+Subject: software ISP: don't queue work to a stopped worker thread
+
+SoftwareIsp::stop() stops the debayer worker thread and then calls
+ipa_->stop(), a synchronous IPC call that spins a nested event loop while it
+waits. That loop can deliver one more captured frame, which reaches
+SimpleCameraData::imageBufferReady() -> SoftwareIsp::queueBuffers() ->
+process() and posts a Debayer::process message to the worker that was just
+stopped. The message stays in the worker's queue and is run by the next
+start(), on input/output buffers that have since been released, crashing
+DebayerCpu::process() in Debayer::dmaSyncBegin() (SIGSEGV). Applications
+that stop one camera and start another quickly (GNOME Camera switching
+rear/front) trigger it reliably.
+
+Skip posting when the worker isn't running. The buffers were already added
+to queuedInputBuffers_/queuedOutputBuffers_ by queueBuffers(), and stop()
+cancels everything in those lists once the IPA is stopped.
+
+diff --git a/src/libcamera/software_isp/software_isp.cpp b/src/libcamera/software_isp/software_isp.cpp
+index 321d05d46..4ce22d473 100644
+--- a/src/libcamera/software_isp/software_isp.cpp
++++ b/src/libcamera/software_isp/software_isp.cpp
+@@ -432,6 +432,17 @@ void SoftwareIsp::stop()
+  */
+ void SoftwareIsp::process(uint32_t frame, FrameBuffer *input, FrameBuffer *output)
+ {
++	/*
++	 * stop() halts the worker thread and then synchronously stops the IPA.
++	 * That IPC call runs a nested event loop, which can deliver one more
++	 * captured frame and reach this function. Don't post work to a stopped
++	 * worker: the message would stay queued and be run by the next start()
++	 * on buffers that no longer exist. The buffers are already in the
++	 * queued lists at this point, and stop() cancels them afterwards.
++	 */
++	if (!ispWorkerThread_.isRunning())
++		return;
++
+ 	ipa_->computeParams(frame);
+ 	debayer_->invokeMethod(&Debayer::process,
+ 			       ConnectionTypeQueued, frame, input, output, debayerParams_);

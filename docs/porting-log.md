@@ -5270,3 +5270,40 @@ out: the SPA plugin requeueing cancelled requests (it disconnects
 whether it belongs to the previous stream; try current libcamera master with
 0001-0005; consider draining the debayer worker's message queue in
 `SoftwareIsp::stop()`.
+
+### Session 24 addendum 3 — 2026-09-26 — Fast-switch crash fixed (patch 0006)
+
+User report: switching cameras in GNOME Camera works after 0005, but switching
+*too fast* crashes it. Reproduced with overlapping PipeWire clients (start the
+second camera 0.4 s before the first stops) on a `-O0` libcamera with
+`LIBCAMERA_LOG_LEVELS` debug logging: WirePlumber SIGSEGVs on the 3rd round,
+in the software-ISP worker (`DebayerCpu::process -> Debayer::dmaSyncBegin ->
+SharedFD copy`) right after the camera thread calls `Camera::start()` again.
+
+Root cause: `SoftwareIsp::stop()` stops the debayer worker thread and then calls
+`ipa_->stop()`, a synchronous IPC call whose `IPCPipeUnixSocket::call()` spins a
+nested `processEvents()` loop while waiting. That loop can deliver one more V4L2
+capture completion -> `imageBufferReady()` -> `SoftwareIsp::queueBuffers()` ->
+`process()`, posting a `Debayer::process` message to the worker that was just
+stopped. It stays queued and runs on the next `start()` on buffers that were
+released in between. This also explains the intermittent "Obtained an
+uninitialised FrameContext" warning, and why the crash was timing dependent and
+seen about once per WirePlumber instance (0005 only changed it from an abort to
+this segfault by completing cancelled requests earlier).
+
+Fix: `specs/libcamera-x716b/patches/0006-software-isp-dont-queue-work-to-a-stopped-worker.patch`
+skips posting work when `ispWorkerThread_` is not running; the buffers are
+already in `queuedInput/OutputBuffers_` and `stop()` cancels them afterwards.
+
+Verification on the tablet (release build with 0005+0006): 80 overlapping
+rear/front switches under WirePlumber with a private prefix (0 crashes; the same
+scenario crashed by the 3rd round before), then after installing system-wide:
+24 overlapping switches -> 0 WirePlumber restarts, `cam` mid-stream interrupt
+loop 0/12 aborted, no new core dumps. Not yet tested by hand in GNOME Camera.
+
+Note: with overlapping streams the second camera's `configure()` fails with
+`EBUSY` ("Failed to setup link 'msm_csiphyN'[1] -> 'msm_csid0'[0]") until the
+first has stopped, because the two cameras share CSID0/VFE0/video0 (0004 resets
+the shared links and cannot disable one that is in use). This is expected and
+harmless (the SPA returns `EBUSY`), but an application that does not retry will
+show no picture after a very fast switch.
