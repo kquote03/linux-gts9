@@ -27,8 +27,14 @@ done
 }
 rpm -i --nodeps --define "_topdir $work_dir/rpm" "$work_dir/$source_rpm"
 rpmbuild -bp --nodeps --define "_topdir $work_dir/rpm" "$work_dir/rpm/SPECS/pipewire.spec"
-mapfile -t source_dirs < <(find "$work_dir/rpm/BUILD" -type f \
+# No process substitution: the build chroot has no /dev/fd, so `< <(find ...)`
+# fails with "/dev/fd/63: No such file or directory".
+found_dirs=$(find "$work_dir/rpm/BUILD" -type f \
     -path '*/spa/plugins/libcamera/libcamera-source.cpp' -printf '%h\n')
+source_dirs=()
+while IFS= read -r line; do
+    [[ -z $line ]] || source_dirs+=("$line")
+done <<<"$found_dirs"
 [[ ${#source_dirs[@]} == 1 ]] || {
     echo 'Expected exactly one prepared PipeWire source tree' >&2; exit 1;
 }
