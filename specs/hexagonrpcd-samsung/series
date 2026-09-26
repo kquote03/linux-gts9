@@ -1,0 +1,5 @@
+# Applied in this order with `patch -p1` (scripts/lib/downstream.sh).
+hexagonrpc-large-inbufs.patch
+support-samsung-sensor-registry-writes.patch
+systemd-services.patch
+zz-map-sns-reg-version-at-root.patch

@@ -1,0 +1,7 @@
+# Applied in this order with `patch -p1` (scripts/lib/downstream.sh).
+0001-libipa-add-hynix-hi1337-hi847-gain-helpers.patch
+0002-simple-software-autofocus.patch
+0003-software-isp-preserve-full-field-of-view.patch
+0004-simple-reset-qcom-camss-links-before-configure.patch
+0005-simple-drop-metadata-wait-for-cancelled-output-buffers.patch
+0006-software-isp-dont-queue-work-to-a-stopped-worker.patch

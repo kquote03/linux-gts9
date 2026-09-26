@@ -1,0 +1,3 @@
+# Applied in this order with `patch -p1` (scripts/lib/downstream.sh).
+0001-recreate-input-after-stream-error.patch
+0002-preempt-active-camera-on-handover.patch

@@ -695,74 +695,21 @@ echo "== pkg-config compat symlinks for old udev/systemd .pc names =="
 ln -sf libudev.pc "$rootdir/usr/lib/aarch64-linux-gnu/pkgconfig/udev.pc"
 ln -sf libsystemd.pc "$rootdir/usr/lib/aarch64-linux-gnu/pkgconfig/systemd.pc"
 
-echo "== building libssc 0.4.4 (not packaged) =="
-run_in_chroot bash -c '
-	set -eu
-	export HOME=/root
-	d=$(mktemp -d)
-	curl -sfL "https://codeberg.org/DylanVanAssche/libssc/archive/v0.4.4.tar.gz" \
-		| tar xz -C "$d" --strip-components=1
-	meson setup "$d/build" "$d" -Dprefix=/usr -Db_lto=true
-	meson compile -C "$d/build"
-	meson install --no-rebuild -C "$d/build"
-'
-
-echo "== building pd-mapper 1.1 (not packaged) =="
-run_in_chroot bash -c '
-	set -eu
-	export HOME=/root
-	d=$(mktemp -d)
-	curl -sfL "https://github.com/andersson/pd-mapper/archive/refs/tags/v1.1.tar.gz" \
-		| tar xz -C "$d" --strip-components=1
-	make -C "$d" prefix=/usr
-	make -C "$d" install prefix=/usr
-'
-
-echo "== building hexagonrpcd 0.4.0 with the Samsung patches =="
-patches_host="$repo_root/specs/hexagonrpcd-samsung/patches"
-mkdir -p "$rootdir/tmp/hexagonrpcd-patches"
-cp "$patches_host"/*.patch "$patches_host/10-fastrpc.rules" "$rootdir/tmp/hexagonrpcd-patches/"
-run_in_chroot bash -c '
-	set -eu
-	export HOME=/root
-	d=$(mktemp -d)
-	git clone -q --depth 1 --branch v0.4.0 https://github.com/linux-msm/hexagonrpc "$d/src"
-	for p in /tmp/hexagonrpcd-patches/*.patch; do
-		patch -d "$d/src" -p1 < "$p"
-	done
-	meson setup "$d/build" "$d/src" -Dprefix=/usr -Db_lto=true
-	meson compile -C "$d/build"
-	meson install --no-rebuild -C "$d/build"
-	install -Dm644 /tmp/hexagonrpcd-patches/10-fastrpc.rules -t /usr/lib/udev/rules.d/
-	# hexagonrpcds meson.build installs the .service units under
-	# get_option(libdir)/systemd/system -- on Debian, libdir defaults to
-	# the multiarch triplet dir, so that resolves to
-	# /usr/lib/aarch64-linux-gnu/systemd/system, not the real systemd
-	# search path (/usr/lib/systemd/system) -- confirmed live, systemctl
-	# could not find these units at all after install. Relocate them;
-	# simpler and more robust than fighting mesons install_dir logic for
-	# one three-file case.
-	mkdir -p /usr/lib/systemd/system
-	mv /usr/lib/aarch64-linux-gnu/systemd/system/hexagonrpcd-*.service /usr/lib/systemd/system/
-'
-
-echo "== building iio-sensor-proxy 3.9 with libssc (SSC) support =="
-mkdir -p "$rootdir/tmp/iio-sensor-proxy-patches"
-cp "$repo_root/specs/iio-sensor-proxy-libssc/patches/"*.patch \
-	"$rootdir/tmp/iio-sensor-proxy-patches/"
-run_in_chroot bash -c '
-	set -eu
-	export HOME=/root
-	d=$(mktemp -d)
-	curl -sfL "https://gitlab.freedesktop.org/hadess/iio-sensor-proxy/-/archive/3.9/iio-sensor-proxy-3.9.tar.gz" \
-		| tar xz -C "$d" --strip-components=1
-	# notify-slow-sensor-discovery first, then start-polling-claimed-while-starting
-	for p in /tmp/iio-sensor-proxy-patches/*.patch; do patch -d "$d" -p1 < "$p"; done
-	meson setup "$d/build" "$d" -Dprefix=/usr -Dssc-support=enabled
-	meson compile -C "$d/build"
-	meson install --no-rebuild -C "$d/build"
-'
-rm -rf "$rootdir/tmp/hexagonrpcd-patches" "$rootdir/tmp/iio-sensor-proxy-patches"
+# libssc, pd-mapper, hexagonrpcd (Samsung patches) and iio-sensor-proxy (SSC
+# support) are built by the shared, distro-agnostic
+# scripts/build-downstream-userland.sh from the pinned sources and patch series
+# in specs/ (specs/sources.lock + specs/<component>/series; see
+# docs/downstream-patches.md). This script only supplies Debian's build
+# dependencies (above) and the pkg-config shims. The builder relocates
+# hexagonrpcd's units out of lib/<multiarch>/systemd/system itself.
+echo "== building libssc, pd-mapper, hexagonrpcd, iio-sensor-proxy =="
+mkdir -p "$rootdir/tmp/downstream/scripts"
+cp -a "$repo_root/scripts/build-downstream-userland.sh" "$repo_root/scripts/lib" \
+	"$rootdir/tmp/downstream/scripts/"
+cp -a "$repo_root/specs" "$rootdir/tmp/downstream/specs"
+run_in_chroot bash /tmp/downstream/scripts/build-downstream-userland.sh --prefix /usr \
+	libssc pd-mapper hexagonrpcd iio-sensor-proxy
+rm -rf "$rootdir/tmp/downstream"
 
 echo "== chronyd sandboxing check =="
 # NixOS's shipped chrony unit had CapabilityBoundingSet = "" (the empty

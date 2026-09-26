@@ -326,71 +326,25 @@ if [ "$desktop" = "gnome" ]; then
 		gstreamer1-devel gstreamer1-plugins-base-devel pipewire-devel rpm-build dnf5-plugins
 fi
 
-echo "== building libssc 0.4.4 (not in Fedora) =="
-# Same source gts9wifi-fedora's own script and the postmarketOS port before
-# it use -- provides libssc.so + ssccli, needed by iio-sensor-proxy's
-# -Dssc-support=enabled build below.
-run_chroot /usr/bin/bash -c '
-	set -eu
-	export HOME=/root
-	d=$(mktemp -d)
-	curl --retry 3 --retry-delay 3 --retry-connrefused -sfL "https://codeberg.org/DylanVanAssche/libssc/archive/v0.4.4.tar.gz" \
-		| tar xz -C "$d" --strip-components=1
-	meson setup "$d/build" "$d" -Dprefix=/usr -Db_lto=true
-	meson compile -C "$d/build"
-	meson install --no-rebuild -C "$d/build"
-'
+# Every source-built, downstream-patched component (libssc, pd-mapper,
+# hexagonrpcd, iio-sensor-proxy, libcamera, v4l2-relayd) is built by the shared,
+# distro-agnostic scripts/build-downstream-userland.sh from the pinned sources
+# and patch series in specs/ (specs/sources.lock + specs/<component>/series;
+# see docs/downstream-patches.md). This script only supplies Fedora's build
+# dependencies (above) and the Fedora-specific rpmdb / user / PipeWire-SPA
+# steps around it. The staged copy is self-contained: the builder finds specs/
+# relative to its own location.
+mkdir -p "$rootdir/tmp/downstream/scripts"
+cp -a "$repo_root/scripts/build-downstream-userland.sh" "$repo_root/scripts/lib" \
+	"$rootdir/tmp/downstream/scripts/"
+cp -a "$repo_root/specs" "$rootdir/tmp/downstream/specs"
+downstream() {
+	run_chroot /usr/bin/bash /tmp/downstream/scripts/build-downstream-userland.sh \
+		--prefix /usr "$@"
+}
 
-echo "== building pd-mapper 1.1 (not in Fedora) =="
-# Binary only: the sm8550 ADSP boots without service-registry JSONs (verified
-# on the pmOS device this port is derived from). Ships its own systemd unit.
-run_chroot /usr/bin/bash -c '
-	set -eu
-	export HOME=/root
-	d=$(mktemp -d)
-	curl --retry 3 --retry-delay 3 --retry-connrefused -sfL "https://github.com/andersson/pd-mapper/archive/refs/tags/v1.1.tar.gz" \
-		| tar xz -C "$d" --strip-components=1
-	make -C "$d" prefix=/usr
-	make -C "$d" install prefix=/usr
-'
-
-echo "== building hexagonrpcd 0.4.0 with Samsung patches =="
-# Upstream tag + the three Samsung/port patches (large FastRPC inbufs;
-# Samsung sensor-registry writes; Alpine's systemd-units patch) -- see
-# specs/hexagonrpcd-samsung/ (ported from gts9wifi-fedora's identical
-# directory, unchanged: these are genuine device-behavior fixes for
-# "Samsung's SM8550 sensor firmware" in general per their own patch
-# headers, not X710-specific).
-patches_host="$repo_root/specs/hexagonrpcd-samsung/patches"
-# The patch files themselves need to be reachable from inside the chroot;
-# stage them at a /tmp path the chroot'd bash below can see (run_chroot's
-# chroot already makes $rootdir/tmp the same directory as /tmp inside it)
-# -- BEFORE the run_chroot call below that consumes them.
-mkdir -p "$rootdir/tmp/hexagonrpcd-patches"
-cp "$patches_host"/*.patch "$patches_host/10-fastrpc.rules" "$rootdir/tmp/hexagonrpcd-patches/"
-run_chroot /usr/bin/bash -c '
-	set -eu
-	export HOME=/root
-	d=$(mktemp -d)
-	git clone -q --depth 1 --branch v0.4.0 https://github.com/linux-msm/hexagonrpc "$d/src"
-	for p in /tmp/hexagonrpcd-patches/*.patch; do
-		patch -d "$d/src" -p1 < "$p"
-	done
-	meson setup "$d/build" "$d/src" -Dprefix=/usr -Db_lto=true
-	meson compile -C "$d/build"
-	meson install --no-rebuild -C "$d/build"
-	install -Dm644 /tmp/hexagonrpcd-patches/10-fastrpc.rules \
-		-t /usr/lib/udev/rules.d/
-	# The patch installs units to libdir/systemd/system, which lands in
-	# usr/lib64 on Fedora -- a path systemd does not search. Move them
-	# next to every other system unit (same fixup the gts9wifi-fedora
-	# build script does).
-	if [ -d /usr/lib64/systemd/system ]; then
-		mkdir -p /usr/lib/systemd/system
-		mv /usr/lib64/systemd/system/* /usr/lib/systemd/system/
-		rmdir /usr/lib64/systemd/system /usr/lib64/systemd 2>/dev/null || true
-	fi
-'
+echo "== building libssc 0.4.4, pd-mapper 1.1, hexagonrpcd 0.4.0 (Samsung patches) =="
+downstream libssc pd-mapper hexagonrpcd
 
 # hexagonrpcd units run as the fastrpc system user (Alpine pre-install
 # equivalent, matching gts9wifi-fedora's own build-rootfs.sh).
@@ -404,33 +358,9 @@ if [ "$desktop" = "gnome" ]; then
 	# desktop out of the image. Drop just the rpmdb entry -- the
 	# libssc-linked build below overwrites its files anyway.
 	run_chroot /usr/bin/rpm -e --nodeps iio-sensor-proxy 2>/dev/null || true
-
 	echo "== building iio-sensor-proxy 3.9 with libssc support =="
-	mkdir -p "$rootdir/tmp/iio-sensor-proxy-patches"
-	cp "$repo_root/specs/iio-sensor-proxy-libssc/patches/"*.patch \
-		"$rootdir/tmp/iio-sensor-proxy-patches/"
-	run_chroot /usr/bin/bash -c '
-		set -eu
-		export HOME=/root
-		d=$(mktemp -d)
-		curl --retry 3 --retry-delay 3 --retry-connrefused -sfL "https://gitlab.freedesktop.org/hadess/iio-sensor-proxy/-/archive/3.9/iio-sensor-proxy-3.9.tar.gz" \
-			| tar xz -C "$d" --strip-components=1
-		# notify-slow-sensor-discovery first, then start-polling-claimed-while-starting
-		for p in /tmp/iio-sensor-proxy-patches/*.patch; do patch -d "$d" -p1 < "$p"; done
-		meson setup "$d/build" "$d" -Dprefix=/usr -Dssc-support=enabled
-		meson compile -C "$d/build"
-		meson install --no-rebuild -C "$d/build"
-	'
+	downstream iio-sensor-proxy
 
-	# Camera bring-up session: libcamera/PipeWire/v4l2-relayd for the two
-	# HI1337 cameras wired in kernel/dts/sm8550-samsung-x716b.dts. Ported
-	# from ubuntu-galaxy-tab-s9ultra's own real, hardware-validated
-	# scripts/build-camera-packages.sh (SM-X910 Ultra, same libcamera/
-	# PipeWire commits and patch series -- only the tuning-file name and
-	# --libdir differ, since this project installs straight into the
-	# chroot rather than building .deb packages, and Fedora uses lib64,
-	# not a Debian multiarch triplet).
-	#
 	# Fedora's Workstation group may pull in its own libcamera (too old for
 	# the simple pipeline + software ISP this device needs -- the whole
 	# reason this gets built from source at all, same reasoning as
@@ -438,52 +368,11 @@ if [ "$desktop" = "gnome" ]; then
 	# `dnf remove`, for the same cascading-removal reason as above.
 	run_chroot /usr/bin/rpm -e --nodeps libcamera libcamera-tools libcamera-ipa \
 		2>/dev/null || true
-
 	echo "== building libcamera (simple pipeline + software ISP for HI1337) =="
-	mkdir -p "$rootdir/tmp/libcamera-patches"
-	cp "$repo_root/specs/libcamera-x716b/patches/"*.patch "$rootdir/tmp/libcamera-patches/"
-	cp "$repo_root/specs/libcamera-x716b/tuning/hi1337-gts9.yaml" "$rootdir/tmp/libcamera-patches/"
-	run_chroot /usr/bin/bash -c '
-		set -eu
-		export HOME=/root
-		d=$(mktemp -d)
-		for attempt in 1 2 3; do
-			git clone --quiet https://gitlab.freedesktop.org/camera/libcamera.git "$d/src" && break
-			[ "$attempt" = 3 ] && exit 1
-			rm -rf "$d/src"
-			sleep 5
-		done
-		cd "$d/src"
-		git checkout --quiet 62d4bfc450798cbd57722fa349a245b93b11d1cd
-		for p in /tmp/libcamera-patches/*.patch; do
-			git apply "$p"
-		done
-		# --buildtype=release: meson defaults to debug (-O0), which made the CPU
-		# software ISP several times slower (docs/porting-log.md Session 24).
-		meson setup "$d/build" . \
-			--prefix=/usr \
-			--buildtype=release \
-			--libdir=lib64 \
-			-Dpipelines=simple \
-			-Dipas=simple \
-			-Dgstreamer=disabled \
-			-Dcam=enabled \
-			-Dcam-output-kms=disabled \
-			-Dcam-output-sdl2=disabled \
-			-Dqcam=disabled \
-			-Ddocumentation=disabled \
-			-Dtest=false \
-			-Dlc-compliance=disabled \
-			-Dpycamera=disabled \
-			-Dv4l2=false \
-			-Dtracing=disabled \
-			-Dsoftisp-gpu=disabled
-		meson compile -C "$d/build"
-		meson install --no-rebuild -C "$d/build"
-		install -Dm644 /tmp/libcamera-patches/hi1337-gts9.yaml \
-			/usr/share/libcamera/ipa/simple/hi1337-gts9.yaml
-	'
+	downstream --libdir lib64 libcamera
 
+	# The libcamera SPA plugin must match Fedora's own PipeWire, so it is built
+	# from the installed pipewire-libs SRPM here rather than by the shared script.
 	echo "== building the libcamera SPA plugin from the installed Fedora PipeWire SRPM =="
 	mkdir -p "$rootdir/tmp/pipewire-spec"
 	cp -a "$repo_root/specs/pipewire-x716b/." "$rootdir/tmp/pipewire-spec/"
@@ -491,35 +380,10 @@ if [ "$desktop" = "gnome" ]; then
 	run_chroot /usr/bin/bash /tmp/build-fedora-camera-spa.sh /tmp/pipewire-spec
 
 	echo "== building v4l2-relayd (relays libcamera onto v4l2loopback nodes) =="
-	# Not packaged for Fedora at all (Ubuntu/Launchpad-specific); autotools,
-	# not meson, matching its own upstream build system.
-	mkdir -p "$rootdir/tmp/v4l2-relayd-patches"
-	cp "$repo_root/specs/v4l2-relayd-x716b/patches/"*.patch "$rootdir/tmp/v4l2-relayd-patches/"
-	run_chroot /usr/bin/bash -c '
-		set -eu
-		export HOME=/root
-		d=$(mktemp -d)
-		for attempt in 1 2 3; do
-			git clone --quiet https://git.launchpad.net/ubuntu/+source/v4l2-relayd "$d/src" && break
-			[ "$attempt" = 3 ] && exit 1
-			rm -rf "$d/src"
-			sleep 5
-		done
-		cd "$d/src"
-		git checkout --quiet 80e8f54563f624fe2f80a954af8cce27cc3a9636
-		for p in /tmp/v4l2-relayd-patches/*.patch; do
-			git apply "$p"
-		done
-		NOCONFIGURE=1 ./autogen.sh
-		./configure --prefix=/usr
-		make -j"$(nproc)"
-		make install
-	'
+	downstream v4l2-relayd
 fi
-rm -rf "$rootdir/tmp/hexagonrpcd-patches" "$rootdir/tmp/iio-sensor-proxy-patches" \
-	"$rootdir/tmp/libcamera-patches" "$rootdir/tmp/pipewire-spec" \
-	"$rootdir/tmp/build-fedora-camera-spa.sh" \
-	"$rootdir/tmp/v4l2-relayd-patches"
+rm -rf "$rootdir/tmp/downstream" "$rootdir/tmp/pipewire-spec" \
+	"$rootdir/tmp/build-fedora-camera-spa.sh"
 
 echo "== staging this project's own firmware (WiFi/BT/GPU) =="
 # Reuses the exact files this project already extracted from this

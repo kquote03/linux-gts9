@@ -526,15 +526,15 @@ echo "== building v4l2loopback (out-of-tree, for the camera relay layer) =="
 # could not reproduce this kernel's exact module ABI or signing key, and
 # CONFIG_MODULE_SIG_ALL=y means every in-tree module above already carries
 # a real signature this one would otherwise conspicuously lack.
-v4l2loopback_commit=9ef83fb9bc88e8f841786753c362ac52c580defc
+#
+# Pinned commit and patch series come from specs/sources.lock and
+# specs/v4l2loopback-x716b/series (shared with every distro builder and with
+# scripts/test-downstream-patches.sh, see docs/downstream-patches.md).
 loopback_tree=$outdir/v4l2loopback-src
-rm -rf -- "$loopback_tree"
-git clone --quiet https://github.com/v4l2loopback/v4l2loopback.git "$loopback_tree"
-git -C "$loopback_tree" checkout --quiet "$v4l2loopback_commit"
-git -C "$loopback_tree" apply \
-	"$repo_root/specs/v4l2loopback-x716b/patches/0001-backward-compatible-client-usage-event.patch" \
-	"$repo_root/specs/v4l2loopback-x716b/patches/0002-fix-buffer-queue-management.patch" \
-	"$repo_root/specs/v4l2loopback-x716b/patches/0003-preserve-output-queue-for-capture.patch"
+# shellcheck source=lib/downstream.sh
+. "$repo_root/scripts/lib/downstream.sh"
+ds_load_lock
+ds_prepare V4L2LOOPBACK "$loopback_tree"
 make -C "$kdir" "${make_args[@]}" -j"$(nproc)" M="$loopback_tree" modules
 loopback_moddir=$modules_out/lib/modules/$kernel_release/extra
 install -d "$loopback_moddir"
