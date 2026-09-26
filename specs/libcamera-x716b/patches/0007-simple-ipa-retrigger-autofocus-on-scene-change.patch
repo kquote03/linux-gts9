@@ -1,0 +1,183 @@
+Subject: simple IPA: re-trigger autofocus when the scene changes
+
+The contrast-detection autofocus locked and then only rescanned when the focus
+score dropped below 70% of the locked value for five statistics, or after
+about a minute. That misses the common case of the subject moving away: a lens
+focused near blurs everything else, so the score stays low and never "drops",
+and the picture stays blurry.
+
+While locked, compare each statistics frame with a reference taken a few
+statistics after the lock: the luminance histogram (total-variation distance
+above 0.25) or the focus score (outside 0.6x-1.6x) changing for two
+consecutive statistics marks the scene as changed. Wait until it holds still
+(consecutive histograms within 0.10, or a bounded wait of 16 statistics) and
+then scan again, so a hand moving through the frame is not chased. The old
+triggers are kept. Thresholds are first guesses and untuned; the metrics are
+logged at debug level (IPASoft) to tune them.
+
+diff --git a/src/ipa/simple/soft_simple.cpp b/src/ipa/simple/soft_simple.cpp
+index 0d9d7e436..6c485da02 100644
+--- a/src/ipa/simple/soft_simple.cpp
++++ b/src/ipa/simple/soft_simple.cpp
+@@ -8,6 +8,7 @@
+ #include <algorithm>
+ #include <array>
+ #include <chrono>
++#include <cmath>
+ #include <limits>
+ #include <optional>
+ #include <stdint.h>
+@@ -79,7 +80,9 @@ protected:
+ private:
+ 	void updateExposure(double exposureMSV);
+ 	void startFocusScan();
+-	std::optional<int32_t> processFocusStats(uint64_t score);
++	std::optional<int32_t> processFocusStats(uint64_t score,
++						 const SwIspStats &stats);
++	bool afSceneChanged(uint64_t score, const SwIspStats &stats);
+ 
+ 	DebayerParams *params_;
+ 	SwIspStats *stats_;
+@@ -107,6 +110,22 @@ private:
+ 	uint64_t afBestScore_ = 0;
+ 	uint64_t afLockedScore_ = 0;
+ 
++	/*
++	 * Scene-change detection while locked: the focus score alone cannot
++	 * tell that the subject moved (a lens focused near blurs everything
++	 * else, so the score stays low). Compare the luminance histogram and
++	 * score against a reference taken just after locking, and re-scan once
++	 * the changed scene has settled.
++	 */
++	SwIspStats::Histogram afRefHist_{};
++	SwIspStats::Histogram afPrevHist_{};
++	uint64_t afRefScore_ = 0;
++	unsigned int afRefStats_ = 0;
++	unsigned int afChangeStats_ = 0;
++	unsigned int afChangedFor_ = 0;
++	unsigned int afStableStats_ = 0;
++	bool afChanged_ = false;
++
+ 	/* Local parameter storage */
+ 	struct IPAContext context_;
+ };
+@@ -383,7 +402,7 @@ void IPASoftSimple::processStats(const uint32_t frame,
+ 			score = stats_->focus * 65536 / stats_->luminance;
+ 
+ 		if (stats_->valid)
+-			focusPosition = processFocusStats(score);
++			focusPosition = processFocusStats(score, *stats_);
+ 
+ 		metadata.set(controls::FocusFoM,
+ 			     static_cast<int32_t>(std::min<uint64_t>(
+@@ -424,7 +443,87 @@ void IPASoftSimple::startFocusScan()
+ 	afBestScore_ = 0;
+ }
+ 
+-std::optional<int32_t> IPASoftSimple::processFocusStats(uint64_t score)
++/*
++ * Total-variation distance between two luminance histograms: 0 for identical
++ * distributions, 1 for disjoint ones.
++ */
++static double histogramDistance(const SwIspStats::Histogram &a,
++				const SwIspStats::Histogram &b)
++{
++	uint64_t sumA = 0, sumB = 0;
++	for (unsigned int i = 0; i < a.size(); ++i) {
++		sumA += a[i];
++		sumB += b[i];
++	}
++	if (!sumA || !sumB)
++		return 0.0;
++
++	double d = 0.0;
++	for (unsigned int i = 0; i < a.size(); ++i)
++		d += std::abs(static_cast<double>(a[i]) / sumA -
++			      static_cast<double>(b[i]) / sumB);
++	return d / 2;
++}
++
++/*
++ * Decide, while locked, whether the scene changed enough to focus again. A
++ * change is only acted on once the scene has held still for a couple of
++ * statistics (or after a bounded wait for a scene that never does), so a hand
++ * moving through the frame is not chased.
++ */
++bool IPASoftSimple::afSceneChanged(uint64_t score, const SwIspStats &stats)
++{
++	/* Luminance histogram distance to the reference that means "changed". */
++	constexpr double kSceneChange = 0.25;
++	/* Distance between consecutive statistics that means "settled". */
++	constexpr double kSettled = 0.10;
++	/* Give up waiting for the scene to settle after this many statistics. */
++	constexpr unsigned int kMaxWait = 16;
++
++	/* Take the reference a few statistics after locking, once AGC settled. */
++	if (afRefStats_) {
++		if (--afRefStats_ == 0) {
++			afRefHist_ = stats.yHistogram;
++			afPrevHist_ = stats.yHistogram;
++			afRefScore_ = score;
++		}
++		return false;
++	}
++
++	double dRef = histogramDistance(stats.yHistogram, afRefHist_);
++	double dPrev = histogramDistance(stats.yHistogram, afPrevHist_);
++	afPrevHist_ = stats.yHistogram;
++
++	LOG(IPASoft, Debug) << "AF locked: histogram distance " << dRef
++			    << " (to previous " << dPrev << "), score " << score
++			    << " (reference " << afRefScore_ << ")";
++
++	if (!afChanged_) {
++		bool differs = dRef > kSceneChange ||
++			       (afRefScore_ && (score * 10 < afRefScore_ * 6 ||
++						score * 10 > afRefScore_ * 16));
++		afChangeStats_ = differs ? afChangeStats_ + 1 : 0;
++		if (afChangeStats_ < 2)
++			return false;
++
++		afChanged_ = true;
++		afChangedFor_ = 0;
++		afStableStats_ = 0;
++		LOG(IPASoft, Debug) << "AF: scene changed, waiting for it to settle";
++	}
++
++	afChangedFor_++;
++	afStableStats_ = dPrev < kSettled ? afStableStats_ + 1 : 0;
++	if (afStableStats_ >= 2 || afChangedFor_ >= kMaxWait) {
++		LOG(IPASoft, Debug) << "AF: scene settled, focusing again";
++		return true;
++	}
++
++	return false;
++}
++
++std::optional<int32_t> IPASoftSimple::processFocusStats(uint64_t score,
++							const SwIspStats &stats)
+ {
+ 	if (afPhase_ == AfPhase::Idle)
+ 		return std::nullopt;
+@@ -436,7 +535,8 @@ std::optional<int32_t> IPASoftSimple::processFocusStats(uint64_t score)
+ 		else
+ 			afDropStats_ = 0;
+ 
+-		if (afLockedStats_ >= 450 || afDropStats_ >= 5)
++		if (afLockedStats_ >= 450 || afDropStats_ >= 5 ||
++		    afSceneChanged(score, stats))
+ 			startFocusScan();
+ 		else
+ 			return std::nullopt;
+@@ -482,6 +582,11 @@ std::optional<int32_t> IPASoftSimple::processFocusStats(uint64_t score)
+ 	afLockedScore_ = afBestScore_;
+ 	afLockedStats_ = 0;
+ 	afDropStats_ = 0;
++	afRefStats_ = 3;
++	afChangeStats_ = 0;
++	afChangedFor_ = 0;
++	afStableStats_ = 0;
++	afChanged_ = false;
+ 	afPosition_ = afBestPosition_;
+ 	return afPosition_;
+ }

@@ -5,3 +5,5 @@
 0004-simple-reset-qcom-camss-links-before-configure.patch
 0005-simple-drop-metadata-wait-for-cancelled-output-buffers.patch
 0006-software-isp-dont-queue-work-to-a-stopped-worker.patch
+0007-simple-ipa-retrigger-autofocus-on-scene-change.patch
+0008-simple-ipa-exposure-controls.patch
