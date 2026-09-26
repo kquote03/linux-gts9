@@ -46,10 +46,15 @@ meson setup "$work_dir/build" "$source_dir" --prefix=/usr --libdir=lib64 --build
     -Dauto_features=disabled -Dspa-plugins=enabled -Ddbus=disabled \
     -Dudev=enabled -Dlibcamera=enabled -Dsession-managers=[]
 meson compile -C "$work_dir/build" spa-libcamera
-# Hardware idle memory validation is still required before activation.
+# Enabled by default: the WirePlumber leak that kept this disabled came from the
+# old PipeWire 1.0.5-era plugin. This build was tested on the tablet only for
+# minutes (flat memory idle and streaming, 80 rapid camera switches); a long soak
+# is still to do, so a WirePlumber memory cap
+# (rootfs/overlay-systemd/usr/lib/systemd/user/wireplumber.service.d/) backs it.
+# A previous build may have left the old disabled copy next to it.
+rm -f "$install_root/usr/lib64/spa-0.2/libcamera/libspa-libcamera.so.disabled"
 install -Dm755 "$work_dir/build/spa/plugins/libcamera/libspa-libcamera.so" \
-    "$install_root/usr/lib64/spa-0.2/libcamera/libspa-libcamera.so.disabled"
-rm -f "$install_root/usr/lib64/spa-0.2/libcamera/libspa-libcamera.so"
+    "$install_root/usr/lib64/spa-0.2/libcamera/libspa-libcamera.so"
 mkdir -p "$install_root/usr/share/gts9-camera"
 {
     echo 'source_kind=Fedora-SRPM-prepared-with-downstream-patches'
@@ -58,5 +63,5 @@ mkdir -p "$install_root/usr/share/gts9-camera"
     printf 'pipewire_source_rpm=%s\n' "$source_rpm"
     printf 'pipewire_source_sha256=%s\n' "$(sha256sum "$work_dir/$source_rpm" | cut -d' ' -f1)"
     printf 'libcamera_version=%s\n' "$(pkg-config --modversion libcamera)"
-    echo 'plugin_default=disabled-pending-hardware-validation'
+    echo 'plugin_default=enabled'
 } > "$install_root/usr/share/gts9-camera/spa-build.txt"
