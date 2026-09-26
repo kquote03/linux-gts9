@@ -1,0 +1,20 @@
+[Unit]
+Description=Re-apply gts9-camera settings whenever a camera stream starts
+Documentation=file:///usr/share/doc/gts9-camera/camera-controls.md
+After=wireplumber.service
+Wants=wireplumber.service
+
+# Not enabled by default: it polls PipeWire, which is wasted work unless you use
+# `gts9-camera` to change camera settings. Enable it with:
+#   systemctl --user enable --now gts9-camera-settings
+# The libcamera IPA resets its controls every time a stream is configured, so
+# without this a setting is lost when an application stops and restarts the
+# camera or switches between the cameras.
+
+[Service]
+ExecStart=/usr/bin/gts9-camera daemon --interval 2
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

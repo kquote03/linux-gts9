@@ -5358,3 +5358,43 @@ rebuilt from the same kernel (`out/android/`; the previously flashed set is kept
 `libspa-libcamera.so.disabled` did; the SPA step now removes it). For a clean,
 from-scratch build delete `out/fedora/rootfs` first (as root in the builder's user
 namespace); a fully clean rebuild has not been run yet.
+
+### Session 24 addendum 5 — 2026-09-26 — Autofocus re-trigger, exposure controls, `gts9-camera`
+
+User test of the autofocus with a hand: it focused on a close hand but stayed blurry
+when the hand moved away. Cause: after locking, the algorithm only rescanned when
+the focus score dropped to 70% for five samples (or after about a minute); with the
+lens focused near, a hand moving away blurs everything, so the score stays low and
+never "drops". Patch 0007 adds scene-change detection (luminance histogram distance
+and focus score against a reference taken just after locking; rescan once the
+changed scene holds still). The user's hand test then worked ("not the best" but
+acceptable); thresholds (0.25 / 0.10 / 16 statistics) are first guesses.
+
+Requested: a command-line tool for focus, zoom, exposure and so on. What the stack
+can actually do, found by testing:
+- Controls reach the camera through PipeWire (`pw-cli set-param <node> Props`),
+  live, on the running stream. Standard properties by name (`contrast`,
+  `saturation`, `exposure`, `gain`), everything else by the *number*
+  `16777216 + libcamera control id`; the hex `id-01000001` shown by `pw-dump` is not
+  accepted as a key, float values need a decimal point, and a wrong type is
+  rejected inside WirePlumber, not reported by `pw-cli`. `params = [...]` does not
+  work with this plugin.
+- Only 7 controls were exposed (AF mode/trigger, AWB enable, colour temperature
+  read-only, gamma, contrast, saturation); the software AGC had none. Patch 0008 adds
+  `AeEnable`, `ExposureTime`, `AnalogueGain`, `ExposureValue` to the IPA; they appear in
+  PipeWire automatically. Measured: 14.3 µs per sensor line (69/349/698/2094/3260
+  lines for 1/5/10/30/100 ms, max 3260), gain code = (gain-1)*16.
+- Digital zoom is impossible today: the software ISP has no `ScalerCrop` (it would
+  need a crop window and a scaler in `DebayerCpu`, plus the control through the
+  pipeline handler and IPA). Manual white-balance gains are impossible via PipeWire:
+  the plugin skips array-valued controls.
+- The IPA resets its controls at every stream configure, so a setting is lost when the
+  application restarts the camera or switches cameras (measured: saturation 0 came
+  back to normal without the helper).
+
+Delivered: `/usr/bin/gts9-camera` (`rootfs/overlay-common/usr/bin/gts9-camera`,
+Python 3 standard library plus `pw-cli`/`pw-dump`/`v4l2-ctl`), the optional
+`gts9-camera-settings.service` user unit (not enabled by default; re-applies remembered
+settings when a stream starts), and `docs/camera-controls.md`. Tested on the tablet
+with a private libcamera build carrying patches 0007/0008; the image and system
+libcamera on the tablet do not contain them until the rootfs is rebuilt and flashed.

@@ -513,6 +513,9 @@ echo "== applying device overlay =="
 # systemd-specific layer (units, drop-ins, tmpfiles.d, the preset, and the
 # handful of libexec scripts that call systemctl directly).
 cp -a "$repo_root/rootfs/overlay-common/." "$rootdir/"
+# The gts9-camera tool (overlay-common/usr/bin/gts9-camera) points at its manual here.
+install -Dm644 "$repo_root/docs/camera-controls.md" \
+	"$rootdir/usr/share/doc/gts9-camera/camera-controls.md"
 cp -a "$repo_root/rootfs/overlay-systemd/." "$rootdir/"
 # WirePlumber 0.5 uses the replacement SPA-JSON camera rules.
 rm -f "$rootdir/usr/share/wireplumber/main.lua.d/51-gts9-camera-backends.lua"
