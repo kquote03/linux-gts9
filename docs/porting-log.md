@@ -5202,3 +5202,32 @@ On-device checklist: `v4l2-ctl --list-devices` shows `iris_driver` and a
 VP9 file decodes with hardware; `media-ctl -p` shows rear and front links
 and the lens ancillary link; `cam -l`; `monitor-sensor` rotation after
 boot and after suspend/resume.
+
+### Session 24 addendum — 2026-09-26 — first boot of the port: graph fix, first frames
+
+First boot of the ported build (SSH over USB). Iris came up (`Iris Decoder`
+on `/dev/video0`/`video1`), but the camera graph did not: both HI1337
+sensors probed (`rear-main`/`front-main` model 0x1337 — the front works at
+`0x21` on the 1.2 V L11B rail) yet `media-ctl -p` showed both with **0 links**,
+no subdev nodes, and `cam -l` said "No sensor found". The kernel's
+`v4l2-async/pending_async_subdevices` showed the rear sensor waiting on
+`lens@c`.
+
+Cause: the fork's probe order (`v4l2_async_register_subdev()` *then* a lens
+sub-notifier) only works when the sensor probes before CAMSS (its drivers are
+built in). With modular CAMSS already loaded, the sensor binds immediately,
+`v4l2_async_nf_try_subdev_notifier()` finds no sub-notifier yet, and the
+later-registered notifier has no parent, so the lens is never bound.
+`v4l2_async_nf_can_complete()` then blocks CAMSS's notifier, so
+`camss_subdev_notifier_complete()` never creates the sensor→CSIPHY links.
+
+Fix: `hi1337_probe()` uses `v4l2_async_register_subdev_sensor()` again (lens
+notifier registered before the subdev); the custom notifier code is removed.
+Loaded onto the tablet as a module swap + reboot; result: both sensors link
+to `msm_csiphy1`/`msm_csiphy4`, `dw9808-vcm` is an entity, `cam -l` lists both
+cameras, `focus_absolute` reads 384 (udev default applied, lens opens).
+`cam` captures: rear 4120x3096 at ~3.75 fps (full-resolution software ISP),
+front 2024x1524 at ~15 fps; both frames are recognisable, upright and
+in focus, dim indoors with a blue cast (grey-world AWB). Not yet checked:
+autofocus, low-light exposure/gain tuning, GNOME (SPA plugin and relays are
+still disabled by design).

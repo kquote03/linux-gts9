@@ -1215,7 +1215,7 @@ the X716B**; see `docs/porting-log.md` Session 24.
   MCLK4, GPIO17 enable, GPIO117 reset. VDIG comes from the panel's shared
   L11B rail, which stays at **1.2 V** here (the X710 uses 1.104 V, its
   stock vote); the sensor's 1.1 V request is therefore not honoured.
-  **Untested.** If the rear camera drops out of `media-ctl -p`, set
+  **Verified 2026-09-26: front probes and captures at ~15 fps on the X716B.** If the rear camera drops out of `media-ctl -p`, set
   `hi1337_front` to `status = "disabled"` and remove `&camss` `port@4`
   and the front `port {}`. Front and rear share csid0/vfe0/video0, so
   only one can stream at a time.

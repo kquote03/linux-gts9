@@ -16,7 +16,6 @@
 #include <linux/regulator/consumer.h>
 #include <linux/unaligned.h>
 
-#include <media/v4l2-async.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-fwnode.h>
@@ -99,7 +98,6 @@ struct hi1337 {
 	struct v4l2_ctrl *vblank;
 	struct v4l2_ctrl *hblank;
 	struct v4l2_ctrl *exposure;
-	struct v4l2_async_notifier notifier;
 	struct mutex mutex;
 	bool streaming;
 };
@@ -530,67 +528,6 @@ static const struct media_entity_operations hi1337_entity_ops = {
 	.link_validate = v4l2_subdev_link_validate,
 };
 
-/*
- * Lens (DW9808) binding, ported from the SM-X710 gts9wifi-fedora fork. The
- * sensor is registered with v4l2_async_register_subdev() first so its entity
- * is attached to the CAMSS media device, then a sub-device notifier binds
- * the lens-focus reference and the core creates the ancillary link
- * (media_create_ancillary_link() needs the sensor entity already attached).
- */
-static int hi1337_async_bound(struct v4l2_async_notifier *ntf,
-			      struct v4l2_subdev *subdev,
-			      struct v4l2_async_connection *asc)
-{
-	struct hi1337 *sensor = container_of(ntf->sd, struct hi1337, sd);
-
-	if (subdev->entity.function != MEDIA_ENT_F_LENS)
-		return 0;
-
-	dev_info(sensor->dev, "bound to lens %s\n", subdev->entity.name);
-	return 0;
-}
-
-static const struct v4l2_async_notifier_operations hi1337_async_ops = {
-	.bound = hi1337_async_bound,
-};
-
-static int hi1337_parse_lenses(struct hi1337 *sensor)
-{
-	static const char * const props[] = {
-		"lens-focus", "mipi-img-lens-focus",
-	};
-	struct fwnode_reference_args args;
-	struct v4l2_async_connection *asc;
-	unsigned int index;
-	unsigned int i;
-	int ret;
-
-	for (i = 0; i < ARRAY_SIZE(props); i++) {
-		for (index = 0;
-		     !(ret = fwnode_property_get_reference_args(dev_fwnode(sensor->dev),
-								props[i], NULL, 0,
-								index, &args));
-		     index++) {
-			asc = v4l2_async_nf_add_fwnode(&sensor->notifier,
-						       args.fwnode,
-						       struct v4l2_async_connection);
-			fwnode_handle_put(args.fwnode);
-			if (IS_ERR(asc)) {
-				/* Not an error if this connection already exists. */
-				if (PTR_ERR(asc) == -EEXIST)
-					continue;
-				return PTR_ERR(asc);
-			}
-		}
-
-		/* -ENOENT marks the end of the references, any other error is real. */
-		if (ret != -ENOENT)
-			return ret;
-	}
-
-	return 0;
-}
-
 static int hi1337_check_hwcfg(struct device *dev)
 {
 	struct v4l2_fwnode_endpoint endpoint = {
@@ -681,28 +618,21 @@ static int hi1337_probe(struct i2c_client *client)
 	ret = media_entity_pads_init(&sensor->sd.entity, 1, &sensor->pad);
 	if (ret)
 		goto free_controls;
-	ret = v4l2_async_register_subdev(&sensor->sd);
+	/*
+	 * Use the core helper, which parses lens-focus and registers the
+	 * sub-device notifier *before* the subdev. Do not register the subdev
+	 * first and the lens notifier afterwards (the SM-X710 fork does):
+	 * with a modular CAMSS that is already loaded, the subdev binds to
+	 * CAMSS immediately, its lens notifier is then orphaned (no parent, so
+	 * the lens is never bound), and CAMSS's notifier can never complete --
+	 * no sensor->CSIPHY links and no subdev nodes for either camera.
+	 */
+	ret = v4l2_async_register_subdev_sensor(&sensor->sd);
 	if (ret)
 		goto cleanup_entity;
-
-	v4l2_async_subdev_nf_init(&sensor->notifier, &sensor->sd);
-	sensor->notifier.ops = &hi1337_async_ops;
-
-	ret = hi1337_parse_lenses(sensor);
-	if (ret)
-		goto unregister_subdev;
-
-	ret = v4l2_async_nf_register(&sensor->notifier);
-	if (ret)
-		goto unregister_subdev;
-
 	hi1337_power_off(sensor);
 	return 0;
 
-unregister_subdev:
-	v4l2_async_nf_unregister(&sensor->notifier);
-	v4l2_async_nf_cleanup(&sensor->notifier);
-	v4l2_async_unregister_subdev(&sensor->sd);
 cleanup_entity:
 	media_entity_cleanup(&sensor->sd.entity);
 free_controls:
@@ -720,8 +650,6 @@ static void hi1337_remove(struct i2c_client *client)
 	struct hi1337 *sensor = to_hi1337(sd);
 
 	v4l2_async_unregister_subdev(sd);
-	v4l2_async_nf_unregister(&sensor->notifier);
-	v4l2_async_nf_cleanup(&sensor->notifier);
 	media_entity_cleanup(&sd->entity);
 	v4l2_ctrl_handler_free(&sensor->ctrl_handler);
 	if (sensor->streaming)
