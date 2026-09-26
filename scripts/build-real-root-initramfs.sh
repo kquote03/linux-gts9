@@ -80,9 +80,34 @@ for f in a740_zap.mdt a740_zap.b00 a740_zap.b01 a740_zap.b02 a740_sqe.fw gmu_gen
 done
 
 for applet in sh mount umount cat echo ls dmesg sleep switch_root sync mkdir \
-	      findfs blkid; do
+	      findfs blkid grep ps cat ip ifconfig telnetd top df free lsmod kill killall \
+	      tail head hexdump od; do
 	ln -sf busybox "$workdir/bin/$applet"
 done
+
+# The charging screen reads the power/volume keys through /dev/input/event*, and
+# evdev is a loadable module in this kernel (on the real system udev loads it
+# from the rootfs).  There is no modprobe here, so carry the module and insmod it.
+mkdir -p "$workdir/lib/modules"
+evdev_zst=$(ls "$repo_root"/out/kernel/modules-out/lib/modules/*/kernel/drivers/input/evdev.ko.zst 2>/dev/null | head -1 || true)
+if [ -n "$evdev_zst" ]; then
+	zstd -dc "$evdev_zst" > "$workdir/lib/modules/evdev.ko"
+else
+	echo "NOTE: evdev.ko not found (fine only if CONFIG_INPUT_EVDEV=y)" >&2
+fi
+
+# Off-mode charging screen (rootfs/initramfs/gts9-charger.c), run by /init below
+# when the tablet was started by a charger rather than the power key.
+if [ -z "${MUSL_AARCH64:-}" ] || [ -z "${MUSL_AARCH64_DEV:-}" ]; then
+	echo "MUSL_AARCH64 not set -- run this inside nix-shell" >&2
+	exit 1
+fi
+echo "== building gts9-charger =="
+clang --target=aarch64-unknown-linux-musl -static -Os -Wall -Wextra -nostdlib \
+	-fuse-ld=lld -isystem "$MUSL_AARCH64_DEV/include" \
+	-o "$workdir/bin/gts9-charger" "$repo_root/rootfs/initramfs/gts9-charger.c" \
+	"$MUSL_AARCH64/lib/crt1.o" "$MUSL_AARCH64/lib/crti.o" \
+	-L"$MUSL_AARCH64/lib" -lc "$MUSL_AARCH64/lib/crtn.o"
 
 cat > "$workdir/init" <<EOF
 #!/bin/sh
@@ -96,6 +121,127 @@ log() {
 }
 
 log "=== linux-tabs9-port real-root initramfs: userspace reached ==="
+
+# Debug network (opt-in, gts9.debugnet=1 on the command line): bring up the
+# kernel USB gadget network and offer an unauthenticated root shell on it, so a
+# stuck boot can be examined from the host (172.16.42.1).  Never enabled by
+# default -- it is a root shell for anyone on the USB link.
+case " \$(/bin/busybox cat /proc/cmdline) " in
+*" gts9.debugnet=1 "*)
+	/bin/busybox mkdir -p /dev/pts
+	/bin/busybox mount -t devpts devpts /dev/pts 2>/dev/null
+	(
+		n=0
+		while [ ! -e /sys/class/net/usb0 ] && [ "\$n" -lt 90 ]; do
+			/bin/busybox sleep 1
+			n=\$((n + 1))
+		done
+		/bin/busybox ifconfig usb0 172.16.42.1 netmask 255.255.255.0 up
+		/bin/busybox telnetd -l /bin/sh -b 172.16.42.1
+		log "=== debugnet: telnet 172.16.42.1 (usb0 after \${n}s) ==="
+	) &
+	;;
+esac
+
+# Off-mode charging.  Samsung's ABL boots this same image when the tablet is
+# started by plugging in a charger; it marks that boot on the command line the
+# way it does for its own Android charger mode (androidboot.mode=charger, and
+# the lpcharge=1 parameters of the Samsung modules).  gts9.charger=1 forces the
+# charging screen and gts9.charger=0 disables it, for testing.  The charging
+# screen returns when the user holds the power key; the boot then continues
+# normally.  If it cannot run (no framebuffer, ...) it returns at once, so a
+# broken charging screen never keeps the tablet from starting.
+charger_mode=0
+case " \$(/bin/busybox cat /proc/cmdline) " in
+*" androidboot.mode=charger "*|*" androidboot.bootmode=charger "*|*lpcharge=1" "*)
+	charger_mode=1 ;;
+esac
+case " \$(/bin/busybox cat /proc/cmdline) " in
+*" gts9.charger=1 "*) charger_mode=1 ;;
+*" gts9.charger=0 "*) charger_mode=0 ;;
+esac
+
+# Off-mode charging screen.  Runs BEFORE the real root is looked for: the gauge
+# must never depend on the SD card (it may come up late, or not at all, in a
+# charger boot).  A background job saves the app log and the kernel log to the
+# SD card once it appears, so a hang leaves a trail (var/log/gts9-charger*.log).
+if [ "\$charger_mode" = 1 ]; then
+	log "=== charger boot: showing the charging screen ==="
+	CLOG=/tmp/gts9-charger.log
+	echo "--- charger boot \$(/bin/busybox cat /proc/uptime) ---" > \$CLOG
+	# Console messages would be drawn over the gauge (console=tty0): mute them
+	# for the duration, keeping the old levels to restore afterwards.
+	old_printk=\$(/bin/busybox cat /proc/sys/kernel/printk)
+	echo "1 1 1 1" > /proc/sys/kernel/printk
+	echo 0 > /sys/class/graphics/fbcon/cursor_blink 2>/dev/null
+	# Unbind the framebuffer console for the whole session: on every unblank it
+	# repaints its text buffer over the framebuffer, wiping the gauge.
+	fbcon_vt=""
+	for v in /sys/class/vtconsole/vtcon*; do
+		if /bin/busybox grep -q "frame buffer" \$v/name 2>/dev/null; then
+			fbcon_vt=\$v
+			echo 0 > \$v/bind
+		fi
+	done
+	if [ -e /lib/modules/evdev.ko ] && [ ! -e /dev/input/event0 ]; then
+		/bin/busybox insmod /lib/modules/evdev.ko
+	fi
+	(
+		n=0; dev=""
+		while [ -z "\$dev" ] && [ "\$n" -lt 120 ]; do
+			cand=\$(/bin/busybox findfs "LABEL=$REAL_ROOT_LABEL" 2>/dev/null)
+			if [ -n "\$cand" ] && [ -b "\$cand" ]; then dev=\$cand; break; fi
+			for c in $REAL_ROOT_CANDIDATES; do
+				if [ -b "\$c" ]; then dev=\$c; break; fi
+			done
+			[ -n "\$dev" ] && break
+			/bin/busybox sleep 1
+			n=\$((n + 1))
+		done
+		[ -n "\$dev" ] || exit 0
+		/bin/busybox mkdir -p /mnt/logroot
+		/bin/busybox mount -t $REAL_ROOT_FSTYPE -o rw "\$dev" /mnt/logroot || exit 0
+		/bin/busybox mkdir -p /mnt/logroot/var/log
+		echo "root \$dev found after \${n}s" >> \$CLOG
+		while :; do
+			/bin/busybox cat \$CLOG > /mnt/logroot/var/log/gts9-charger.log
+			/bin/busybox dmesg > /mnt/logroot/var/log/gts9-charger-dmesg.log 2>/dev/null
+			/bin/busybox sync
+			/bin/busybox sleep 2
+		done
+	) &
+	keeper=\$!
+	n=0
+	while [ ! -e /dev/fb0 ] && [ "\$n" -lt 15 ]; do
+		/bin/busybox sleep 1
+		n=\$((n + 1))
+	done
+	echo "fb0 after \${n}s" >> \$CLOG
+	# The ANA38407 panel is unreachable after Samsung's cold-boot hand-off until
+	# one platform-level suspend/resume cycle (see
+	# rootfs/overlay-common/usr/libexec/gts9wifi-panel-coldboot-recover).
+	if [ -w /sys/power/pm_test ] && [ -w /sys/power/state ] &&
+	   /bin/busybox grep -qw platform /sys/power/pm_test; then
+		echo "platform suspend cycle" >> \$CLOG
+		echo platform > /sys/power/pm_test
+		echo mem > /sys/power/state
+		echo none > /sys/power/pm_test
+		echo "platform suspend cycle done" >> \$CLOG
+	fi
+	/bin/gts9-charger \$CLOG
+	rc=\$?
+	echo "gts9-charger exited \$rc" >> \$CLOG
+	kill \$keeper 2>/dev/null
+	/bin/busybox sleep 1
+	if [ -d /mnt/logroot/var/log ]; then
+		/bin/busybox cat \$CLOG > /mnt/logroot/var/log/gts9-charger.log
+		/bin/busybox sync
+		/bin/busybox umount /mnt/logroot 2>/dev/null
+	fi
+	[ -n "\$fbcon_vt" ] && echo 1 > \$fbcon_vt/bind
+	echo "\$old_printk" > /proc/sys/kernel/printk
+	log "=== charging screen finished (\$rc): continuing the boot ==="
+fi
 
 REAL_ROOT_LABEL="$REAL_ROOT_LABEL"
 REAL_ROOT_CANDIDATES="$REAL_ROOT_CANDIDATES"
@@ -143,6 +289,14 @@ if ! /bin/busybox mount -t "\$REAL_ROOT_FSTYPE" -o rw "\$REAL_ROOT_DEV" /mnt/new
 fi
 
 log "=== real root mounted, switch_root-ing into it ==="
+# Keep every boot's command line (the ABL-added part differs between a
+# power-key boot and a charger-triggered one), plus whether the charging
+# screen ran, so charger-boot detection can be checked against real boots.
+/bin/busybox mkdir -p /mnt/newroot/var/log
+echo "charger_mode=\$charger_mode \$(/bin/busybox cat /proc/cmdline)" \
+	>> /mnt/newroot/var/log/gts9-boot-cmdlines.log 2>/dev/null
+/bin/busybox killall telnetd 2>/dev/null
+/bin/busybox umount /dev/pts 2>/dev/null
 /bin/busybox mkdir -p /mnt/newroot/proc /mnt/newroot/sys /mnt/newroot/dev
 /bin/busybox mount --move /proc /mnt/newroot/proc
 /bin/busybox mount --move /sys /mnt/newroot/sys

@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MIT
+#
+# The charger driver's fast_charge switch is root-only, so the desktop session
+# cannot change it from its own UI.  Open it to group video, which the seat user
+# already has.  Match by driver rather than bus number: the SM5714 sits on
+# i2c-2 here and the number is not stable across DTS changes.
+ACTION=="add|change", SUBSYSTEM=="i2c", DRIVER=="sm5714", \
+	RUN+="/bin/sh -c 'chgrp video %S%p/fast_charge && chmod 0664 %S%p/fast_charge'"

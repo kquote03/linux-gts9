@@ -1,0 +1,15 @@
+# Power policy for the tablet.  The panel is the single biggest load (measured
+# over a 500 mA USB port: panel on = net discharge, panel off = +480 mA into
+# the pack), so an idle tablet has to blank its panel quickly or it can never
+# charge from an ordinary USB port.  On AC it only blanks: a plugged-in tablet
+# stays reachable over SSH and the USB network.  On battery it also sleeps
+# after 5 minutes.
+[org/gnome/desktop/session]
+idle-delay=uint32 60
+
+[org/gnome/settings-daemon/plugins/power]
+idle-dim=true
+sleep-inactive-ac-type='nothing'
+sleep-inactive-ac-timeout=0
+sleep-inactive-battery-type='suspend'
+sleep-inactive-battery-timeout=300

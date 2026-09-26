@@ -485,3 +485,10 @@ CONFIG_DEBUG_INFO_NONE=y
 # where the signed VPU firmware (qcom/vpu/vpu30_4v.mbn) lives.
 CONFIG_SM_VIDEOCC_8550=m
 CONFIG_VIDEO_QCOM_IRIS=m
+
+# evdev is =m by default: without it there is no /dev/input/event* until udev
+# loads it from the rootfs, so the initramfs charging screen (which has no
+# modprobe) could not read the power/volume keys.  Built in, the initramfs no
+# longer needs to carry and insmod evdev.ko (scripts/build-real-root-initramfs.sh
+# does that for kernels built without this).
+CONFIG_INPUT_EVDEV=y

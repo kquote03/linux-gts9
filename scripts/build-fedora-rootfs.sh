@@ -517,6 +517,8 @@ cp -a "$repo_root/rootfs/overlay-common/." "$rootdir/"
 install -Dm644 "$repo_root/docs/camera-controls.md" \
 	"$rootdir/usr/share/doc/gts9-camera/camera-controls.md"
 cp -a "$repo_root/rootfs/overlay-systemd/." "$rootdir/"
+# Compile the dconf power-policy snippets (etc/dconf/db/*.d) shipped above.
+run_chroot /usr/bin/dconf update || echo "    WARN: dconf update failed (no GNOME?)" >&2
 # WirePlumber 0.5 uses the replacement SPA-JSON camera rules.
 rm -f "$rootdir/usr/share/wireplumber/main.lua.d/51-gts9-camera-backends.lua"
 # Old overlays installed hooks in a directory Fedora systemd never reads.

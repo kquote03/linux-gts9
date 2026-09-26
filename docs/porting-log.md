@@ -5398,3 +5398,82 @@ Python 3 standard library plus `pw-cli`/`pw-dump`/`v4l2-ctl`), the optional
 settings when a stream starts), and `docs/camera-controls.md`. Tested on the tablet
 with a private libcamera build carrying patches 0007/0008; the image and system
 libcamera on the tablet do not contain them until the rootfs is rebuilt and flashed.
+
+### Session 25 — 2026-09-26 — Charging and battery-life parity, off-mode charging
+
+Goal (user): charging and battery life on par with Android; charge from ordinary USB
+ports; less sleep drain; a dedicated charging mode when the tablet is plugged in while
+off. Reference trees `gts9wifi-fedora/` and `gts9wifi-fedora-new/` and the stock kernel
+`android_kernel_samsung_gts9/` were searched by subagents. Details: `docs/charging-mode.md`.
+
+Findings (all measured on the live tablet on a PC USB port, SDP 5 V / 500 mA):
+- Charging on this board is entirely AP-driven (SM5714 / SM5440 / SM5714 PD); the stock
+  DT has no ADSP `charger_pd`, so `qcom_battmgr` does not apply. Stock SDP limits are
+  475/550 mA against our 500/500: the driver was not the SDP problem.
+- The panel was. Net battery current: greeter on -265 mA; backlight 0 -120 mA;
+  + Wi-Fi off -60 mA; + gdm stopped -7 mA; panel blanked **+480 mA**. The GDM greeter
+  never blanked, so an idle tablet sat below break-even forever. Fix: dconf policy
+  (blank at 60 s, suspend on battery at 5 min, never on AC). Verified: the panel blanks
+  after 60 s and the tablet charges at about +330 mA over the same port.
+- A 9.5-minute `rtcwake -m mem` on the same port charged 8 -> 9 %: suspended charging
+  on plain USB is fine.
+- Sleep drain: `qcom_stats` shows `aosd`, `cxsd` and `ddr` counts of 0 for the whole
+  uptime (apss/adsp do count): the SoC never reaches XO shutdown / CX collapse / DDR
+  self-refresh. Not root-caused; needs a battery-only run of `gts9wifi-sleep-audit`.
+- Wi-Fi power save on saves about 40 mA idle; left off.
+- Off-mode: shutting the tablet down with the cable attached made ABL start it again,
+  with `sec_pon_alarm.lpcharge=1`, `msm_drm.secdp_param_lpcharge=1`, ... `=1` on the
+  command line (normal boot: `=0`). No `androidboot.mode=charger`.
+
+Changes: `sm5714_battery.c` (CHGCNTL4 float voltage 4440 mV, re-armed on every
+configure; `fast_charge` sysfs, default on: 9 V input budget 3 A, pack goal 3150 mA;
+`sm5440_direct.c` pump gated on it), DTS sink PDO 9 V/3 A, udev rule for `fast_charge`,
+dconf power policy, `gts9wifi-sleep-audit`, initramfs charging screen
+(`rootfs/initramfs/gts9-charger.c`, run by `/init` on `lpcharge=1`; hold power 1.5 s to
+continue booting, powers off 6 s after unplug, exits at once if it cannot draw), cmdline
+knobs `CMDLINE_DROP`/`CMDLINE_EXTRA`, `/var/log/gts9-boot-cmdlines.log`. Not ported from
+`-new`: its `sm5440_direct.c` (a different, older design than ours), the sm5714 OTG
+changes we already have.
+
+Incidents: the first policy suspended the greeter on AC after 10 min and the tablet
+stayed asleep until a key press (nothing wakes it remotely; USB drops in suspend) -
+policy changed to never suspend on AC. A power-key press in the charger-screen test
+powered the tablet off because `systemd-logind` owns the key in full userspace (the
+initramfs has no logind).
+
+Verified: drivers compile; kernel, DTB, initramfs and boot set build
+(`out/android-charging-session25/`, SHA256SUMS inside); the charging screen was drawn on
+the real panel and dims/blanks; the panel blanks after 60 s.
+**Not yet verified (needs a flash, which needs the pre-flash checklist in
+`docs/boot-strategy.md`)**: new kernel behaviour (float voltage, `fast_charge`), the
+charger boot end to end, PD/PPS charge rates, suspend drain on battery.
+
+### Session 25 addendum — 2026-09-26 — Off-mode charging screen brought up on hardware
+
+Flashed and iterated the initramfs charging screen (`init_boot` + `vendor_boot`,
+six flashes; backup `backups/2026-09-26-pre-charging-session25/`, untracked).
+Root causes, in discovery order (details in `docs/charging-mode.md`):
+
+1. First flash: the gauge drew, but the screen went dark and never came back and
+   kernel text overlapped it. No `/dev/input/event*` existed (evdev is a module);
+   fbcon repainted on unblank.
+2. `KD_GRAPHICS` on tty0 (to hide fbcon) hung the tablet mid-draw. Removed.
+3. Mounting the SD root before showing the gauge made charger boots sit in `/init`
+   ("stuck forever, no reboot"); the gauge now starts first and a background job
+   keeps logs on the SD card when it appears.
+4. `/proc/last_kmsg` in TWRP carries ABL/TWRP logs but none of our kernel's; it
+   was useless for these hangs. What worked: an opt-in debug telnet on the USB
+   gadget network inside the initramfs (`gts9.debugnet=1`), which showed the app
+   alive, its log, and the absent `/dev/input`.
+5. Fix set: insmod `evdev.ko` from the initramfs, unbind the fbcon vtconsole for
+   the session, draw before unblank, 100 ms poll, timestamped step log.
+
+Result (user, on hardware): gauge appears, screen dims/blanks after 30 s, one
+power or volume press brings it back, holding power continues the boot, and
+pulling the cable powers the tablet off after 6 s.
+
+Left in the flashed image: `gts9.debugnet=1` (root telnet on the USB link). Rebuild
+without `CMDLINE_EXTRA` and reflash `vendor_boot` for a normal image. Also open:
+new kernel behaviour (float voltage 4440 mV, `fast_charge`) is flashed but only the
+initramfs side was exercised; PD/PPS rates and battery-only suspend drain
+(`gts9wifi-sleep-audit`) are unmeasured.
