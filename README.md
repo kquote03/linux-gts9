@@ -43,9 +43,9 @@ device.
 | Sensors (SSC: accelerometer, ambient light, etc.) | ⚠️ ADSP boots and the HexagonFS registry path is fixed, but the SSC QMI service itself doesn't publish (a real, likely upstream `hexagonrpcd` gap — see `docs/porting-log.md`) Auto-rotate fixes ported from the SM-X710 fork (`ssc-accel` udev tag, iio-sensor-proxy claim-race patch) — unverified on the X716B. |
 | Suspend (deep) | ⚠️ short and ~11-minute sleeps resumed; extended-sleep reboot remains under investigation. A confirmed USB-C I²C suspend race is fixed in source and awaits flashed-kernel validation; see `docs/reliability-2026-09.md`. |
 | GNOME desktop (Wayland, `gdm`) | ✅ real login screen confirmed on the physical panel |
-| Camera | ⚠️ Rear captures at ~30 fps with a temporary GPIO15 power override; brighter lighting produces images, but quality and autofocus remain unresolved. The corrected GPIO15 supply is built, awaiting flash. The rebuilt SPA plugin exposes the rear camera to GNOME’s portal in a bounded test; normal activation remains disabled pending memory/streaming validation. Both cameras now stream through `cam` (rear ~3.75 fps at 4120x3096, front ~15 fps) after the SM-X710 port plus a notifier-order fix; lens opens, autofocus and image tuning not yet evaluated. See `docs/hardware-facts.md`. |
+| Camera | ⚠️ Rear (4120x3096) and front (2024x1524) both work at ~30 fps through libcamera's CPU software ISP (release build; it was `-O0`). GNOME Camera and Firefox see both through the PipeWire portal, and camera switching, including fast switching, no longer crashes WirePlumber (patches 0005/0006, `docs/downstream-patches.md`). The libcamera SPA plugin now ships enabled behind a WirePlumber memory cap. Not yet evaluated: autofocus (the lens opens and gets a default position; the software AF is untested), image tuning (dim, blue cast indoors), and a long memory soak. See `docs/hardware-facts.md`. |
 | Fingerprint | ❌ not present on the reference project this was ported from |
-| Hardware video decode (iris) | ⚠️ `&iris` enabled with this device's own `vpu30_4v.mbn` and staged by the Fedora builder (ported from the SM-X710 fork, where VP9/H.264/HEVC decode in hardware); built, awaiting flash — unverified on the X716B |
+| Hardware video decode (iris) | ⚠️ The iris driver probes with this device's own `vpu30_4v.mbn` (`Iris Decoder`/`Iris Encoder` nodes appear); ported from the SM-X710 fork, where VP9/H.264/HEVC decode in hardware. An actual decode on the X716B is not yet tested |
 | `/vendor` super partition (erofs) | ❌ needs a `make-dynpart-mappings` port neither project has done |
 | Cellular / 5G modem | ❌ permanent non-goal — no mainline story for Samsung's Shannon modem IPC on this SoC |
 
@@ -212,9 +212,12 @@ pivot — see `docs/distro-porting.md` before reviving any of them.
   device overlay (systemd units, udev rules, ALSA UCM configs, hardware-
   workaround scripts), split per `docs/distro-porting.md`; applied by
   `scripts/build-fedora-rootfs.sh`.
-- `specs/` — `hexagonrpcd-samsung/` and `iio-sensor-proxy-libssc/` patch
-  sets + spec files for the sensor/audio userspace daemons built from
-  source (not packaged in Fedora).
+- `specs/` — the downstream patch series (`series` + `patches/` per component:
+  libcamera, hexagonrpcd, iio-sensor-proxy, v4l2loopback, v4l2-relayd) and
+  `sources.lock`, which pins every upstream source by git commit. Built the same
+  way on every distro by `scripts/build-downstream-userland.sh`; verified by
+  `scripts/test-downstream-patches.sh`. Inventory, rationale and per-distro
+  status: `docs/downstream-patches.md`.
 - `vendor-firmware-dump/` — this exact device's own extracted ADSP PIL
   firmware, PDR service-registry `.jsn` files, and HexagonFS skel libs
   (real Samsung/Qualcomm binaries, not authored by this project — the

@@ -5307,3 +5307,54 @@ first has stopped, because the two cameras share CSID0/VFE0/video0 (0004 resets
 the shared links and cannot disable one that is in use). This is expected and
 harmless (the SPA returns `EBUSY`), but an application that does not retry will
 show no picture after a very fast switch.
+
+### Session 24 addendum 4 — 2026-09-26 — Downstream patches made reproducible and distro-agnostic
+
+Problem: the patches this port depends on (kernel, libcamera, hexagonrpcd,
+iio-sensor-proxy, v4l2loopback, v4l2-relayd) can't be left to distro packaging,
+but their versions, patch order and build flags were spread over inline blocks in
+`build-fedora-rootfs.sh`, a partly duplicated `build-debian-rootfs.sh`, hardcoded
+lists in the NixOS derivations (which had already drifted: it lacked
+`start-polling-claimed-while-starting`) and `build-mainline-kernel.sh`.
+
+Now, one source of truth:
+- `specs/sources.lock` pins every upstream source by **full commit** (tags and
+  tarball hashes were rejected: moved tags, archive-compression drift). The
+  v4l2-relayd pin was an annotated tag object that `git checkout` had silently
+  peeled; it is now the peeled commit `9c4f731`.
+- `specs/<component>/series` is the ordered patch list.
+- `scripts/lib/downstream.sh` + `scripts/build-downstream-userland.sh` fetch, verify,
+  patch, build and install libssc, pd-mapper, hexagonrpcd, iio-sensor-proxy,
+  libcamera and v4l2-relayd identically on any distro (`--prefix`, `--libdir`,
+  `--destdir`); they write provenance (commit, series digest) to
+  `<prefix>/share/gts9-userland/`.
+- Fedora and Debian builders now only install build dependencies and call it;
+  the NixOS packages read the same `series` files (`nixos/packages/series.nix`);
+  the kernel script gets v4l2loopback the same way.
+- `scripts/test-downstream-patches.sh` fetches every pinned source, applies every
+  series, and fails on orphan patch files (CI-friendly; no build dependencies).
+  All seven components pass.
+- `docs/downstream-patches.md` inventories every patch (what, why, upstream
+  outlook, which distro applies it) and gives the porting checklist. Honest gaps
+  recorded there: Debian and NixOS still have no camera stack; the libcamera
+  0005/0006 fixes and the two iio-sensor-proxy patches are realistic upstream
+  candidates but none has been submitted; the `camss-log-csi2-rx-irq-status`
+  debug patch still floods `dmesg` and should go.
+
+Also in this change: the SPA plugin now ships enabled
+(`libspa-libcamera.so`) with a WirePlumber memory cap
+(`rootfs/overlay-systemd/usr/lib/systemd/user/wireplumber.service.d/10-gts9-memory-cap.conf`),
+`libcamera` and the plugin build with `--buildtype=release`, and v4l2-relayd's
+own `modprobe.d` file (which overrode the loopback labels) is dropped.
+
+Artifacts of the Session 24 rebuild (kernel `7.2.0-dirty`, not flashed): rootfs
+image `out/fedora/x716b-fedora-gnome-rootfs.img` sha256
+`3401bbe6a5bb5536da3afd0d6649454403135fade198c701a40bc22cafec221f`, rootfs tarball
+`out/fedora/x716b-fedora-44-gnome-rootfs.tar.gz` sha256
+`c9c3027f32ffcba5e0f227e6aaf5112e3b87e9d004c61d54b04b6a0468cae5c1`; boot images
+rebuilt from the same kernel (`out/android/`; the previously flashed set is kept in
+`out/android/previous-2026-09-26-flashed/`). The Fedora builder reuses an existing
+`out/fedora/rootfs`, so leftovers of earlier builds can survive in it (a stale
+`libspa-libcamera.so.disabled` did; the SPA step now removes it). For a clean,
+from-scratch build delete `out/fedora/rootfs` first (as root in the builder's user
+namespace); a fully clean rebuild has not been run yet.

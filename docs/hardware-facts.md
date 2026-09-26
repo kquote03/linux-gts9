@@ -1110,6 +1110,17 @@ plugin. Build success and source regression do not establish runtime
 OOM resolution: bounded idle-memory and streaming validation remain
 required before enabling the plugin by default.
 
+**Update 2026-09-26 (Session 24):** the leak above belonged to the old
+PipeWire 1.0.5-era plugin. The plugin built from the exact Fedora PipeWire
+SRPM (1.6.9) with libcamera 0.7.2 was enabled on the tablet: WirePlumber stays
+at ~56-76 MB idle and while streaming, and after libcamera patches 0005/0006
+(`docs/downstream-patches.md`) 80 rapid rear/front switches did not crash it.
+The image now ships the plugin **enabled** (`libspa-libcamera.so`) with a
+WirePlumber memory cap (`MemoryHigh=900M`, `MemoryMax=1500M`); the relay
+service (`gts9-camera-relays`) remains disabled because GNOME Camera and
+Firefox use the PipeWire portal directly. Only minutes of memory observation
+exist so far; a long soak is still to do.
+
 ### Stock camera evidence retained from Session 19
 
 Read-only extraction used `super`'s single linear `vendor` extent:

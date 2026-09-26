@@ -12,6 +12,15 @@ carries five rootfs builders (`build-fedora-rootfs.sh`, `-alpine-`,
 `-buildroot-`, `-ubuntu-`, plus the bring-up ramdisk); the split below
 exists so the next one doesn't silently miss this work.
 
+> **Downstream patches.** The userland components this port builds from source
+> (libssc, pd-mapper, hexagonrpcd, iio-sensor-proxy, libcamera, v4l2-relayd) are
+> patched, and none of the patches can be left to a distro's own packaging.
+> Their versions, patch order and build flags live in one place
+> (`specs/sources.lock`, `specs/<component>/series`) and are built by the shared
+> `scripts/build-downstream-userland.sh`, which every rootfs builder calls. What
+> each patch does, why it is not upstream and what each distro still lacks:
+> `docs/downstream-patches.md`.
+
 ## The split
 
 **`rootfs/overlay-common/`** — apply this from *every* rootfs builder,
