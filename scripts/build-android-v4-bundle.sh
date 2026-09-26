@@ -149,6 +149,18 @@ check_fits "$vendor_lz4_ramdisk" "$vendor_boot_size" "vendor_boot"
 # Multiple console= entries are cumulative in the kernel's own parsing,
 # not last-one-wins, so both are active at once.
 cmdline="earlycon console=tty0 console=ttyGS0,115200 loglevel=8 log_buf_len=4M panic=10 clk_ignore_unused pd_ignore_unused regulator_ignore_unused initcall_debug"
+# Staged power-tuning knobs (docs/charging-mode.md, docs/porting-log.md Session 25):
+#   CMDLINE_DROP="initcall_debug regulator_ignore_unused"   remove bring-up flags
+#   CMDLINE_EXTRA="gts9.charger=1"                           append parameters
+# The bring-up flags keep every unused clock, power domain and regulator on for
+# the whole uptime; drop them one at a time and check boot + sleep on hardware.
+for drop in ${CMDLINE_DROP:-}; do
+	cmdline=" $cmdline "
+	cmdline=${cmdline// $drop / }
+	cmdline=${cmdline# }
+	cmdline=${cmdline% }
+done
+cmdline="$cmdline${CMDLINE_EXTRA:+ $CMDLINE_EXTRA}"
 
 # Storage bring-up session: root=/rootfstype= for the real Alpine rootfs on
 # the microSD card. Not actually consumed by the kernel's own root-mount

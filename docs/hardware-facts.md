@@ -91,6 +91,19 @@ aren't committed). Supersedes the 2026-09-15 rollback point below.
 | `vendor_boot` | 100,663,296 | `b377d9e8185a9b2458fa242ba30765f246a667a66b594e1183e5c8e725061848` |
 | `dtbo` | 16,777,216 | `bd7149dbc4c606da7510d5a65af4a7244b011f151282f52b8f513d5f7d984624` |
 
+### 2026-09-26 rollback point (before the Session 25 charging image)
+
+Raw backup taken in TWRP with `scripts/backup-boot-set.sh` to
+`backups/2026-09-26-pre-charging-session25/` (untracked). Restore with
+`scripts/flash-boot-set.sh` using those four files.
+
+| Partition | sha256 |
+|---|---|
+| `boot` | `23bf6a2b14092bd2b673b4883017854f79ba46feb8b68c421e0df5f2913bc426` |
+| `init_boot` | `c3b346f46c787de066eaba32e9af69416d8c64e164ec00775a5f833a4c2f41be` |
+| `vendor_boot` | `e145c5d224d1ba34a8879c650cb113038c1c72160828db0587f1f2e7b9995823` |
+| `dtbo` | `f98acb7d0de343fde3134c7e50b9ae6c70dc1cae6622031e3976037c97883f67` |
+
 ### 2026-09-15 rollback point (superseded, kept for history)
 
 Fresh `boot`/`init_boot`/`vendor_boot`/`dtbo` backup taken directly via

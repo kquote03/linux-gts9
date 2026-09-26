@@ -1427,16 +1427,18 @@
 			displayport = <&mdss_dp0>;
 
 			/*
-			 * Samsung limits the switching-charger PD path to 15 W and
-			 * 9 V; PPS direct charging through sm5440_direct (below)
-			 * raises the programmable APDO once its own Q4 path opens.
+			 * Stock firmware stays at 9 V / 1.66 A (15 W) on the switching
+			 * charger; the sink PDO advertises the board's full 9 V / 3 A so a
+			 * 27 W+ fixed source can grant it (sm5714_battery "fast_charge").
+			 * PPS direct charging through sm5440_direct (below) raises the
+			 * programmable APDO once its own Q4 path opens.
 			 */
 			op-sink-microwatt = <15000000>;
 			sink-pdos = <PDO_FIXED(5000, 3000,
 					       PDO_FIXED_DUAL_ROLE |
 					       PDO_FIXED_DATA_SWAP |
 					       PDO_FIXED_USB_COMM)
-				     PDO_FIXED(9000, 1660,
+				     PDO_FIXED(9000, 3000,
 					       PDO_FIXED_USB_COMM)>;
 			source-pdos = <PDO_FIXED(5000, 900,
 						 PDO_FIXED_DUAL_ROLE |

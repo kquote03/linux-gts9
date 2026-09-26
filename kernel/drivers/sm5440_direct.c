@@ -165,6 +165,7 @@ module_param(verbose, bool, 0644);
 MODULE_PARM_DESC(verbose, "log every regulation tick");
 
 int sm5714_battery_set_direct_charge(bool active);
+bool sm5714_battery_fast_charge_enabled(void);
 
 struct sm5440_direct {
 	struct device *dev;
@@ -632,7 +633,9 @@ static bool sm5440_eligible(struct sm5440_direct *sm)
 	 * driver retried a PPS hand-off against every plain DCP / fixed-PD
 	 * brick every 30 s, forever.
 	 */
-	return online > 0 && sm5440_pps_source(sm) &&
+	/* The user's fast_charge switch (sm5714-battery sysfs) turns the pump off. */
+	return online > 0 && sm5714_battery_fast_charge_enabled() &&
+	       sm5440_pps_source(sm) &&
 	       capacity >= 5 && capacity < 90 &&
 	       temp >= 100 && temp < 420 &&
 	       voltage >= 3500000 && voltage < 4350000;

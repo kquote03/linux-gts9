@@ -131,6 +131,12 @@ pkgs.mkShell {
     # foreign-arch binary, not a host tool.
     export BUSYBOX_AARCH64_STATIC=${pkgs.pkgsCross.aarch64-multiplatform.pkgsStatic.busybox}/bin/busybox
 
+    # aarch64 musl (static libc.a + headers) for the tiny C programs the
+    # initramfs carries (rootfs/initramfs/gts9-charger.c), built with the
+    # clang above -- no cross-gcc needed.
+    export MUSL_AARCH64=${pkgs.pkgsCross.aarch64-multiplatform-musl.musl}
+    export MUSL_AARCH64_DEV=${pkgs.pkgsCross.aarch64-multiplatform-musl.musl.dev}
+
     echo "linux-tabs9-port build shell ready."
     echo "  clang:  $(${llvm.clang-unwrapped}/bin/clang --version | head -1)"
     echo "  adb:    $(adb --version | head -1)"

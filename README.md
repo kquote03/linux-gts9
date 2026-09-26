@@ -35,6 +35,8 @@ device.
 | Speakers (4× CS35L45 on PRIMARY MI2S) | ✅ all four individually verified and audible together at equal volume (2026-09-21). Initial upper-pair silence cleared during isolation; cause unproven. See Session 23 in `docs/porting-log.md`. |
 | DMIC capture (LPASS VA macro) | ⚠️ wired in DTS, not yet tested with a real recording |
 | Battery / charging incl. PPS (SM5714 + SM5440) | ⚠️ real PD/PPS contract confirmed negotiating (`docs/porting-log.md`), needs more extended real-world testing before calling it fully proven |
+| Off-mode charging screen | ✅ plugged in while off boots a small battery gauge (initramfs, `rootfs/initramfs/gts9-charger.c`); dark after 30 s, any power/volume key wakes it, hold power to continue booting, powers off after unplug. `docs/charging-mode.md` |
+| Idle power / USB-port charging | ⚠️ panel blank policy makes a 500 mA USB port charge the tablet (measured +330..480 mA); SoC deep-sleep states (`aosd`/`cxsd`/DDR) are never entered during suspend, unresolved |
 | Power / volume buttons | ✅ confirmed on hardware (power suspends; both volume keys work) |
 | Book-cover lid switch | ❌ not implemented |
 | USB (gadget debug network) | ✅ `g_ether`, real SSH access |

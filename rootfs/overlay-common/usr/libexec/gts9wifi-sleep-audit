@@ -1,0 +1,77 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+#
+# Sleep-drain audit: suspend for N seconds (default 300) and record whether the
+# SoC reached its deep sleep states, how the battery moved, and what was left
+# powered.  Run as root.
+#
+#   sudo /usr/libexec/gts9wifi-sleep-audit [seconds] [outdir]
+#
+# Meant to be run over Wi-Fi with the USB cable UNPLUGGED: a cable keeps the
+# DWC3/PHY and their CX vote alive, which hides exactly what this measures.
+# Start it with nohup (the SSH session dies when the tablet sleeps), unplug,
+# wait, and read the output directory afterwards.
+#
+# What to look at in summary.txt:
+#   apss/adsp count grows   -> the CPU cluster and ADSP slept (expected)
+#   aosd / cxsd / ddr grow  -> the whole SoC reached XO shutdown / CX collapse /
+#                              DDR self-refresh.  Zero here (as measured on
+#                              2026-09-26, cable attached) means some rail or
+#                              subsystem vote is still held during suspend.
+#   battery ocv/soc delta   -> real drain, only meaningful over >= 30 min
+set -eu
+secs=${1:-300}
+out=${2:-/var/log/gts9wifi-sleep-audit/$(date +%Y%m%d-%H%M%S)}
+case "$secs" in ''|*[!0-9]*) echo "seconds must be a number" >&2; exit 2;; esac
+[ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
+mkdir -p "$out"
+umask 077
+
+stats=/sys/kernel/debug/qcom_stats
+bat=$(for p in /sys/class/power_supply/*; do
+	[ "$(cat "$p/type" 2>/dev/null)" = Battery ] && echo "$p" && break
+done)
+
+snap()
+{
+	tag=$1
+	{
+		echo "== $tag $(date -u +%FT%TZ) uptime=$(cut -d' ' -f1 /proc/uptime)"
+		for f in "$stats"/*; do
+			c=$(grep -h Count "$f" 2>/dev/null | head -1) || continue
+			[ -n "$c" ] &&
+				echo "stat $(basename "$f") $c $(grep -h Accum "$f" | head -1)"
+		done
+		if [ -n "$bat" ]; then
+			echo "battery voltage_now=$(cat "$bat/voltage_now") voltage_ocv=$(cat "$bat/voltage_ocv" 2>/dev/null) capacity=$(cat "$bat/capacity") status=$(cat "$bat/status") current_avg=$(cat "$bat/current_avg" 2>/dev/null)"
+		fi
+		for p in /sys/class/power_supply/*; do
+			case "$(cat "$p/type" 2>/dev/null)" in USB|Mains|USB_PD*)
+				echo "supply $(basename "$p") online=$(cat "$p/online" 2>/dev/null)";;
+			esac
+		done
+	} >> "$out/summary.txt"
+}
+
+{
+	echo "--- powered at suspend entry ---"
+	echo "genpd (on):"
+	awk 'NR>2 && $2 == "on"' /sys/kernel/debug/pm_genpd/pm_genpd_summary
+	echo "clocks (enabled leaf consumers):"
+	awk 'NR>2 && $2 > 0' /sys/kernel/debug/clk/clk_summary | head -120
+	echo "regulators (use count > 0, non-zero load):"
+	awk '$2 != "0" && $3 != "0"' /sys/kernel/debug/regulator/regulator_summary | head -80
+	echo "wakeup sources (active):"
+	awk 'NR>1 && $6 != "0"' /sys/kernel/debug/wakeup_sources | head -20
+} > "$out/held-before-suspend.txt" 2>&1 || true
+
+snap before
+cp /sys/kernel/debug/wakeup_sources "$out/wakeup-before.txt" 2>/dev/null || true
+sync
+systemd-inhibit --what=idle:sleep --why="sleep audit" true
+rtcwake -m mem -s "$secs" > "$out/rtcwake.log" 2>&1 || true
+sleep 20
+snap after
+cp /sys/kernel/debug/wakeup_sources "$out/wakeup-after.txt" 2>/dev/null || true
+cat /sys/kernel/debug/suspend_stats > "$out/suspend_stats.txt" 2>/dev/null || true
+echo "Sleep audit written to $out (summary.txt)"
