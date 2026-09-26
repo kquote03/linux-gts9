@@ -1,0 +1,50 @@
+# Pinned upstream sources for every component this project builds from source
+# and patches. Single source of truth: sourced by scripts/lib/downstream.sh
+# (and therefore by scripts/build-downstream-userland.sh, the Fedora/Debian
+# rootfs builders, scripts/build-mainline-kernel.sh and
+# scripts/test-downstream-patches.sh). Keep in sync with nixos/packages/*.nix
+# (Nix pins by content hash instead) -- see docs/downstream-patches.md.
+#
+# Sources are pinned by full git commit, never by tag or tarball hash: a
+# commit id survives forge archive-compression changes and moved tags, and
+# the fetch helper refuses to continue if the checkout is anywhere else.
+#
+# NAME_URL     git remote
+# NAME_COMMIT  full 40-hex commit (verified after checkout)
+# NAME_TAG     informational only (the release the commit corresponds to)
+# NAME_SERIES  directory under specs/ holding the `series` patch list
+
+LIBSSC_URL=https://codeberg.org/DylanVanAssche/libssc.git
+LIBSSC_TAG=v0.4.4
+LIBSSC_COMMIT=0cf77b93b55752da34dca2dcecc06fca8665184b
+LIBSSC_SERIES=
+
+PD_MAPPER_URL=https://github.com/andersson/pd-mapper.git
+PD_MAPPER_TAG=v1.1
+PD_MAPPER_COMMIT=5ecd2fe926aca7abfe40724177f63b942cff3947
+PD_MAPPER_SERIES=
+
+HEXAGONRPCD_URL=https://github.com/linux-msm/hexagonrpc.git
+HEXAGONRPCD_TAG=v0.4.0
+HEXAGONRPCD_COMMIT=23a69640bf10dc498226c602c5b5db11d8cb3d8e
+HEXAGONRPCD_SERIES=hexagonrpcd-samsung
+
+IIO_SENSOR_PROXY_URL=https://gitlab.freedesktop.org/hadess/iio-sensor-proxy.git
+IIO_SENSOR_PROXY_TAG=3.9
+IIO_SENSOR_PROXY_COMMIT=0085ddf8ecb173a1c5fcf2344aa40e561125354f
+IIO_SENSOR_PROXY_SERIES=iio-sensor-proxy-libssc
+
+LIBCAMERA_URL=https://gitlab.freedesktop.org/camera/libcamera.git
+LIBCAMERA_TAG=v0.7.2+53-62d4bfc4
+LIBCAMERA_COMMIT=62d4bfc450798cbd57722fa349a245b93b11d1cd
+LIBCAMERA_SERIES=libcamera-x716b
+
+V4L2_RELAYD_URL=https://git.launchpad.net/ubuntu/+source/v4l2-relayd
+V4L2_RELAYD_TAG="0.1.2-0ubuntu3 (patches applied)"
+V4L2_RELAYD_COMMIT=9c4f7312feb95a745fdb86064d4b2688adab19cb
+V4L2_RELAYD_SERIES=v4l2-relayd-x716b
+
+V4L2LOOPBACK_URL=https://github.com/v4l2loopback/v4l2loopback.git
+V4L2LOOPBACK_TAG=
+V4L2LOOPBACK_COMMIT=9ef83fb9bc88e8f841786753c362ac52c580defc
+V4L2LOOPBACK_SERIES=v4l2loopback-x716b

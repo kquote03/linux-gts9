@@ -618,6 +618,15 @@ static int hi1337_probe(struct i2c_client *client)
 	ret = media_entity_pads_init(&sensor->sd.entity, 1, &sensor->pad);
 	if (ret)
 		goto free_controls;
+	/*
+	 * Use the core helper, which parses lens-focus and registers the
+	 * sub-device notifier *before* the subdev. Do not register the subdev
+	 * first and the lens notifier afterwards (the SM-X710 fork does):
+	 * with a modular CAMSS that is already loaded, the subdev binds to
+	 * CAMSS immediately, its lens notifier is then orphaned (no parent, so
+	 * the lens is never bound), and CAMSS's notifier can never complete --
+	 * no sensor->CSIPHY links and no subdev nodes for either camera.
+	 */
 	ret = v4l2_async_register_subdev_sensor(&sensor->sd);
 	if (ret)
 		goto cleanup_entity;

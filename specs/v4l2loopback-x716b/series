@@ -1,0 +1,4 @@
+# Applied in this order with `patch -p1` (scripts/lib/downstream.sh).
+0001-backward-compatible-client-usage-event.patch
+0002-fix-buffer-queue-management.patch
+0003-preserve-output-queue-for-capture.patch

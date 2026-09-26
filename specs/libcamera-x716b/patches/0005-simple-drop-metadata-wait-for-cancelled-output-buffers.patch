@@ -1,0 +1,39 @@
+Subject: simple: don't wait for metadata of cancelled software ISP outputs
+
+With the software ISP a request only completes once its buffers are done
+and its metadata has been processed. SoftwareIsp::stop() cancels the output
+buffers of the frames still in flight, but the IPA is stopped by then and
+never produces metadata for them. conversionOutputDone() did not drop the
+metadata requirement for cancelled or errored buffers (unlike the raw
+capture error path in imageBufferReady()), so those requests were never
+completed, remained in queuedRequests_, and PipelineHandler::stop() hit
+ASSERT(data->queuedRequests_.empty()). Applications such as GNOME Camera
+(through PipeWire/WirePlumber) aborted whenever a stream was stopped with
+frames in flight, e.g. when switching cameras.
+
+Upstream master has the same logic.
+
+diff --git a/src/libcamera/pipeline/simple/simple.cpp b/src/libcamera/pipeline/simple/simple.cpp
+index efaba09b8..afb979f60 100644
+--- a/src/libcamera/pipeline/simple/simple.cpp
++++ b/src/libcamera/pipeline/simple/simple.cpp
+@@ -1034,6 +1034,19 @@ void SimpleCameraData::conversionOutputDone(FrameBuffer *buffer)
+ 
+ 	/* Complete the buffer and the request. */
+ 	Request *request = buffer->request();
++
++	/*
++	 * When the software ISP stops, it cancels the output buffers of the
++	 * frames still in flight and never produces metadata for them. Don't
++	 * wait for metadata that cannot arrive, or the request would stay
++	 * queued forever and PipelineHandler::stop() would assert on it.
++	 */
++	if (buffer->metadata().status != FrameMetadata::FrameSuccess) {
++		SimpleFrameInfo *info = frameInfo_.find(request->sequence());
++		if (info)
++			info->metadataRequired = false;
++	}
++
+ 	if (pipe->completeBuffer(request, buffer))
+ 		tryCompleteRequest(request);
+ }

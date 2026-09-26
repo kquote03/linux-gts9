@@ -8,6 +8,7 @@
 
 let
   patchDir = specsSrc + "/hexagonrpcd-samsung/patches";
+  seriesPatches = import ./series.nix { inherit lib; };
 in
 stdenv.mkDerivation rec {
   pname = "hexagonrpcd";
@@ -18,13 +19,8 @@ stdenv.mkDerivation rec {
     sha256 = "1wflap1fmxrjh6zrmn2aqmc76w1ba4yczd31kprqanw821fb0biq";
   };
 
-  # Alphabetical, matching the Fedora builder's `for p in .../*.patch`.
-  patches = [
-    (patchDir + "/hexagonrpc-large-inbufs.patch")
-    (patchDir + "/support-samsung-sensor-registry-writes.patch")
-    (patchDir + "/systemd-services.patch")
-    (patchDir + "/zz-map-sns-reg-version-at-root.patch")
-  ];
+  # Ordered by specs/hexagonrpcd-samsung/series, shared with every other builder.
+  patches = seriesPatches (specsSrc + "/hexagonrpcd-samsung");
 
   nativeBuildInputs = [ meson ninja pkg-config ];
   buildInputs = [ qrtr ];

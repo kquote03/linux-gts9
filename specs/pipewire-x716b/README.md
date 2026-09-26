@@ -4,8 +4,8 @@ libcamera SPA plugin from the exact Fedora SRPM matching installed
 core package, source RPM/hash and libcamera version in
 `/usr/share/gts9-camera/spa-build.txt`. Source mirrors must still carry that
 exact package; builds fail rather than substituting a newer release.
-The plugin remains `.so.disabled` until hardware idle-memory
-and streaming tests pass.
+The plugin is installed enabled (`libspa-libcamera.so`); an earlier leak came
+from the old 1.0.5-era plugin. A WirePlumber memory cap drop-in backs it, and a long soak test is still to do.
 
 The helper needs `rpm-build`, a DNF download plugin, Python 3, GCC C++,
 Meson, and the camera build dependencies already installed by the Fedora
@@ -13,7 +13,7 @@ builder. Set `TMPDIR=/var/tmp` for native tablet builds to avoid the small
 `/tmp` tmpfs. Set `DESTDIR` to a scratch directory to collect the plugin and
 manifest without changing the active system plugin.
 
-The `patches/` directory is historical: it targets the sibling tablet's
+The `patches/` directory is historical and **not applied** by any builder (there is no `series` file): it targets the sibling tablet's
 PipeWire 1.0.5-era commit, and must not be applied to current Fedora releases.
 In particular, it omits upstream control-pagination fixes
 `e5afc939e8d053e3331e401f29bdc9913bf200f0` and

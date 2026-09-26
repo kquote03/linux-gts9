@@ -27,21 +27,34 @@ done
 }
 rpm -i --nodeps --define "_topdir $work_dir/rpm" "$work_dir/$source_rpm"
 rpmbuild -bp --nodeps --define "_topdir $work_dir/rpm" "$work_dir/rpm/SPECS/pipewire.spec"
-mapfile -t source_dirs < <(find "$work_dir/rpm/BUILD" -type f \
+# No process substitution: the build chroot has no /dev/fd, so `< <(find ...)`
+# fails with "/dev/fd/63: No such file or directory".
+found_dirs=$(find "$work_dir/rpm/BUILD" -type f \
     -path '*/spa/plugins/libcamera/libcamera-source.cpp' -printf '%h\n')
+source_dirs=()
+while IFS= read -r line; do
+    [[ -z $line ]] || source_dirs+=("$line")
+done <<<"$found_dirs"
 [[ ${#source_dirs[@]} == 1 ]] || {
     echo 'Expected exactly one prepared PipeWire source tree' >&2; exit 1;
 }
 source_dir=${source_dirs[0]%/spa/plugins/libcamera}
 python3 "$spec_dir/test-control-pagination.py" "$source_dir"
-meson setup "$work_dir/build" "$source_dir" --prefix=/usr --libdir=lib64 \
+# Release build: meson defaults to buildtype=debug (-O0); the rest of the
+# camera stack was found to be built that way (docs/porting-log.md Session 24).
+meson setup "$work_dir/build" "$source_dir" --prefix=/usr --libdir=lib64 --buildtype=release \
     -Dauto_features=disabled -Dspa-plugins=enabled -Ddbus=disabled \
     -Dudev=enabled -Dlibcamera=enabled -Dsession-managers=[]
 meson compile -C "$work_dir/build" spa-libcamera
-# Hardware idle memory validation is still required before activation.
+# Enabled by default: the WirePlumber leak that kept this disabled came from the
+# old PipeWire 1.0.5-era plugin. This build was tested on the tablet only for
+# minutes (flat memory idle and streaming, 80 rapid camera switches); a long soak
+# is still to do, so a WirePlumber memory cap
+# (rootfs/overlay-systemd/usr/lib/systemd/user/wireplumber.service.d/) backs it.
+# A previous build may have left the old disabled copy next to it.
+rm -f "$install_root/usr/lib64/spa-0.2/libcamera/libspa-libcamera.so.disabled"
 install -Dm755 "$work_dir/build/spa/plugins/libcamera/libspa-libcamera.so" \
-    "$install_root/usr/lib64/spa-0.2/libcamera/libspa-libcamera.so.disabled"
-rm -f "$install_root/usr/lib64/spa-0.2/libcamera/libspa-libcamera.so"
+    "$install_root/usr/lib64/spa-0.2/libcamera/libspa-libcamera.so"
 mkdir -p "$install_root/usr/share/gts9-camera"
 {
     echo 'source_kind=Fedora-SRPM-prepared-with-downstream-patches'
@@ -50,5 +63,5 @@ mkdir -p "$install_root/usr/share/gts9-camera"
     printf 'pipewire_source_rpm=%s\n' "$source_rpm"
     printf 'pipewire_source_sha256=%s\n' "$(sha256sum "$work_dir/$source_rpm" | cut -d' ' -f1)"
     printf 'libcamera_version=%s\n' "$(pkg-config --modversion libcamera)"
-    echo 'plugin_default=disabled-pending-hardware-validation'
+    echo 'plugin_default=enabled'
 } > "$install_root/usr/share/gts9-camera/spa-build.txt"

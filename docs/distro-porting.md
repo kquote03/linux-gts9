@@ -12,6 +12,15 @@ carries five rootfs builders (`build-fedora-rootfs.sh`, `-alpine-`,
 `-buildroot-`, `-ubuntu-`, plus the bring-up ramdisk); the split below
 exists so the next one doesn't silently miss this work.
 
+> **Downstream patches.** The userland components this port builds from source
+> (libssc, pd-mapper, hexagonrpcd, iio-sensor-proxy, libcamera, v4l2-relayd) are
+> patched, and none of the patches can be left to a distro's own packaging.
+> Their versions, patch order and build flags live in one place
+> (`specs/sources.lock`, `specs/<component>/series`) and are built by the shared
+> `scripts/build-downstream-userland.sh`, which every rootfs builder calls. What
+> each patch does, why it is not upstream and what each distro still lacks:
+> `docs/downstream-patches.md`.
+
 ## The split
 
 **`rootfs/overlay-common/`** — apply this from *every* rootfs builder,
@@ -86,6 +95,12 @@ cover:
    sm8550/` the same way `build-fedora-rootfs.sh` does. This is pure data,
    not distro-specific at all, but a builder that doesn't know to look
    there will silently ship a device with no ADSP and no sound.
+   Also stage `vendor-firmware-dump/firmware/vpu30_4v.mbn` at
+   `/lib/firmware/qcom/vpu/vpu30_4v.mbn`: the DTS's `&iris` node names it,
+   and it is this device's Samsung-signed VPU image (an X710 copy will not
+   authenticate). Without it the iris driver fails to probe and there is no
+   hardware video decode (`build-fedora-rootfs.sh` fails the build if it is
+   missing; the other builders have not been updated yet).
 4. Confirm *something* triggers ALSA UCM's `BootSequence` for the sound
    card (see the `overlay-common` note above), or otherwise apply the
    equivalent `amixer cset` calls some other way -- without this the

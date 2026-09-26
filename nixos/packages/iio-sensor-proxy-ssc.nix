@@ -1,10 +1,13 @@
 # iio-sensor-proxy 3.9 built with -Dssc-support=enabled + libssc, so it
 # can read the accel/ALS the SSC serves on this SoC (the kernel-IIO-only
 # upstream/nixpkgs build sees nothing here). Same source + the
-# notify-slow-sensor-discovery patch the Fedora builder uses.
+# patch series (specs/iio-sensor-proxy-libssc/series) every builder uses.
 { lib, stdenv, fetchzip, meson, ninja, pkg-config, glib, gtk-doc, systemd
 , libgudev, polkit, umockdev, libssc, specsSrc }:
 
+let
+  seriesPatches = import ./series.nix { inherit lib; };
+in
 stdenv.mkDerivation rec {
   pname = "iio-sensor-proxy";
   version = "3.9-ssc";
@@ -14,9 +17,8 @@ stdenv.mkDerivation rec {
     sha256 = "044vhkbivpb84cs9zddbri36s4960dqp1z9m2dh0id4hkqbgipyq";
   };
 
-  patches = [
-    (specsSrc + "/iio-sensor-proxy-libssc/patches/notify-slow-sensor-discovery.patch")
-  ];
+  # Ordered by specs/iio-sensor-proxy-libssc/series, shared with every other builder.
+  patches = seriesPatches (specsSrc + "/iio-sensor-proxy-libssc");
 
   nativeBuildInputs = [ meson ninja pkg-config gtk-doc ];
   buildInputs = [ glib systemd libgudev polkit umockdev libssc ];

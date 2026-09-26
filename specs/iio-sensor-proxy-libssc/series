@@ -1,0 +1,3 @@
+# Applied in this order with `patch -p1` (scripts/lib/downstream.sh).
+notify-slow-sensor-discovery.patch
+start-polling-claimed-while-starting.patch

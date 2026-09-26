@@ -5136,3 +5136,225 @@ process restarted because its old PipeWire sockets were invalid. After a
 fresh Elisa process opened the same track, the user again confirmed all four
 speakers working. This exercises a complete stream close, amplifier runtime
 suspend, audio-service restart, fresh stream open, and four-speaker playback.
+
+## Session 24 — 2026-09-25 — Port camera, sensor and video-decode fixes from the SM-X710 fork
+
+Source: `gts9wifi-fedora-new/` (troikoss/gts9wifi-fedora, the Wi-Fi Tab S9,
+same SM8550 and mostly the same board; kept untracked as reference input).
+Everything below was **built/compiled only** — nothing was flashed or run
+on an X716B, so every item is unverified on this device.
+
+Ported:
+- **Iris hardware decode.** `&iris` enabled with
+  `firmware-name = "qcom/vpu/vpu30_4v.mbn"`; `SM_VIDEOCC_8550` and
+  `VIDEO_QCOM_IRIS` stated as `=m` in the fragment (already `=m` in the
+  base); `build-fedora-rootfs.sh` stages *this device's own*
+  `vendor-firmware-dump/firmware/vpu30_4v.mbn` (sha `422207…`). The fork's
+  downloadable blob (sha `431e97…`) is X710-signed and differs, so it was
+  deliberately not used.
+- **HI1337 lens binding.** The driver now registers with
+  `v4l2_async_register_subdev()` and binds `lens-focus` through a
+  sub-device notifier (ancillary sensor→lens link), replacing
+  `v4l2_async_register_subdev_sensor()`. **DW9808** initialises only once
+  the shared `rear_cam_vio` rail is up (`dw9808_ensure_ready`); the old
+  open-time init is the likely cause of the recorded `EINVAL` on subdev
+  open. Kept ours: the stricter chip-ID check, the X716B front
+  2032x1524 mode table and `hynix,hi1337-gts9-*` compatibles; dropped the
+  fork's `DBG:` register dumps and the Ultra-only front-uw variant.
+- **DTS.** Rear and front `rotation = <0>` (the fork measured stock
+  `sensor-position-roll` does not map onto the property); front camera
+  enabled with `&camss` `port@4` and endpoint links restored.
+- **Focus.** udev default `focus_absolute=384` (X710-measured, not
+  measured here) and `tools/gts9-autofocus.c` (device nodes overridable via
+  `GTS9_AF_*`; not installed in the image).
+- **Sensors.** `ssc-accel` `IIO_SENSOR_PROXY_TYPE` tag on `fastrpc-adsp`;
+  `start-polling-claimed-while-starting.patch` for iio-sensor-proxy 3.9
+  (applies cleanly after `notify-slow-sensor-discovery`); Fedora and
+  Debian builders now apply every patch in the directory. `v4l-utils`
+  added to the Fedora image for the focus rule.
+
+Deliberately **not** ported:
+- L11B rail at 1.104 V. The fork lowered the shared panel/front-camera
+  rail; this tablet's stock DTS votes 1.2 V for the panel VDD, and the
+  panel is the only display, so `vreg_l11b_1p2` is unchanged and the front
+  sensor runs from that 1.2 V rail. Revisit only with a measured stock
+  camera-side vote.
+- The fork's `gts9wifi-sensors-resume`/wait-for-sensor-proxy scripts: ours
+  are newer (PD-map check, bounded `timeout`s, bind-mounted HexagonFS
+  registry).
+- The libcamera HI1337 helper: ours (`0001-…`) already has
+  `blackLevel_ = 4096` and `AnalogueGainLinear{1,16,0,16}`.
+- The `gts9wifi` paths, the X710 sensor mount matrix values (ours kept;
+  the 5G orientation is not separately measured) and the fork's
+  MEDIA_SUPPORT/`=y` camera builds.
+
+Front-camera revert recipe: if the rear disappears from `media-ctl -p`
+(a failed front probe blocks camss's async notifier — first seen
+2026-09-15), set `hi1337_front` to `status = "disabled"` and drop `&camss`
+`port@4` plus the front node's `port {}`.
+
+Verification done offline: DTB builds (iris, front endpoints resolve),
+`hi1337_gts9.o`/`dw9808_vcm.o` compile against the tree with the repo
+config, `tools/gts9-autofocus.c` compiles `-Wall` clean,
+`test-verify-camera-config.py` passes, both iio-sensor-proxy patches
+apply, `bash -n` on the builders.
+On-device checklist: `v4l2-ctl --list-devices` shows `iris_driver` and a
+VP9 file decodes with hardware; `media-ctl -p` shows rear and front links
+and the lens ancillary link; `cam -l`; `monitor-sensor` rotation after
+boot and after suspend/resume.
+
+### Session 24 addendum — 2026-09-26 — first boot of the port: graph fix, first frames
+
+First boot of the ported build (SSH over USB). Iris came up (`Iris Decoder`
+on `/dev/video0`/`video1`), but the camera graph did not: both HI1337
+sensors probed (`rear-main`/`front-main` model 0x1337 — the front works at
+`0x21` on the 1.2 V L11B rail) yet `media-ctl -p` showed both with **0 links**,
+no subdev nodes, and `cam -l` said "No sensor found". The kernel's
+`v4l2-async/pending_async_subdevices` showed the rear sensor waiting on
+`lens@c`.
+
+Cause: the fork's probe order (`v4l2_async_register_subdev()` *then* a lens
+sub-notifier) only works when the sensor probes before CAMSS (its drivers are
+built in). With modular CAMSS already loaded, the sensor binds immediately,
+`v4l2_async_nf_try_subdev_notifier()` finds no sub-notifier yet, and the
+later-registered notifier has no parent, so the lens is never bound.
+`v4l2_async_nf_can_complete()` then blocks CAMSS's notifier, so
+`camss_subdev_notifier_complete()` never creates the sensor→CSIPHY links.
+
+Fix: `hi1337_probe()` uses `v4l2_async_register_subdev_sensor()` again (lens
+notifier registered before the subdev); the custom notifier code is removed.
+Loaded onto the tablet as a module swap + reboot; result: both sensors link
+to `msm_csiphy1`/`msm_csiphy4`, `dw9808-vcm` is an entity, `cam -l` lists both
+cameras, `focus_absolute` reads 384 (udev default applied, lens opens).
+`cam` captures: rear 4120x3096 at ~3.75 fps (full-resolution software ISP),
+front 2024x1524 at ~15 fps; both frames are recognisable, upright and
+in focus, dim indoors with a blue cast (grey-world AWB). Not yet checked:
+autofocus, low-light exposure/gain tuning, GNOME (SPA plugin and relays are
+still disabled by design).
+
+### Session 24 addendum 2 — 2026-09-26 — GNOME Camera switch crash: root cause, partial fix, release build
+
+**Snapshot crash.** Switching rear/front in GNOME Camera stops the running
+camera; libcamera then aborts (`pipeline_handler.cpp:398 assertion
+"data->queuedRequests_.empty()" failed in stop()`), taking WirePlumber (which
+hosts the SPA plugin) with it; Snapshot loses its PipeWire remote and hangs
+(`Could not start camerabin`). Cause, in `simple.cpp`: with the software ISP a
+request completes only when its buffers are done *and* its metadata arrived;
+`SoftwareIsp::stop()` cancels the in-flight output buffers, the IPA is already
+stopped, and `conversionOutputDone()` never dropped `metadataRequired` for
+cancelled/errored buffers, so those requests stay in `queuedRequests_`.
+Upstream master has identical code. New patch
+`specs/libcamera-x716b/patches/0005-simple-drop-metadata-wait-for-cancelled-output-buffers.patch`
+(applies on the pin + 0001-0004).
+
+**Build type.** The source-built libcamera was `-g -O0` (no `-Dbuildtype`, so
+Meson defaulted to `debug`). `--buildtype=release` is now set for libcamera and
+the SPA plugin. Measured with `cam` on the tablet: rear 3.75 -> 29.6 fps at
+4120x3096, front ~15 -> 30 fps; the 2 s software-ISP stop timeout on the rear
+camera disappeared.
+
+**Results.** `cam` interrupted mid-stream (fresh process each time): 18/20
+aborts before, 0/30 after 0005. Under WirePlumber (20 rear/front start-stop
+cycles per variant, private libcamera prefixes via `LD_LIBRARY_PATH`):
+release without 0005 -> 1 SIGABRT; release with 0005 -> 1 SIGSEGV; debug with
+0005 -> 4 SIGSEGV. The SEGV is in the software-ISP worker
+(`DebayerCpu::process -> Debayer::dmaSyncBegin -> SharedFD copy`, use of an
+already-freed buffer) while the camera thread is in `SoftwareIsp::start()`.
+Every WirePlumber instance so far died once (ABRT before 0005, SEGV after) and
+then survived the rest of the run, so **the crash is not fixed for GNOME Camera**:
+0005 removes the assertion but a related stop/start race in the software ISP
+remains. Not yet explained: which frame reaches the worker after stop. Ruled
+out: the SPA plugin requeueing cancelled requests (it disconnects
+`requestCompleted` before `camera->stop()`). Next steps: inspect a core dump
+(`coredumpctl gdb`) for the `input`/`output` FrameBuffer being processed and
+whether it belongs to the previous stream; try current libcamera master with
+0001-0005; consider draining the debayer worker's message queue in
+`SoftwareIsp::stop()`.
+
+### Session 24 addendum 3 — 2026-09-26 — Fast-switch crash fixed (patch 0006)
+
+User report: switching cameras in GNOME Camera works after 0005, but switching
+*too fast* crashes it. Reproduced with overlapping PipeWire clients (start the
+second camera 0.4 s before the first stops) on a `-O0` libcamera with
+`LIBCAMERA_LOG_LEVELS` debug logging: WirePlumber SIGSEGVs on the 3rd round,
+in the software-ISP worker (`DebayerCpu::process -> Debayer::dmaSyncBegin ->
+SharedFD copy`) right after the camera thread calls `Camera::start()` again.
+
+Root cause: `SoftwareIsp::stop()` stops the debayer worker thread and then calls
+`ipa_->stop()`, a synchronous IPC call whose `IPCPipeUnixSocket::call()` spins a
+nested `processEvents()` loop while waiting. That loop can deliver one more V4L2
+capture completion -> `imageBufferReady()` -> `SoftwareIsp::queueBuffers()` ->
+`process()`, posting a `Debayer::process` message to the worker that was just
+stopped. It stays queued and runs on the next `start()` on buffers that were
+released in between. This also explains the intermittent "Obtained an
+uninitialised FrameContext" warning, and why the crash was timing dependent and
+seen about once per WirePlumber instance (0005 only changed it from an abort to
+this segfault by completing cancelled requests earlier).
+
+Fix: `specs/libcamera-x716b/patches/0006-software-isp-dont-queue-work-to-a-stopped-worker.patch`
+skips posting work when `ispWorkerThread_` is not running; the buffers are
+already in `queuedInput/OutputBuffers_` and `stop()` cancels them afterwards.
+
+Verification on the tablet (release build with 0005+0006): 80 overlapping
+rear/front switches under WirePlumber with a private prefix (0 crashes; the same
+scenario crashed by the 3rd round before), then after installing system-wide:
+24 overlapping switches -> 0 WirePlumber restarts, `cam` mid-stream interrupt
+loop 0/12 aborted, no new core dumps. Not yet tested by hand in GNOME Camera.
+
+Note: with overlapping streams the second camera's `configure()` fails with
+`EBUSY` ("Failed to setup link 'msm_csiphyN'[1] -> 'msm_csid0'[0]") until the
+first has stopped, because the two cameras share CSID0/VFE0/video0 (0004 resets
+the shared links and cannot disable one that is in use). This is expected and
+harmless (the SPA returns `EBUSY`), but an application that does not retry will
+show no picture after a very fast switch.
+
+### Session 24 addendum 4 — 2026-09-26 — Downstream patches made reproducible and distro-agnostic
+
+Problem: the patches this port depends on (kernel, libcamera, hexagonrpcd,
+iio-sensor-proxy, v4l2loopback, v4l2-relayd) can't be left to distro packaging,
+but their versions, patch order and build flags were spread over inline blocks in
+`build-fedora-rootfs.sh`, a partly duplicated `build-debian-rootfs.sh`, hardcoded
+lists in the NixOS derivations (which had already drifted: it lacked
+`start-polling-claimed-while-starting`) and `build-mainline-kernel.sh`.
+
+Now, one source of truth:
+- `specs/sources.lock` pins every upstream source by **full commit** (tags and
+  tarball hashes were rejected: moved tags, archive-compression drift). The
+  v4l2-relayd pin was an annotated tag object that `git checkout` had silently
+  peeled; it is now the peeled commit `9c4f731`.
+- `specs/<component>/series` is the ordered patch list.
+- `scripts/lib/downstream.sh` + `scripts/build-downstream-userland.sh` fetch, verify,
+  patch, build and install libssc, pd-mapper, hexagonrpcd, iio-sensor-proxy,
+  libcamera and v4l2-relayd identically on any distro (`--prefix`, `--libdir`,
+  `--destdir`); they write provenance (commit, series digest) to
+  `<prefix>/share/gts9-userland/`.
+- Fedora and Debian builders now only install build dependencies and call it;
+  the NixOS packages read the same `series` files (`nixos/packages/series.nix`);
+  the kernel script gets v4l2loopback the same way.
+- `scripts/test-downstream-patches.sh` fetches every pinned source, applies every
+  series, and fails on orphan patch files (CI-friendly; no build dependencies).
+  All seven components pass.
+- `docs/downstream-patches.md` inventories every patch (what, why, upstream
+  outlook, which distro applies it) and gives the porting checklist. Honest gaps
+  recorded there: Debian and NixOS still have no camera stack; the libcamera
+  0005/0006 fixes and the two iio-sensor-proxy patches are realistic upstream
+  candidates but none has been submitted; the `camss-log-csi2-rx-irq-status`
+  debug patch still floods `dmesg` and should go.
+
+Also in this change: the SPA plugin now ships enabled
+(`libspa-libcamera.so`) with a WirePlumber memory cap
+(`rootfs/overlay-systemd/usr/lib/systemd/user/wireplumber.service.d/10-gts9-memory-cap.conf`),
+`libcamera` and the plugin build with `--buildtype=release`, and v4l2-relayd's
+own `modprobe.d` file (which overrode the loopback labels) is dropped.
+
+Artifacts of the Session 24 rebuild (kernel `7.2.0-dirty`, not flashed): rootfs
+image `out/fedora/x716b-fedora-gnome-rootfs.img` sha256
+`3401bbe6a5bb5536da3afd0d6649454403135fade198c701a40bc22cafec221f`, rootfs tarball
+`out/fedora/x716b-fedora-44-gnome-rootfs.tar.gz` sha256
+`c9c3027f32ffcba5e0f227e6aaf5112e3b87e9d004c61d54b04b6a0468cae5c1`; boot images
+rebuilt from the same kernel (`out/android/`; the previously flashed set is kept in
+`out/android/previous-2026-09-26-flashed/`). The Fedora builder reuses an existing
+`out/fedora/rootfs`, so leftovers of earlier builds can survive in it (a stale
+`libspa-libcamera.so.disabled` did; the SPA step now removes it). For a clean,
+from-scratch build delete `out/fedora/rootfs` first (as root in the builder's user
+namespace); a fully clean rebuild has not been run yet.
