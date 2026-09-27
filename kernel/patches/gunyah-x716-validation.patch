@@ -1,0 +1,142 @@
+--- a/drivers/virt/gunyah/qcom_bootinfo.c
++++ b/drivers/virt/gunyah/qcom_bootinfo.c
+@@ -17,6 +17,7 @@
+ #include <linux/of.h>
+ #include <linux/of_platform.h>
+ #include <linux/slab.h>
++#include <linux/overflow.h>
+ #include <linux/uaccess.h>
+ 
+ #define QCOM_HYP_INFO_GET_DTB_ADDRESS	0x02000609U
+@@ -40,8 +41,11 @@
+ static int qcom_hyp_read(phys_addr_t phys, void *dst, size_t size)
+ {
+ 	void __iomem *mapping;
++	phys_addr_t end;
+ 	int ret;
+ 
++	if (!phys || !size || check_add_overflow(phys, (phys_addr_t)size, &end))
++		return -EINVAL;
+ 	mapping = ioremap(phys, size);
+ 	if (!mapping)
+ 		return -ENOMEM;
+@@ -56,12 +60,34 @@
+ 		"/__local_fixups__", "/__fixups__", "/fragment@4",
+ 		"/fragment@3", "/fragment@2", "/fragment@1",
+ 	};
++	struct device_node *gic;
++	const char *target;
+ 	const fdt32_t *old_interrupts;
+ 	fdt32_t interrupts[8];
+ 	unsigned int i;
+ 	int len;
+-	int node, ret;
+-
++	int node, ret, child, overlay;
++
++	/* X716B: accept only a root-targeted RM overlay, never firmware carveouts. */
++	node = fdt_path_offset(fdt, "/fragment@0");
++	if (node < 0)
++		return node;
++	target = fdt_getprop(fdt, node, "target-path", &len);
++	if (!target || len != 2 || memcmp(target, "/", 2))
++		return -EINVAL;
++	if (fdt_getprop(fdt, node, "target", NULL))
++		return -EINVAL;
++	/* Reject unknown fragments instead of silently applying them. */
++	fdt_for_each_subnode(node, fdt, 0) {
++		const char *name = fdt_get_name(fdt, node, NULL);
++		if (!strcmp(name, "fragment@0"))
++			continue;
++		for (i = 0; i < ARRAY_SIZE(discard); i++)
++			if (!strcmp(name, discard[i] + 1))
++				break;
++		if (i == ARRAY_SIZE(discard))
++			return -EINVAL;
++	}
+ 	for (i = 0; i < ARRAY_SIZE(discard); i++) {
+ 		node = fdt_path_offset(fdt, discard[i]);
+ 		if (node < 0) {
+@@ -74,13 +100,32 @@
+ 			return ret;
+ 	}
+ 
++	overlay = fdt_path_offset(fdt, "/fragment@0/__overlay__");
++	if (overlay < 0)
++		return overlay;
++	fdt_for_each_subnode(child, fdt, overlay)
++		if (strcmp(fdt_get_name(fdt, child, NULL), "hypervisor"))
++			return -EINVAL;
+ 	node = fdt_path_offset(fdt, "/fragment@0/__overlay__/hypervisor");
+ 	if (node < 0)
+ 		return node;
++	fdt_for_each_subnode(child, fdt, node)
++		if (fdt_node_check_compatible(fdt, child, "qcom,resource-manager-1-0"))
++			return -EINVAL;
+ 	node = fdt_node_offset_by_compatible(fdt, node,
+ 					    "qcom,resource-manager-1-0");
+ 	if (node < 0)
+ 		return node;
++	/* Resolve the mainline interrupt controller; firmware phandles differ. */
++	gic = of_find_compatible_node(NULL, NULL, "arm,gic-v3");
++	if (!gic || !gic->phandle) {
++		of_node_put(gic);
++		return -ENODEV;
++	}
++	ret = fdt_setprop_u32(fdt, node, "interrupt-parent", gic->phandle);
++	of_node_put(gic);
++	if (ret)
++		return ret;
+ 	old_interrupts = fdt_getprop(fdt, node, "interrupts", &len);
+ 	if (!old_interrupts || len != 6 * sizeof(*old_interrupts))
+ 		return -EINVAL;
+@@ -89,6 +134,8 @@
+ 	 * SPI interrupts must set that extra cell to zero.
+ 	 */
+ 	for (i = 0; i < 2; i++) {
++		if (fdt32_to_cpu(old_interrupts[i * 3]) != 0)
++			return -EINVAL;
+ 		memcpy(&interrupts[i * 4], &old_interrupts[i * 3],
+ 		       3 * sizeof(*old_interrupts));
+ 		interrupts[i * 4 + 3] = cpu_to_fdt32(0);
+@@ -116,7 +163,7 @@
+ 	ret = qcom_hyp_read(phys, fdt, allocation);
+ 	if (ret)
+ 		goto out;
+ 	ret = fdt_check_header(fdt);
+ 	if (ret)
+ 		goto out;
+ 	total = fdt_totalsize(fdt);
+@@ -171,7 +218,11 @@
+ 	    info.size < offsetofend(struct qcom_hyp_bootinfo, num_dtbos))
+ 		return -EINVAL;
+ 
+-	count = min_t(unsigned int, info.num_dtbos, QCOM_HYP_MAX_DTBOS);
++	if (!info.num_dtbos || info.num_dtbos > QCOM_HYP_MAX_DTBOS ||
++	    info.size < offsetof(struct qcom_hyp_bootinfo, dtbo) +
++			info.num_dtbos * sizeof(info.dtbo[0]))
++		return -EINVAL;
++	count = info.num_dtbos;
+ 	for (i = 0; i < count; i++) {
+ 		ret = qcom_hyp_apply_dtbo(info.dtbo[i].base, info.dtbo[i].size);
+ 		if (!ret)
+--- a/drivers/virt/gunyah/gunyah_qcom.c
++++ b/drivers/virt/gunyah/gunyah_qcom.c
+@@ -6,6 +6,7 @@
+ #include <linux/arm-smccc.h>
+ #include <linux/gunyah_rsc_mgr.h>
+ #include <linux/module.h>
++#include <linux/of.h>
+ #include <linux/firmware/qcom/qcom_scm.h>
+ #include <linux/types.h>
+ #include <linux/uuid.h>
+@@ -152,7 +153,8 @@
+ static int __init qcom_gh_platform_hooks_register(void)
+ {
+ 	/* Never issue a private SMC without a probed SCM provider. */
+-	if (!qcom_scm_is_available())
++	if (!of_machine_is_compatible("samsung,gts9-5g") ||
++	    !qcom_scm_is_available())
+ 		return -ENODEV;
+ 
+ 	if (!gh_has_qcom_extensions())

@@ -32,6 +32,25 @@ apply_unless() {
 	fi
 }
 
+# Reject experimental Gunyah extensions in a reused source tree.
+if [ -f "$kdir/drivers/virt/gunyah/vm_mgr_cma_mem.c" ] ||
+   grep -qs GH_VM_ANDROID_SET_AUTH_TYPE "$kdir/include/uapi/linux/gunyah.h"; then
+    echo "experimental Gunyah source tree: use a clean checkout" >&2
+    exit 1
+fi
+if [ ! -f "$kdir/drivers/virt/gunyah/rsc_mgr.c" ]; then
+    patch -d "$kdir" -p1 < "$pat/gunyah-host-vm-manager.patch"
+fi
+if [ ! -f "$kdir/drivers/virt/gunyah/qcom_bootinfo.c" ]; then
+    patch -d "$kdir" -p1 < "$pat/gunyah-qcom-runtime-overlay.patch"
+fi
+apply_unless 'of_machine_is_compatible' drivers/virt/gunyah/qcom_bootinfo.c gunyah-qcom-runtime-overlay-platform-guard.patch
+apply_unless 'Never issue a private SMC' drivers/virt/gunyah/gunyah_qcom.c gunyah-qcom-platform-scm-guard.patch
+
+apply_unless "X716B: accept only" drivers/virt/gunyah/qcom_bootinfo.c gunyah-x716-validation.patch
+
+apply_unless CONFIG_X716_SCHED_BASE_SLICE_NS kernel/sched/fair.c x716-sched-slice-experiment.patch
+
 # SoC/PHY-IP-level boot-chain quirk, not board- or chip-specific: mainline's
 # PCIe0 QMP PHY driver never switches the GCC PIPE-clock mux off the XO
 # reference onto the PHY's own recovered clock, but Samsung's SM8550
@@ -448,47 +467,21 @@ mkdir -p "$outdir"
 echo "== defconfig =="
 make -C "$kdir" "${make_args[@]}" defconfig
 
+# Generate one explicit profile; do not allow arbitrary silent overrides.
+profile=${KERNEL_PROFILE:-baseline}
+python3 "$repo_root/scripts/kernel-optimization-profile.py" "$profile" \
+    "$repo_root/kernel/config/config-x716-optimized.fragment" "$outdir/optimization.fragment"
 echo "== merging config fragments =="
 "$kdir/scripts/kconfig/merge_config.sh" -O "$outdir" -m "$outdir/.config" \
 	"$repo_root/kernel/config/config-mainline.aarch64" \
-	"$repo_root/kernel/config/config-x716.fragment"
+	"$repo_root/kernel/config/config-x716.fragment" \
+	"$outdir/optimization.fragment"
 
 make -C "$kdir" "${make_args[@]}" olddefconfig
 
-echo "== verifying no board-fragment-requested symbol was silently dropped =="
-# Only config-x716.fragment is checked strictly: those are this project's
-# own deliberate, board-specific asks, and dependency resolution silently
-# dropping one of them is a real regression. config-mainline.aarch64 is
-# now a vendored 12,700-line generic base (gts9wifi-fedora's own
-# comprehensive config, see that file's header) -- resolving some of its
-# symbols differently against this project's specific patched tree/
-# from-scratch board drivers is expected, not a build-breaking
-# regression, so it's deliberately not held to the same airtight
-# standard.
-fail=0
-for frag in "$repo_root/kernel/config/config-x716.fragment"; do
-	while IFS='=' read -r key val; do
-		[ -z "$key" ] && continue
-		case "$key" in \#*) continue ;; esac
-		actual=$(grep -m1 "^$key=" "$outdir/.config" || true)
-		# Kconfig never writes "KEY=n" -- an explicitly-off boolean/tristate
-		# is represented as "# KEY is not set" instead. Recognize that form
-		# too, or every "=n" fragment request (e.g. CONFIG_SECURITY_SELINUX=n)
-		# falsely reports as dropped even when it landed correctly.
-		if [ "$val" = "n" ] && grep -qx "# $key is not set" "$outdir/.config"; then
-			continue
-		fi
-		if [ "$actual" != "$key=$val" ]; then
-			echo "MISMATCH: $key wanted $val, .config has: ${actual:-<unset>}" >&2
-			fail=1
-		fi
-	done < <(grep -E '^CONFIG_[A-Z0-9_]+=' "$frag")
-done
-if [ "$fail" -ne 0 ]; then
-	echo "one or more board-fragment symbols were dropped/changed by dependency resolution -- see above" >&2
-	exit 1
-fi
-echo "all board-fragment symbols present as requested"
+python3 "$repo_root/scripts/verify-kernel-fragments.py" "$outdir/.config" \
+    "$repo_root/kernel/config/config-x716.fragment" \
+    "$outdir/optimization.fragment"
 
 echo "== building Image (uncompressed -- uniLoader embeds a raw Image, not Image.gz) =="
 make -C "$kdir" "${make_args[@]}" -j"${BUILD_JOBS:-4}" Image

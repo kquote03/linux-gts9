@@ -53,6 +53,8 @@ device.
 | Hardware video decode (iris) | ⚠️ The iris driver probes with this device's own `vpu30_4v.mbn` (`Iris Decoder`/`Iris Encoder` nodes appear); ported from the SM-X710 fork, where VP9/H.264/HEVC decode in hardware. An actual decode on the X716B is not yet tested |
 | `/vendor` super partition (erofs) | ❌ needs a `make-dynpart-mappings` port neither project has done |
 | Cellular / 5G modem | ❌ permanent non-goal — no mainline story for Samsung's Shannon modem IPC on this SoC |
+| Waydroid prerequisites (binderfs, memfd) | ✅ `CONFIG_ANDROID_BINDERFS=y` confirmed on hardware: `binder`/`binder-control`/`hwbinder`/`vndbinder` all mount. Actual Binder IPC transaction/namespace/networking test and Android image install not yet done. See Session 27, `docs/porting-log.md`. |
+| Gunyah host (virtualization) | ⚠️ Host driver stack builds and boots (`CONFIG_GUNYAH=y`, vCPU/irqfd/ioeventfd/Qualcomm platform hooks). On hardware, firmware does supply a runtime RM overlay, but this port's importer rejects it (`dmesg`: "Qualcomm runtime RM overlay failed: -22") — `/dev/gunyah` never appears. Root cause not yet isolated between overly-strict local validation and a firmware-shape difference. No guest execution attempted. See Session 27, `docs/porting-log.md`. |
 
 ### Kernel config: broad hardware support, SELinux currently disabled
 

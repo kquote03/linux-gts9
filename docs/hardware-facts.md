@@ -1269,3 +1269,25 @@ the X716B**; see `docs/porting-log.md` Session 24.
 - **Accelerometer:** needs the `ssc-accel` tag on `fastrpc-adsp` for
   iio-sensor-proxy to look it up; the mount matrix in
   `61-gts9wifi-sensor-mount-matrix.rules` is unchanged from before.
+
+## Optimized kernel, Gunyah/binderfs (measured 2026-09-27, Session 27)
+
+- **Running kernel**: `7.2.0-x716-opt-baseline-dirty` boots and is stable
+  on the internal Fedora root (`/dev/sda34`). MGLRU active
+  (`/sys/kernel/mm/lru_gen/enabled` = `0x0003`). UFS root (`sda`) scheduler
+  unchanged from the pre-optimization baseline: BFQ, `low_latency=1`.
+- **Binderfs measured working**: `CONFIG_ANDROID_BINDERFS=y` mounts
+  `/dev/binderfs` with `binder`, `binder-control`, `hwbinder`, `vndbinder`
+  all present. Not yet measured: an actual cross-process Binder
+  transaction (`scripts/waydroid-kernel-smoke.c` exists but hasn't been
+  run against this kernel).
+- **Gunyah runtime RM overlay import fails on real X716B firmware**:
+  `dmesg` shows `Gunyah: Qualcomm runtime RM overlay failed: -22`
+  (`-EINVAL`) at `0.073217s` into boot, confirming the firmware *does*
+  provide a runtime overlay (this was previously unknown for X716B
+  specifically). `/dev/gunyah` does not appear. The specific failing
+  check inside `qcom_hyp_keep_rm_fragment()`/`qcom_hyp_read()` has not
+  been isolated — this is measured evidence of a rejection, not yet a
+  root cause, and not evidence either way about whether Ultra's firmware-
+  policy restriction (`ubuntu-galaxy-tab-s9-ultra/docs/virtualization.md`)
+  applies here too.

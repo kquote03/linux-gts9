@@ -1,0 +1,27 @@
+--- a/kernel/sched/fair.c
++++ b/kernel/sched/fair.c
+@@ -76,8 +76,8 @@
+  *
+  * (default: 0.70 msec * (1 + ilog(ncpus)), units: nanoseconds)
+  */
+-unsigned int sysctl_sched_base_slice			= 700000ULL;
+-static unsigned int normalized_sysctl_sched_base_slice	= 700000ULL;
++unsigned int sysctl_sched_base_slice			= CONFIG_X716_SCHED_BASE_SLICE_NS;
++static unsigned int normalized_sysctl_sched_base_slice	= CONFIG_X716_SCHED_BASE_SLICE_NS;
+ 
+ __read_mostly unsigned int sysctl_sched_migration_cost	= 500000UL;
+ 
+--- a/init/Kconfig
++++ b/init/Kconfig
+@@ -2319,3 +2319,11 @@
+ # <asm/syscall_wrapper.h>.
+ config ARCH_HAS_SYSCALL_WRAPPER
+ 	def_bool n
++
++config X716_SCHED_BASE_SLICE_NS
++	int "X716 normalized EEVDF base slice (nanoseconds)"
++	range 400000 700000
++	default 700000
++	help
++	  Controlled comparison of the unchanged 0.7 ms baseline against
++	  Zen's 0.4 ms normalized slice. No scheduler replacement.
