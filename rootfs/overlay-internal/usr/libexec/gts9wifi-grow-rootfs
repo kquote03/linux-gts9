@@ -1,0 +1,18 @@
+#!/bin/sh
+# Internal-storage override: only resize ext4 inside the existing partition.
+# No partition-table tools or disk-device writes are permitted here.
+set -eu
+stamp=/var/lib/gts9wifi-rootfs-grown
+[ ! -e "$stamp" ] || exit 0
+root=$(findmnt -nro SOURCE /)
+[ "$(findmnt -nro FSTYPE /)" = ext4 ] || exit 1
+[ "$(blkid -s LABEL -o value "$root")" = X716B_INTERNAL ] || exit 1
+before=$(blockdev --getsize64 "$root")
+resize2fs "$root"
+[ "$(blockdev --getsize64 "$root")" = "$before" ] || exit 1
+header=$(dumpe2fs -h "$root" 2>/dev/null)
+blocks=$(printf '%s\n' "$header" | awk -F: '/^Block count:/{gsub(/ /,"",$2);print $2}')
+blocksize=$(printf '%s\n' "$header" | awk -F: '/^Block size:/{gsub(/ /,"",$2);print $2}')
+[ "$blocks" -eq "$((before / blocksize))" ] || exit 1
+mkdir -p /var/lib
+touch "$stamp"

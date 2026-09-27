@@ -68,6 +68,8 @@
         CPP = "cc -E";
         KCFLAGS = "-resource-dir=${clangResDir} -isystem ${clangResDir}/include";
         BUSYBOX_AARCH64_STATIC = "${pkgs.pkgsCross.aarch64-multiplatform.pkgsStatic.busybox}/bin/busybox";
+        MUSL_AARCH64 = "${pkgs.pkgsCross.aarch64-multiplatform-musl.musl}";
+        MUSL_AARCH64_DEV = "${pkgs.pkgsCross.aarch64-multiplatform-musl.musl.dev}";
 
         # Confirmed live (this flake, first `nix develop` test): merely
         # listing `pkgsStatic.qemu-user` in `packages` is NOT enough --

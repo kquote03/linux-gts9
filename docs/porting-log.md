@@ -5477,3 +5477,51 @@ without `CMDLINE_EXTRA` and reflash `vendor_boot` for a normal image. Also open:
 new kernel behaviour (float voltage 4440 mV, `fast_charge`) is flashed but only the
 initramfs side was exercised; PD/PPS rates and battery-only suspend drain
 (`gts9wifi-sleep-audit`) are unmeasured.
+
+## Session 26 — 2026-09-26 — Fedora installed on internal userdata, unchanged GPT
+
+User requested a fresh Fedora internal install with absolutely no repartitioning.
+The explicit write allowlist was userdata, init_boot and vendor_boot. During
+the raw backup the user waived the planned battery threshold, then requested
+skipping userdata to finish sooner. No complete Android-data backup exists.
+
+Unmounted TWRP's data/sdcard/cache mounts and set runtime block read-only flags.
+Stopped the original capture at approximately 68 GiB, retained its partial file,
+reused the captured non-data prefix, and captured the final GPT plus all five
+other UFS LUs. Every sector outside userdata was independently hash-verified:
+`backups/2026-09-26-internal-excluding-userdata/`. Its manifest explicitly records
+the missing userdata range; its sparse sda image must never be restored wholesale.
+
+Built a fresh installation from the September 26 Fedora GNOME tarball with the
+current kernel's modules. The installed kernel payload matched the local Image
+byte-for-byte, so boot was retained. Repacked the current init_boot/vendor_boot
+ramdisks, retaining the deployed DTB and header metadata, removing debug telnet,
+and selecting only label `X716B_INTERNAL` in normal and charging-mode lookups.
+Added the missing musl exports to flake.nix so the charging initramfs builds
+through `nix develop`, matching shell.nix.
+
+The internal overlay replaces partition growth with filesystem-only resize2fs.
+An audit also found two pre-existing writes outside the allowlist: persist was
+mounted writable for calibration, and Bluetooth provisioning could rewrite boot.
+Before the first boot, installed overrides into userdata: persist and DSP mount
+read-only without journal replay; sensor registry changes use a copy under
+`/var/lib/gts9/sensor-registry`; automatic boot provisioning is disabled while
+retaining the already provisioned DTBs. Overlay files were readback-hash-verified.
+
+All three flashed images passed full readback hashes. Nine protected ranges
+covering every byte outside the allowlist (including all GPTs and gaps) matched
+the backup before/after installation and again after the userdata-only overrides.
+
+Real-hardware result: Fedora boots with the microSD still present, `/` is
+`/dev/sda34` ext4 rw,noatime,errors=remount-ro, and filesystem growth completed
+successfully to 27,510,263 4K blocks (about 104 GiB shown by df, 93 GiB free).
+GNOME/GDM, SSH and Bluetooth are active; Wi-Fi is connected. Persist and DSP
+are confirmed ro,norecovery, and the writable sensor registry bind resolves
+to userdata. All 85 partition starts/sizes and primary/backup GPT regions on
+all six LUs match the pre-install backup after boot and filesystem growth.
+
+Existing/non-blocking failures remain visible: sensor-proxy recovery, logrotate,
+sssd-kcm service/socket. No new sensor fix is claimed. Physical off-mode charging
+was not repeated in this expedited install; its internal-only root selection was
+verified in the built ramdisk. Evidence and staged artifacts are under
+`out/internal-fedora/`.

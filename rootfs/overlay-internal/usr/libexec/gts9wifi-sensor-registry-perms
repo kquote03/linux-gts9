@@ -1,0 +1,15 @@
+#!/bin/sh
+# Stock persist is immutable. Seed the writable registry in Fedora's userdata.
+set -eu
+source=/mnt/vendor/persist/sensors/registry
+cache=/var/lib/gts9/sensor-registry
+target=/usr/share/qcom/sm8550/Samsung/gts9-5g/sensors
+if [ ! -d "$cache" ]; then
+    [ -d "$source" ] || exit 0
+    mkdir -p /var/lib/gts9
+    cp -a "$source" "$cache.new"
+    mv "$cache.new" "$cache"
+fi
+chmod -R a+rwX "$cache"
+mkdir -p "$target"
+mountpoint -q "$target" || mount --bind "$cache" "$target"

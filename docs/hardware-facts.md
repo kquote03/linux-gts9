@@ -29,6 +29,25 @@ cite this document instead of re-deriving these details.
 
 ## Last verified rollback point
 
+**Current internal-install backup (2026-09-26):**
+`backups/2026-09-26-internal-excluding-userdata/`. At the user's explicit
+request during capture, userdata was excluded to finish sooner. All exposed
+UFS sectors outside userdata were captured and verified against independent
+device and saved-file hashes. `manifest.json` records the excluded range and
+verified ranges. The sparse `sda.img` is **not a complete disk image** and
+must never be restored wholesale. Android userdata has no complete rollback
+image; the abandoned capture in `backups/2026-09-26-full-internal/` is partial.
+
+Fedora now runs from `/dev/sda34`, label `X716B_INTERNAL`, partition size
+112,682,037,248 bytes. Its ext4 filesystem grew to 27,510,263 4096-byte
+blocks within that unchanged partition. All 85 partition starts/sizes and
+all six pairs of GPT regions were verified unchanged after boot.
+Only userdata, init_boot and vendor_boot were intentionally written.
+All bytes outside those three partitions matched the backup immediately
+before the first boot. See Session 26 and `docs/internal-storage.md`.
+
+Historical boot-only rollback points follow.
+
 Fresh TWRP backup on 2026-09-19, stored at
 `backups/2026-09-19-wifi-hotspot/`, using `scripts/backup-boot-set.sh`
 before the hotspot-fix flash. Each image has the exact measured partition

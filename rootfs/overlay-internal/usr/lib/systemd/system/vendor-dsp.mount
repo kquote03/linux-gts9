@@ -1,0 +1,11 @@
+[Unit]
+Description=Read-only DSP firmware without journal replay
+
+[Mount]
+What=/dev/disk/by-partlabel/dsp
+Where=/vendor/dsp
+Type=ext4
+Options=ro,noload
+
+[Install]
+WantedBy=multi-user.target

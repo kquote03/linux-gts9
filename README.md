@@ -4,7 +4,10 @@ Mainline Linux + a Fedora 44/GNOME userland on the Samsung Galaxy Tab S9 5G
 (SM-X716B, Qualcomm Snapdragon 8 Gen 2 / SM8550 "kalama"): native display,
 GPU acceleration, touch, S Pen, Wi-Fi, Bluetooth, stereo speakers, battery/
 PPS charging, power and volume buttons, and a real GNOME desktop — booting
-from the eMMC Android boot chain into a Fedora root on the microSD.
+from the Android boot chain into a Fedora root on the existing internal UFS
+`userdata` partition. The microSD remains an alternate deployment target.
+The internal installation preserves the partition layout exactly; see
+`docs/internal-storage.md` for its backup scope and deployment safeguards.
 
 This is hardware bring-up from near-zero: no existing mainline kernel/
 devicetree port for this exact board was found anywhere. It ports
