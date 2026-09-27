@@ -1,0 +1,3 @@
+#!/bin/sh
+# Match an exact NUL-delimited board compatible, not the generic SoC.
+tr '\000' '\n' < /sys/firmware/devicetree/base/compatible | grep -qx 'samsung,gts9-5g'

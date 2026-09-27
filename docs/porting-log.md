@@ -5525,3 +5525,147 @@ sssd-kcm service/socket. No new sensor fix is claimed. Physical off-mode chargin
 was not repeated in this expedited install; its internal-only root selection was
 verified in the built ramdisk. Evidence and staged artifacts are under
 `out/internal-fedora/`.
+
+## Session 27 — 2026-09-27 — Optimized baseline kernel built, flashed, and hardware-validated; Gunyah host still blocked
+
+Resumed from `docs/handoff-2026-09-27-kernel-optimization.md`. Goal: an
+optimized 7.2 kernel (UFS I/O policy, MGLRU, zram, Gunyah host, Waydroid
+prerequisites) validated against real desktop-latency measurements, not
+scheduler branding.
+
+**Build guard bug fixed.** `scripts/build-mainline-kernel.sh` rejected the
+tree because it checked for `GH_VM_ANDROID_SET_FW_CONFIG` in
+`include/uapi/linux/gunyah.h` as a marker for the excluded experimental
+auth/CMA extensions — but that symbol is already part of the *base*
+`gunyah-host-vm-manager.patch` (line ~5292), so the guard always tripped.
+Replaced the marker with `GH_VM_ANDROID_SET_AUTH_TYPE`, which only the
+excluded Ultra `gunyah-qtvm-auth.patch` adds; the CMA file-presence check
+(`vm_mgr_cma_mem.c`) is untouched. Verified the full six-patch Gunyah/
+scheduler stack (`gunyah-host-vm-manager`, `gunyah-qcom-runtime-overlay`,
+`-platform-guard`, `gunyah-qcom-platform-scm-guard`,
+`gunyah-x716-validation`, `x716-sched-slice-experiment`) applies cleanly
+in sequence against a pristine `v7.2` tag in a throwaway worktree, not
+just the already-patched `kernel/linux` tree.
+
+**Second build bug found and fixed: `fdt_check_full` doesn't exist in this
+kernel's libfdt.** After the guard fix, the build got all the way to
+linking and failed with `undefined symbol: fdt_check_full`, referenced
+from `qcom_bootinfo.c`. `gunyah-x716-validation.patch` had upgraded the
+firmware-DTB validation from `fdt_check_header()` to `fdt_check_full()`
+as extra hardening, but this kernel's vendored `scripts/dtc/libfdt`
+snapshot predates that libfdt API — it's declared in
+`include/linux/libfdt.h` but never implemented anywhere in the tree, so
+it can only fail at link time, never at compile time. The unit test
+(`scripts/test-gunyah-overlay.py`) never caught this because it only
+exercises `qcom_hyp_keep_rm_fragment()`, not the `qcom_hyp_read()` path
+that calls this function.
+
+Reverted that one call to `fdt_check_header()` in both
+`kernel/linux/drivers/virt/gunyah/qcom_bootinfo.c` and
+`kernel/patches/gunyah-x716-validation.patch` (kept the hunk as pure
+context so the patch still applies cleanly). This is not a meaningful
+security regression: this dtc's `fdt_next_tag`/`fdt_next_node` already
+bounds-check every offset internally (that's how libfdt is designed to
+be memory-safe against a malformed tree even without an upfront full-tree
+walk), and every accessor the patch calls afterward
+(`fdt_path_offset`/`fdt_getprop`/etc.) is already individually
+error-checked. Hand-reimplementing `fdt_check_full` for a security-
+sensitive firmware-data parser without a real upstream reference to
+verify against would have been the riskier move.
+
+**Build succeeded**: release `7.2.0-x716-opt-baseline-dirty` (the
+"baseline" optimization profile: 250 Hz retained, 0.7 ms EEVDF slice,
+MGLRU, Gunyah, Waydroid prerequisites, existing BFQ/mq-deadline/Kyber all
+built in). `verify-kernel-fragments.py`'s strict checks passed.
+`Image` sha256 `c088b0b4c558c1c1223eeb8b8352e65485b58b403a6b350b4ef529de14508787`,
+board DTB sha256
+`57c30210f54f929fecb4effcd20d9741bb410d3f0c74d3d9a2ddff7e1012dea2`, 1911
+signed module files (45 MiB) under
+`out/kernel-optimized/modules-out/lib/modules/7.2.0-x716-opt-baseline-dirty`.
+
+**fio I/O baseline data pulled and analyzed** (not yet used to pick a
+scheduler): 12 JSON records under `out/kernel-optimization/io-baseline/`
+covering three repetitions each of BFQ/mq-deadline/Kyber/none on the
+internal UFS root, a synthetic direct-I/O foreground-read-during-
+background-write workload. Run 1's BFQ number was an outlier (p99 ~1.0 ms
+vs ~320-345 µs for the rest, IOPS 4431 vs ~5450-5620 elsewhere); runs 2-3
+put all four schedulers within noise of each other. Thermal rose 29→31°C
+across the run, a plausible warm-up explanation for run 1's gap. Write
+bandwidth was identical (63 MB/s) across all schedulers throughout.
+Nothing here clears the plan's 10%/repeatable-latency gate, so BFQ stays
+the retained candidate; a genuine Plasma app-switch/frame-time workload
+is still undesigned (the user never named which apps to use for it).
+
+**Deployed to hardware.** Pre-flash backup taken first while the tablet
+was in TWRP: `backups/pre-optimized-kernel-20260927-050526Z/` (boot
+`c725b107…abdfb1`, init_boot `09b2fcdd…001314`, vendor_boot
+`2add5949…12a9`, dtbo `b3bcf668…10dea2` — matches
+`out/internal-boot-current/PARTITIONS.tsv`'s September 26 values, all
+readback-verified). Repacked only `boot.img` — confirmed by unpacking the
+backed-up `boot.img` first that the deployed recipe is exactly
+`gzip(kernel Image) + appended board DTB`, `mkbootimg --header_version 4`,
+empty cmdline, `os_version 15.0.0`/`os_patch_level 2026-09`, empty
+ramdisk (ramdisk lives in `init_boot`/`vendor_boot`, both left untouched)
+— matches `scripts/build-android-v4-bundle.sh`'s boot.img recipe exactly.
+New `boot.img` sha256
+`b6b54e8df8f69fa32a9407376c0db497cc46d0b06f04f7b986b89ff0ebb28457`.
+Installed the new release's modules to
+`/usr/lib/modules/7.2.0-x716-opt-baseline-dirty` on the running Fedora
+system (via SSH, before flashing) and ran `depmod -a`. Flashed `boot`
+with `scripts/flash-boot-set.sh`; its post-write readback matched the
+local hash.
+
+**Real-hardware result: boots clean.** `uname -r` reports
+`7.2.0-x716-opt-baseline-dirty`, no panics/oops/call-traces in `dmesg`,
+`systemctl is-system-running` settled with 0 failed units, root
+(`/dev/sda34`) mounted normally. Confirmed still working: MGLRU enabled
+(`/sys/kernel/mm/lru_gen/enabled` = `0x0003`), BFQ still the active
+scheduler on `sda`, Wi-Fi associated, Bluetooth unblocked, 12 input
+devices present (touch/S Pen), DRM `card0` with `DP-1`/`DSI-1` connectors
+present, battery charging at 99%, thermal nominal (32.6°C at
+`thermal_zone0`). **New, previously-blocked feature now confirmed
+working**: `CONFIG_ANDROID_BINDERFS=y` mounts binderfs with `binder`,
+`binder-control`, `hwbinder`, `vndbinder` all present — the Waydroid
+Binder/memfd prerequisite that was inherently unavailable on the old
+kernel (binderfs disabled) now works on hardware. This unblocks running
+`scripts/test-waydroid-kernel.sh`'s actual Binder-transaction test, not
+yet done this session.
+
+**Gunyah host is still blocked, now with concrete hardware evidence**
+(previously only a source-level filter test existed). `CONFIG_GUNYAH=y`
+and friends are built in, but `dmesg` shows:
+
+```
+[    0.073217] Gunyah: Qualcomm runtime RM overlay failed: -22
+```
+
+i.e. the firmware **does** supply a runtime RM overlay (the earlier
+uncertainty about whether X716B has one at all is resolved: it does),
+but `qcom_bootinfo.c`'s importer rejects it with `-EINVAL`, so
+`/dev/gunyah` never appears and no cap IDs are ever recovered. Root cause
+is **not yet isolated** — `-EINVAL` can come from several of
+`gunyah-x716-validation.patch`'s checks in `qcom_hyp_keep_rm_fragment()`
+or `qcom_hyp_read()` (target-path mismatch, unexpected fragment, GIC
+phandle resolution failure, interrupt-cell-count mismatch, etc.), and
+distinguishing "our validation is too strict for this unit's real
+overlay shape" from "same firmware restriction Ultra hit" needs adding
+targeted diagnostics (e.g. a debug printk per rejected check) and
+re-testing, not done yet. No Ultra cap IDs, VMIDs, or memory addresses
+were used or assumed anywhere in this investigation. Do not claim Gunyah
+guest execution is blocked by firmware policy until this is
+disambiguated — right now the only established fact is that this unit's
+own overlay import fails.
+
+**Not done this session**: root-causing the Gunyah `-EINVAL`; the actual
+Waydroid Binder-transaction/memfd/namespace test (now unblocked);
+zram `lz4`/`zstd` × swappiness 100/150 experiments (current baseline
+confirmed swappiness 1, algo `lzo-rle`, unchanged); `udevadm test` of
+`rootfs/overlay-common/usr/lib/udev/rules.d/61-gts9-ufs-scheduler.rules`
+on real `sda` plus negative USB/microSD cases; camera/S-Pen/suspend-
+resume regression checks. Rollback: reflash `boot.img` from
+`backups/pre-optimized-kernel-20260927-050526Z/` with
+`scripts/flash-boot-set.sh` from TWRP (`adb reboot recovery` or, from a
+booted Fedora session, `sudo systemctl reboot --reboot-argument=recovery`
+— confirmed working this session) and reinstall the prior
+`/usr/lib/modules/7.2.0-dirty` if it was ever removed (it was not, this
+session only added the new release's modules alongside it).

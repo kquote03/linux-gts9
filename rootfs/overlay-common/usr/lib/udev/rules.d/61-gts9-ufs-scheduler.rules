@@ -1,0 +1,3 @@
+# X716B whole UFS LUs only. BFQ preserves the measured internal-root baseline;
+# it remains a candidate, not a claimed performance winner. No USB/MMC match.
+ACTION=="add|change", SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", DRIVERS=="ufshcd-qcom", TEST=="queue/scheduler", PROGRAM="/usr/libexec/gts9-is-x716", ATTR{queue/scheduler}="bfq"

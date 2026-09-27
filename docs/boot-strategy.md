@@ -268,3 +268,18 @@ TWRP + `adb` first (the backup from the pre-flash checklist restores the
 exact prior state). If TWRP itself becomes unreachable, Download Mode +
 Odin with official firmware is the fallback — not yet needed, and not
 attempted unless TWRP access is actually lost.
+
+### Rebooting into TWRP from running Linux (no adb, no key combo)
+
+From the Fedora system on the tablet, over SSH:
+
+```
+sudo systemctl reboot --reboot-argument=recovery
+```
+
+Confirmed working by the user (2026-09-27). The positional form
+(`systemctl reboot recovery`) fails on this systemd with "too many
+arguments"; the `--reboot-argument=` option is the one that works. The
+argument reaches the kernel's reboot-mode mapping, which selects recovery.
+From a booted Android system or from the host, `adb reboot recovery`
+remains the alternative.
