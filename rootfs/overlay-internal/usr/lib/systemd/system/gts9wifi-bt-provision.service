@@ -1,0 +1,9 @@
+[Unit]
+Description=Retain the already provisioned Bluetooth address without boot writes
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/true
+
+[Install]
+WantedBy=multi-user.target

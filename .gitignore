@@ -36,6 +36,7 @@
 # Build scratch and output
 /work/
 /out/
+/backups/
 
 # Fetched mainline kernel source (pinned via scripts/fetch-mainline.sh, not vendored —
 # too large to commit; docs/hardware-facts.md records the exact pinned commit instead)

@@ -40,6 +40,17 @@ fi
 REAL_ROOT_LABEL=${REAL_ROOT_LABEL:-X716B_ROOT}
 REAL_ROOT_CANDIDATES=${REAL_ROOT_CANDIDATES:-"/dev/mmcblk1p1 /dev/mmcblk0p1"}
 REAL_ROOT_FSTYPE=${REAL_ROOT_FSTYPE:-ext4}
+# Internal installs must never fall back to a card that happens to appear first.
+REAL_ROOT_LABEL_ONLY=${REAL_ROOT_LABEL_ONLY:-0}
+case "$REAL_ROOT_LABEL_ONLY" in
+	0) ;;
+	1) REAL_ROOT_CANDIDATES="" ;;
+	*) echo "REAL_ROOT_LABEL_ONLY must be 0 or 1" >&2; exit 1 ;;
+esac
+[[ "$REAL_ROOT_LABEL" =~ ^[A-Za-z0-9_-]{1,16}$ ]] || {
+	echo "REAL_ROOT_LABEL must be a safe ext4 label (1-16 characters)" >&2
+	exit 1
+}
 
 echo "== staging real-root initramfs contents =="
 mkdir -p "$workdir"/{bin,sbin,proc,sys,dev,tmp,mnt/newroot}

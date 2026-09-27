@@ -1,0 +1,13 @@
+[Unit]
+Description=Grow ext4 within the existing internal userdata partition
+ConditionPathExists=!/var/lib/gts9wifi-rootfs-grown
+After=local-fs.target
+Wants=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/libexec/gts9wifi-grow-rootfs
+
+[Install]
+WantedBy=multi-user.target

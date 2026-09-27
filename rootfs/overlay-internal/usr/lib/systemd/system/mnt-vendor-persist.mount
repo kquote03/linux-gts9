@@ -1,0 +1,11 @@
+[Unit]
+Description=Read-only stock calibration (runtime changes stay in userdata)
+
+[Mount]
+What=/dev/disk/by-partlabel/persist
+Where=/mnt/vendor/persist
+Type=ext4
+Options=ro,noload,nosuid,nodev,noexec
+
+[Install]
+WantedBy=multi-user.target

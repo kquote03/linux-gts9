@@ -146,6 +146,15 @@ What's genuinely different and worth copying if you do a third distro:
 
 See `nixos/README.md`.
 
+**Internal Fedora deployment (Session 26):** apply `rootfs/overlay-internal/`
+last, after the normal Fedora layers. This switches growth to filesystem-only,
+mounts stock persist/DSP with `ro,noload`, stores the writable sensor registry
+under `/var/lib/gts9/` on userdata, and disables automatic boot-image Bluetooth
+provisioning (the retained deployed DTBs already contain the device address).
+The internal image uses `X716B_INTERNAL` in both fstab and the label-only
+initramfs; it must never fall back to an inserted `X716B_ROOT` microSD.
+See `docs/internal-storage.md`.
+
 ## Debian — the reference apt/dpkg port
 
 **Status: complete, real-hardware-validated** (feature parity with the
