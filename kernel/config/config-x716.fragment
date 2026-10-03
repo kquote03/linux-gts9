@@ -492,3 +492,15 @@ CONFIG_VIDEO_QCOM_IRIS=m
 # longer needs to carry and insmod evdev.ko (scripts/build-real-root-initramfs.sh
 # does that for kernels built without this).
 CONFIG_INPUT_EVDEV=y
+
+# Crash evidence for sleep/charger-attach resets (2026-10-03).  The sec-log
+# console is only readable from TWRP; ramoops on the sec_pmsg carve-out puts
+# the previous boot's console (panic trace included) in /sys/fs/pstore, where
+# systemd-pstore archives it.  The driver is built in, but the region is
+# registered after boot by kernel/modules/x716-ramoops: a "ramoops" node in
+# the board DTB hard-reset the tablet before any console existed, and
+# Fedora's lockdown=integrity refuses ramoops' mem_address parameter.
+CONFIG_PSTORE=y
+CONFIG_PSTORE_RAM=y
+CONFIG_PSTORE_CONSOLE=y
+CONFIG_PSTORE_PMSG=y
