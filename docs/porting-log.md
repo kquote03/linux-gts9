@@ -5669,3 +5669,65 @@ booted Fedora session, `sudo systemctl reboot --reboot-argument=recovery`
 — confirmed working this session) and reinstall the prior
 `/usr/lib/modules/7.2.0-dirty` if it was ever removed (it was not, this
 session only added the new release's modules alongside it).
+
+## Session 28 — 2026-10-03 — Charger attach during sleep reset the tablet: fixed; crash capture added
+
+Reported: the tablet "crashes" when asleep, most reliably when a charger (or
+any USB cable) is plugged in while it sleeps; it then needs a vol-down+power
+hard reset. It does not happen with nothing plugged in.
+
+**Evidence.** No pstore backend existed, and the sec-log ring is only readable
+from TWRP. Captured one failure with a disk-backed script (`dmesg -w` plus a
+1 s heartbeat, synced) and the RAM console below, with
+`hung_task_panic=1`/30 s, console suspend off and `pm_debug_messages` on:
+suspend entered at uptime 430.7 s, cable plugged in, and the console stops
+mid-line at 433.249 inside `dpm_resume()` (last line a `psci-cpuidle-domain`
+resume callback). No panic text; the tablet reset on its own that time. The
+mechanism behind the silent reset is not established — the log only shows
+where it stops.
+
+**Fix (confirmed on hardware).** `sm5714_usbpd.c` had no PM callbacks; its
+level-triggered wake interrupt ran its threaded handler (I2C to the chip, then
+TCPM, charger, role switch) while the system was still resuming. The driver now
+calls `disable_irq()` in `.prepare` and `enable_irq()` in `.complete`, so the
+attach is handled only after every device has resumed; the wake itself is
+unaffected. A first attempt that re-enabled in the driver's own `.resume` did
+not help (two more failures). With `.prepare`/`.complete` (kernel build #6,
+`boot.img` sha256 `36164e88…5497e9`): plug-in during sleep woke the tablet
+normally on a PC port and on a 45 W wall charger, same boot ID. Before: 3/3
+failures. Five `rtcwake` cycles with the cable attached throughout also pass.
+
+**Crash capture.** `CONFIG_PSTORE_RAM/CONSOLE/PMSG=y`. A `ramoops` node on the
+`sec_pmsg` carve-out (0x8_80900000, 2 MiB) in the board DTB **does not boot**:
+hard reset right after ABL's ExitBootServices with nothing logged, recovered by
+reflashing the backed-up `vendor_boot`; cause unknown, DTS left unchanged.
+Fedora's lockdown=integrity also refuses ramoops' `mem_address` parameter.
+Instead `kernel/modules/x716-ramoops` registers the platform device after boot.
+It is built and signed by hand against `out/kernel-optimized` (same recipe as
+`gunyah-identify-probe`), installed on the tablet in
+`/usr/lib/modules/<release>/extra` with `/etc/modules-load.d/x716-ramoops.conf`;
+neither is wired into the rootfs build yet. DRAM here picks up bit errors across
+a reset (worse after a vol-down+power reset), and a corrupt zone header makes
+ramoops wipe the zone, so the module first copies the raw region to
+`/sys/kernel/debug/x716_ramoops/previous`. A sysrq-c test left a readable (bit-
+flipped) panic trace in `console-ramoops-0`; no separate dump record appeared.
+Also on the tablet, debug only: `/etc/tmpfiles.d/x716-suspend-debug.conf`
+(console suspend off, `pm_debug_messages`).
+
+**Facts worth keeping.**
+- ABL takes the board DTB and cmdline from `vendor_boot`; the DTB appended to
+  `boot.img`'s kernel is not the one in use. The deployed `vendor_boot` DTB
+  carries this unit's real `local-bd-address`; a freshly built DTB has the
+  placeholder.
+- Every resume logs a burst of `geni_i2c a90000.i2c: error turning SE
+  resources:-13` (the touchscreen bus, same too-early-access pattern). Not
+  fixed.
+- Charging: a fixed-PDO PD charger (5/9/12/15 V 3 A, 20 V 2.25 A, no PPS)
+  gets a 9 V/3 A contract and ~3.2 A into the pack — the 3150 mA pack goal.
+  `sm5440_direct` correctly stays off without a PPS source.
+- Sleep drain, battery only, 10 min: `aosd`/`cxsd`/`ddr` counts stay 0;
+  `usb30_prim_gdsc` and `pcie_0_gdsc` hold `cx` at 256, `mmcx` at 256, and
+  gcc/gpu_cc `sync_state()` is pending on `3d6a000.gmu` (writing
+  `state_synced` is refused). Open.
+
+Backup before flashing: `backups/2026-10-03-pre-ramoops-usbpd/` (untracked).

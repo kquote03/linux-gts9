@@ -987,6 +987,38 @@ static void sm5714_usbpd_remove(struct i2c_client *client)
 	fwnode_handle_put(sm->connector);
 }
 
+/*
+ * The interrupt is a wake source: a charger plugged into a sleeping tablet
+ * raises it.  Its handler talks to the chip over I2C and feeds TCPM, which in
+ * turn drives the charger, the USB role switch and the DWC3 controller behind
+ * it.  None of those may be touched while the system is half asleep: the QUP
+ * controller refuses transfers from suspend_late to resume_early, and on
+ * 2026-10-03 the tablet was seen to reset without a word in the middle of
+ * dpm_resume() about a second after such an attach.  Hold the handler off
+ * from .prepare, before any device suspends, to .complete, after every
+ * device has resumed.  A disabled wake interrupt still wakes the system and
+ * enable_irq() replays it.
+ */
+static int sm5714_usbpd_prepare(struct device *dev)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	disable_irq(client->irq);
+	return 0;
+}
+
+static void sm5714_usbpd_complete(struct device *dev)
+{
+	struct i2c_client *client = to_i2c_client(dev);
+
+	enable_irq(client->irq);
+}
+
+static const struct dev_pm_ops sm5714_usbpd_pm_ops = {
+	.prepare = pm_sleep_ptr(sm5714_usbpd_prepare),
+	.complete = pm_sleep_ptr(sm5714_usbpd_complete),
+};
+
 static const struct of_device_id sm5714_usbpd_of_match[] = {
 	{ .compatible = "siliconmitus,sm5714-usbpd" },
 	{ }
@@ -997,6 +1029,7 @@ static struct i2c_driver sm5714_usbpd_driver = {
 	.driver = {
 		.name = "sm5714-usbpd",
 		.of_match_table = sm5714_usbpd_of_match,
+		.pm = pm_sleep_ptr(&sm5714_usbpd_pm_ops),
 	},
 	.probe = sm5714_usbpd_probe,
 	.remove = sm5714_usbpd_remove,

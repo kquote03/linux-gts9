@@ -39,3 +39,12 @@ git branch -d <branch> && git push origin --delete <branch>
 This is a standing preference for this repo, not a one-off — apply it on
 every commit/push without asking again. Still only commit/push when
 actually asked to.
+
+## Rebooting the tablet into TWRP
+
+After sending the tablet to recovery, **wait a full 2 minutes before running
+any `adb` command** (backup, flash, `adb shell`). TWRP enables MTP shortly
+after it boots, which resets the USB connection; anything started before
+that drops mid-command ("device is not in recovery", "no devices/emulators
+found"). `adb devices` showing `recovery` once is not enough — it shows up
+before the MTP reset too.
